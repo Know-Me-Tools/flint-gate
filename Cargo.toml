@@ -1,0 +1,91 @@
+[package]
+name = "flint-gate"
+version = "0.1.0"
+edition = "2021"
+authors = ["Travis James <travis@know-me.tools>"]
+description = "AI-native auth proxy and API gateway — Flint brand by KnowMe, LLC"
+license = "MIT"
+repository = "https://github.com/Know-Me-Tools/flint-gate"
+
+[[bin]]
+name = "flint-gate"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# Web framework + HTTP
+axum = { version = "0.8", features = ["ws", "macros"] }
+hyper = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-full"] }
+http = "1"
+
+# Upstream HTTP client
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
+
+# Database
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+] }
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
+
+# JWT
+jsonwebtoken = "9"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Routing / pattern matching
+regex = "1"
+
+# File watching (config hot-reload)
+notify = "6"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# IDs + timestamps
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Byte handling + streaming
+bytes = "1"
+futures = "0.3"
+pin-project-lite = "0.2"
+
+# Async trait objects
+async-trait = "0.1"
+
+# Concurrent collections
+dashmap = "6"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Hashing (API key verification)
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio-test = "0.4"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

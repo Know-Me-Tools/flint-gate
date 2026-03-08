@@ -1,0 +1,196 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Flint Gate — Example Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to config.yaml and edit for your environment.
+# Hot-reload: changes to config.yaml are applied within ~200ms.
+# ─────────────────────────────────────────────────────────────────────────────
+
+server:
+  # Proxy server — receives all inbound traffic. Expose to the internet.
+  listen: "0.0.0.0:4456"
+  # Admin API — internal only. NEVER expose to the public internet.
+  admin_listen: "0.0.0.0:4457"
+  tls:
+    enabled: false
+    # cert_path: "/etc/flint-gate/tls/cert.pem"
+    # key_path: "/etc/flint-gate/tls/key.pem"
+
+database:
+  url: "postgres://flintgate:secret@localhost:5432/flintgate"
+  max_connections: 20
+  # When true, routes stored in gate_routes take precedence over YAML routes.
+  override_yaml: false
+
+cache:
+  l1:
+    max_capacity: 10000
+    ttl_seconds: 60
+  l2:
+    enabled: false
+    # redis_url: "redis://localhost:6379"
+  # Postgres LISTEN channel for real-time cache invalidation
+  invalidation_channel: "flintgate_config_changed"
+
+# ─── Auth Providers ───────────────────────────────────────────────────────────
+# Each entry is a named provider. Routes reference providers by name.
+
+auth_providers:
+  kratos_session:
+    type: kratos
+    base_url: "http://kratos:4433"
+    forward_cookies: true
+    session_cookie: "ory_kratos_session"
+
+  bearer_jwt:
+    type: jwt
+    jwks_url: "https://auth.example.com/.well-known/jwks.json"
+    issuer: "https://auth.example.com"
+    audience: "flint-gate"
+    leeway_seconds: 5
+
+  api_key:
+    type: api_key
+    header: "X-API-Key"
+    store: database
+
+  passthrough:
+    type: anonymous
+    default_subject: "anonymous"
+
+# ─── Outbound JWT Minting ─────────────────────────────────────────────────────
+# Used by the claims_enhancement hook to mint JWTs for upstream services.
+
+jwt:
+  signing_algorithm: "HS256"
+  # For production use RS256/ES256 with key files instead:
+  # signing_key_path: "/etc/flint-gate/keys/private.pem"
+  signing_key_secret: "change-me-in-production-use-a-strong-secret"
+  issuer: "https://gate.example.com"
+  default_ttl_seconds: 300
+
+# ─── Sites ────────────────────────────────────────────────────────────────────
+# A site maps one or more domains to a default auth provider and upstream.
+
+sites:
+  - id: "my-app"
+    domains:
+      - "app.example.com"
+      - "localhost:3000"
+    default_auth: kratos_session
+    default_upstream: "http://app-backend:3001"
+
+  - id: "api"
+    domains:
+      - "api.example.com"
+    default_auth: api_key
+    default_upstream: "http://api-backend:8080"
+
+# ─── Routes ───────────────────────────────────────────────────────────────────
+# Routes are matched in priority order (higher priority first),
+# then by path specificity (longer patterns first).
+
+routes:
+  # ── LLM Chat (streaming) ──────────────────────────────────────────────────
+  - id: "chat-stream"
+    site: "my-app"
+    match:
+      path: "/api/chat/**"
+      methods: ["POST"]
+    upstream: "http://llm-backend:8000/v1/chat/completions"
+    auth: kratos_session
+    priority: 10
+    hooks:
+      pre_request:
+        - type: claims_enhancement
+          config:
+            inject_headers:
+              X-User-Id: "{{ identity.id }}"
+              X-User-Email: "{{ identity.traits.email }}"
+              X-Org-Id: "{{ identity.metadata_public.org_id }}"
+            mint_jwt:
+              enabled: true
+              additional_claims:
+                scope: "chat"
+                org_id: "{{ identity.metadata_public.org_id }}"
+        - type: body_transform
+          config:
+            set_fields:
+              user: "{{ identity.id }}"
+              model: "{{ coalesce(body.model, 'claude-sonnet-4-6') }}"
+      post_response:
+        - type: stream_meter
+          config:
+            log_to_db: true
+    stream:
+      enabled: true
+      protocol: sse
+      ai:
+        ag_ui:
+          enabled: true
+          validate_events: true
+          allowed_events:
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+        a2ui:
+          enabled: true
+          allowed_intents:
+            - render_component
+            - show_toast
+            - stream_content
+        session_watchdog:
+          enabled: true
+          check_interval_seconds: 30
+        backpressure:
+          max_stream_duration_seconds: 300
+          max_events: 10000
+
+  # ── API Key Route (non-streaming) ─────────────────────────────────────────
+  - id: "api-completions"
+    site: "api"
+    match:
+      path: "/v1/completions"
+      methods: ["POST"]
+    upstream: "http://llm-backend:8000/v1/completions"
+    auth: api_key
+    hooks:
+      pre_request:
+        - type: claims_enhancement
+          config:
+            inject_headers:
+              X-Client-Id: "{{ api_key.client_id }}"
+              X-Scopes: "{{ api_key.scopes }}"
+
+  # ── Health check (no auth) ────────────────────────────────────────────────
+  - id: "health"
+    site: "my-app"
+    match:
+      path: "/health"
+      methods: ["GET"]
+    upstream: "http://app-backend:3001/health"
+    auth: passthrough
+    priority: 100
+
+  # ── Catch-all (default upstream, Kratos auth) ─────────────────────────────
+  - id: "catch-all"
+    site: "my-app"
+    match:
+      path: "/**"
+      methods: []
+    auth: kratos_session
+    priority: -1
+    # No upstream set — uses site default_upstream (http://app-backend:3001)
+    hooks:
+      pre_request:
+        - type: claims_enhancement
+          config:
+            inject_headers:
+              X-User-Id: "{{ identity.id }}"

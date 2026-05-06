@@ -124,11 +124,14 @@ pub struct CacheStats {
 /// Start the Postgres LISTEN/NOTIFY cache invalidation listener.
 ///
 /// Subscribes to the configured channel and invalidates caches when a
-/// notification arrives. This is best-effort — errors are logged, not fatal.
+/// notification arrives. When `db` and `router` are provided and a "routes"
+/// notification is received, the router is rebuilt from the DB + YAML config.
+/// This is best-effort — errors are logged, not fatal.
 pub async fn start_cache_invalidation_listener(
     pool: sqlx::PgPool,
     cache: Arc<GateCache>,
     channel: String,
+    router: Option<(crate::proxy::SharedRouter, crate::config::SharedConfig, Arc<crate::db::Database>)>,
 ) {
     tokio::spawn(async move {
         let mut listener = match sqlx::postgres::PgListener::connect_with(&pool).await {
@@ -152,13 +155,18 @@ pub async fn start_cache_invalidation_listener(
                     let payload = notification.payload();
                     info!(channel = %channel, payload = %payload, "cache invalidation notification received");
                     match payload {
-                        "routes" | "sites" => cache.invalidate_routes().await,
+                        "routes" | "sites" => {
+                            cache.invalidate_routes().await;
+                            // Rebuild router from DB + YAML when override mode is active.
+                            if let Some((ref shared_router, ref shared_config, ref db)) = router {
+                                rebuild_router_from_db(shared_router, shared_config, db).await;
+                            }
+                        }
                         _ => cache.invalidate_all().await,
                     }
                 }
                 Err(e) => {
                     warn!(error = %e, "LISTEN/NOTIFY error; will reconnect");
-                    // Attempt reconnect
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     if let Err(e) = listener.listen(&channel).await {
                         error!(error = %e, "failed to re-LISTEN after error");
@@ -168,6 +176,26 @@ pub async fn start_cache_invalidation_listener(
             }
         }
     });
+}
+
+/// Reload DB routes and rebuild the shared router.
+async fn rebuild_router_from_db(
+    shared_router: &crate::proxy::SharedRouter,
+    shared_config: &crate::config::SharedConfig,
+    db: &crate::db::Database,
+) {
+    let config = shared_config.read().await.clone();
+    match db.load_routes().await {
+        Ok(db_routes) => {
+            let new_router = crate::proxy::Router::from_config_and_db_routes(&config, &db_routes);
+            let count = new_router.route_count();
+            *shared_router.write().await = new_router;
+            info!(route_count = count, "router rebuilt from DB + YAML routes");
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to reload DB routes — router unchanged");
+        }
+    }
 }
 
 #[cfg(test)]

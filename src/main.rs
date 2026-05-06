@@ -152,16 +152,25 @@ async fn main() -> Result<()> {
         info!("no JWT signing key configured; JWT minting disabled");
     }
 
-    // 8. Build router
-    let gate_router = GateRouter::from_config(&initial_config);
-    if initial_config.database.override_yaml {
+    // 8. Build router — merge YAML with DB routes when override_yaml is set
+    let gate_router = if initial_config.database.override_yaml {
         if let Some(ref d) = db {
             match d.load_routes().await {
-                Ok(routes) => info!(count = routes.len(), "DB routes available (override mode)"),
-                Err(e)     => warn!(error = %e, "failed to load DB routes"),
+                Ok(db_routes) => {
+                    info!(count = db_routes.len(), "loaded DB routes for override mode");
+                    GateRouter::from_config_and_db_routes(&initial_config, &db_routes)
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to load DB routes — falling back to YAML only");
+                    GateRouter::from_config(&initial_config)
+                }
             }
+        } else {
+            GateRouter::from_config(&initial_config)
         }
-    }
+    } else {
+        GateRouter::from_config(&initial_config)
+    };
     info!(route_count = gate_router.route_count(), "route table built");
     let shared_router: SharedRouter = Arc::new(RwLock::new(gate_router));
 
@@ -169,7 +178,14 @@ async fn main() -> Result<()> {
     let cache = Arc::new(GateCache::from_config(&initial_config.cache));
     if let Some(ref d) = db {
         let ch = initial_config.cache.invalidation_channel.clone();
-        start_cache_invalidation_listener(d.pool(), Arc::clone(&cache), ch).await;
+        // When override_yaml is enabled, pass the router + config + DB so the
+        // listener can rebuild the router on every "routes" NOTIFY.
+        let router_ctx = if initial_config.database.override_yaml {
+            Some((Arc::clone(&shared_router), Arc::clone(&shared_config), Arc::clone(d)))
+        } else {
+            None
+        };
+        start_cache_invalidation_listener(d.pool(), Arc::clone(&cache), ch, router_ctx).await;
     }
 
     // 10. Build lookup registry
@@ -216,13 +232,31 @@ async fn main() -> Result<()> {
     // 14. Config hot-reload — re-apply CLI overrides after every file change
     let reload_router  = Arc::clone(&shared_router);
     let reload_shared  = Arc::clone(&shared_config);
+    let reload_db      = db.clone();
     let cli_for_reload = cli.clone();
     let config_watcher = tokio::spawn(async move {
         while config_rx.changed().await.is_ok() {
             let new_config = apply_overrides(config_rx.borrow().clone(), &cli_for_reload);
             info!("config changed — rebuilding router");
             *reload_shared.write().await = new_config.clone();
-            let r = GateRouter::from_config(&new_config);
+
+            // Merge DB routes if override_yaml is active.
+            let r = if new_config.database.override_yaml {
+                if let Some(ref d) = reload_db {
+                    match d.load_routes().await {
+                        Ok(db_routes) => GateRouter::from_config_and_db_routes(&new_config, &db_routes),
+                        Err(e) => {
+                            warn!(error = %e, "failed to reload DB routes on config change — using YAML only");
+                            GateRouter::from_config(&new_config)
+                        }
+                    }
+                } else {
+                    GateRouter::from_config(&new_config)
+                }
+            } else {
+                GateRouter::from_config(&new_config)
+            };
+
             let n = r.route_count();
             *reload_router.write().await = r;
             info!(route_count = n, "router rebuilt");

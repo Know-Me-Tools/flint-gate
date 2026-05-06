@@ -3,6 +3,7 @@
 /// Routes are compiled once and reused across requests. Hot-reload swaps the
 /// entire `Router` under an `Arc<RwLock<Router>>`.
 use crate::config::types::{GateConfig, RouteConfig, SiteConfig};
+use crate::db::DbRoute;
 use regex::Regex;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -80,6 +81,55 @@ impl Router {
         });
 
         Self { routes }
+    }
+
+    /// Build a `Router` from a [`GateConfig`] merged with DB-sourced routes.
+    ///
+    /// DB routes are deserialized from their stored `config` JSON blob and
+    /// merged into the YAML routes. A DB route with the same `id` as a YAML
+    /// route replaces it; otherwise it is appended. When `db_routes` is empty
+    /// this is equivalent to `from_config`.
+    pub fn from_config_and_db_routes(config: &GateConfig, db_routes: &[DbRoute]) -> Self {
+        // Start with YAML routes, keyed by id for O(1) override lookup.
+        let mut yaml_by_id: std::collections::HashMap<String, RouteConfig> =
+            config.routes.iter().map(|r| (r.id.clone(), r.clone())).collect();
+
+        // Deserialize and merge DB routes. DB wins on id collision.
+        let mut db_parsed: Vec<RouteConfig> = Vec::new();
+        for db_route in db_routes {
+            if !db_route.enabled {
+                yaml_by_id.remove(&db_route.id);
+                continue;
+            }
+            match serde_json::from_value::<RouteConfig>(db_route.config.clone()) {
+                Ok(mut rc) => {
+                    rc.priority = db_route.priority;
+                    rc.enabled = db_route.enabled;
+                    yaml_by_id.remove(&rc.id); // DB overrides YAML
+                    db_parsed.push(rc);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        route_id = %db_route.id,
+                        error = %e,
+                        "failed to deserialize DB route — skipping"
+                    );
+                }
+            }
+        }
+
+        // Rebuild the merged config and delegate to from_config.
+        let merged_routes: Vec<RouteConfig> = yaml_by_id
+            .into_values()
+            .chain(db_parsed)
+            .collect();
+
+        let merged_config = GateConfig {
+            routes: merged_routes,
+            ..config.clone()
+        };
+
+        Self::from_config(&merged_config)
     }
 
     /// Find the best matching route for a request.
@@ -344,5 +394,103 @@ mod tests {
             Router::resolve_upstream(&route, "/api/v1"),
             Some("http://default:3000/api/v1".to_string())
         );
+    }
+
+    #[test]
+    fn db_route_overrides_yaml_route() {
+        use crate::config::types::*;
+        use crate::db::DbRoute;
+
+        let site = SiteConfig {
+            id: "app".to_string(),
+            domains: vec!["app.example.com".to_string()],
+            default_auth: None,
+            default_upstream: Some("http://backend:3000".to_string()),
+        };
+
+        let yaml_route = RouteConfig {
+            id: "chat".to_string(),
+            site: "app".to_string(),
+            route_match: RouteMatch {
+                path: "/api/chat/**".to_string(),
+                methods: vec!["POST".to_string()],
+                host: None,
+            },
+            upstream: Some("http://yaml-llm:8000".to_string()),
+            auth: None,
+            hooks: HooksConfig::default(),
+            stream: StreamConfig::default(),
+            priority: 0,
+            enabled: true,
+        };
+
+        // DB version of same route with different upstream
+        let db_route = DbRoute {
+            id: "chat".to_string(),
+            config: serde_json::to_value(RouteConfig {
+                upstream: Some("http://db-llm:9000".to_string()),
+                ..yaml_route.clone()
+            })
+            .unwrap(),
+            priority: 10,
+            enabled: true,
+        };
+
+        let config = GateConfig {
+            sites: vec![site],
+            routes: vec![yaml_route],
+            ..Default::default()
+        };
+
+        let router = Router::from_config_and_db_routes(&config, &[db_route]);
+        assert_eq!(router.route_count(), 1);
+
+        let matched = router.match_route("app.example.com", "/api/chat/completions", "POST").unwrap();
+        // DB route wins — upstream is the DB-sourced value
+        assert_eq!(matched.config.upstream.as_deref(), Some("http://db-llm:9000"));
+    }
+
+    #[test]
+    fn db_route_disabled_removes_yaml_route() {
+        use crate::config::types::*;
+        use crate::db::DbRoute;
+
+        let site = SiteConfig {
+            id: "s".to_string(),
+            domains: vec!["example.com".to_string()],
+            default_auth: None,
+            default_upstream: None,
+        };
+        let yaml_route = RouteConfig {
+            id: "r".to_string(),
+            site: "s".to_string(),
+            route_match: RouteMatch {
+                path: "/api/**".to_string(),
+                methods: vec!["GET".to_string()],
+                host: None,
+            },
+            upstream: Some("http://upstream".to_string()),
+            auth: None,
+            hooks: HooksConfig::default(),
+            stream: StreamConfig::default(),
+            priority: 0,
+            enabled: true,
+        };
+        let db_route = DbRoute {
+            id: "r".to_string(),
+            config: serde_json::json!({}),
+            priority: 0,
+            enabled: false, // disabled in DB
+        };
+
+        let config = GateConfig {
+            sites: vec![site],
+            routes: vec![yaml_route],
+            ..Default::default()
+        };
+
+        let router = Router::from_config_and_db_routes(&config, &[db_route]);
+        // Route was disabled in DB — not compiled
+        assert_eq!(router.route_count(), 0);
     }
 }

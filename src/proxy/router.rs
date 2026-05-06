@@ -154,6 +154,11 @@ impl Router {
     pub fn route_count(&self) -> usize {
         self.routes.len()
     }
+
+    /// Iterate over the IDs of all compiled routes.
+    pub fn route_ids(&self) -> impl Iterator<Item = String> + '_ {
+        self.routes.iter().map(|r| r.config.id.clone())
+    }
 }
 
 /// Convert a glob path pattern to a regex string.

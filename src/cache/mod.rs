@@ -61,6 +61,7 @@ impl GateCache {
     }
 
     /// Invalidate a specific session cache entry.
+    #[allow(dead_code)]
     pub async fn invalidate_session(&self, key: &str) {
         self.sessions.invalidate(key).await;
     }

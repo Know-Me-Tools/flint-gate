@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
-use std::sync::Arc;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -110,6 +109,25 @@ impl Database {
             routes.push(DbRoute { id, config, priority, enabled });
         }
         Ok(routes)
+    }
+
+    /// Load a single route by ID.
+    pub async fn get_route(&self, id: &str) -> Result<Option<DbRoute>> {
+        let row = sqlx::query("SELECT id, config, priority, enabled FROM gate_routes WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("loading route by id")?;
+
+        match row {
+            None => Ok(None),
+            Some(r) => Ok(Some(DbRoute {
+                id: r.try_get("id")?,
+                config: r.try_get("config")?,
+                priority: r.try_get("priority")?,
+                enabled: r.try_get("enabled")?,
+            })),
+        }
     }
 
     /// Upsert a route configuration.
@@ -236,6 +254,7 @@ pub struct DbRoute {
 
 /// An API key record from the `api_keys` table.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ApiKeyRecord {
     pub id: Uuid,
     pub client_id: String,

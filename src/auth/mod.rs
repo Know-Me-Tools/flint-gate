@@ -18,10 +18,10 @@ use http::request::Parts;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
 
 /// Error returned by an authenticator.
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum AuthError {
     /// The credential is missing or invalid — return 401.
     #[error("unauthorized: {0}")]
@@ -142,8 +142,6 @@ impl Authenticator for FailingAuthenticator {
     }
 }
 
-/// Thread-safe map of named authenticators.
-pub type SharedAuthenticators = Arc<RwLock<HashMap<String, Arc<dyn Authenticator>>>>;
 
 #[cfg(test)]
 mod tests {

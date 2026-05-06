@@ -2,7 +2,7 @@
 ///
 /// Buffers partial SSE lines, assembles complete events, dispatches through
 /// AG-UI/A2UI processors, tracks metrics, and enforces backpressure limits.
-use crate::config::types::{AgUiConfig, A2UiConfig, BackpressureConfig, StreamConfig};
+use crate::config::types::StreamConfig;
 use crate::stream::ag_ui::{AgUiEvent, AgUiProcessor, AgUiTokenCounter};
 use crate::stream::a2ui::{A2UiEvent, A2UiProcessor};
 use bytes::Bytes;
@@ -27,6 +27,7 @@ pub struct StreamMetrics {
 
 /// Reason a stream was terminated early.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum TerminationReason {
     DurationLimit,
     EventLimit,
@@ -240,6 +241,7 @@ impl SseStreamProcessor {
     }
 
     /// Consume the processor and return final metrics.
+    #[allow(dead_code)]
     pub fn finish(mut self) -> StreamMetrics {
         self.metrics.duration_ms = self.started_at.elapsed().as_millis() as u64;
         self.metrics.estimated_tokens = self.token_counter.estimated_tokens();

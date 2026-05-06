@@ -32,6 +32,7 @@ impl Identity {
     }
 
     /// Convenience accessor for the `email` trait field.
+    #[allow(dead_code)]
     pub fn email(&self) -> Option<&str> {
         self.traits.get("email").and_then(|v| v.as_str())
     }

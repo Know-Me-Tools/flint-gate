@@ -1,3 +1,4 @@
 pub mod router;
 
-pub use router::{CompiledRoute, Router, SharedRouter, glob_to_regex};
+#[allow(unused_imports)]
+pub use router::{CompiledRoute, Router, SharedRouter};

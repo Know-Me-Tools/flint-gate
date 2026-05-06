@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// How long a fetched JWKS is considered valid before re-fetching.
 const JWKS_TTL: Duration = Duration::from_secs(300);

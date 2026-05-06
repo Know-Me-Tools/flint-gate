@@ -11,23 +11,22 @@
 /// - `PUT  /routes/:id` — update a route
 /// - `DELETE /routes/:id` — delete a route
 use crate::cache::GateCache;
-use crate::db::Database;
-use crate::proxy::{Router as GateRouter, SharedRouter};
 use crate::config::SharedConfig;
+use crate::db::Database;
+use crate::proxy::SharedRouter;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Shared state for the admin API.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AdminState {
     pub cache: Arc<GateCache>,
     pub db: Option<Arc<Database>>,
@@ -85,11 +84,11 @@ async fn cache_invalidate_handler(State(state): State<AdminState>) -> impl IntoR
     Json(json!({"status": "invalidated"}))
 }
 
-/// `GET /routes`
+/// `GET /routes` — returns DB routes when available, else YAML-configured routes.
 async fn list_routes_handler(State(state): State<AdminState>) -> impl IntoResponse {
     if let Some(db) = &state.db {
         match db.load_routes().await {
-            Ok(routes) => Json(json!({"routes": routes})).into_response(),
+            Ok(routes) => Json(json!({"routes": routes, "source": "database"})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
@@ -97,9 +96,10 @@ async fn list_routes_handler(State(state): State<AdminState>) -> impl IntoRespon
                 .into_response(),
         }
     } else {
-        // Return YAML-configured routes from router
         let router = state.router.read().await;
-        Json(json!({"routes": [], "note": "no database configured"})).into_response()
+        let route_ids: Vec<String> = router.route_ids().collect();
+        Json(json!({"routes": route_ids, "source": "config", "note": "no database configured"}))
+            .into_response()
     }
 }
 
@@ -117,7 +117,6 @@ async fn upsert_route_handler_with_id(
     State(state): State<AdminState>,
     Json(mut payload): Json<Value>,
 ) -> impl IntoResponse {
-    // Inject the path id into the payload
     if let Value::Object(ref mut map) = payload {
         map.insert("id".to_string(), json!(id));
     }
@@ -165,14 +164,9 @@ async fn get_route_handler(
     State(state): State<AdminState>,
 ) -> impl IntoResponse {
     if let Some(db) = &state.db {
-        match db.load_routes().await {
-            Ok(routes) => {
-                if let Some(route) = routes.iter().find(|r| r.id == id) {
-                    Json(json!(route)).into_response()
-                } else {
-                    (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response()
-                }
-            }
+        match db.get_route(&id).await {
+            Ok(Some(route)) => Json(json!(route)).into_response(),
+            Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),

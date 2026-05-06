@@ -44,6 +44,7 @@ impl LookupRegistry {
     }
 
     /// Register a named lookup handler.
+    #[allow(dead_code)]
     pub fn register(&mut self, name: impl Into<String>, handler: LookupFn) {
         self.handlers.insert(name.into(), handler);
     }

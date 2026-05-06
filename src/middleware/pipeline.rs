@@ -8,7 +8,7 @@
 /// 5. Pre-request hook execution
 /// 6. Upstream proxying (streaming or buffered)
 /// 7. Response forwarding + post-response usage logging
-use crate::auth::{AuthError, AuthMethod, Authenticator, Identity, JwtMinter, SharedJwtMinter};
+use crate::auth::{AuthError, AuthMethod, Authenticator, Identity, SharedJwtMinter};
 use crate::cache::GateCache;
 use crate::config::{
     LookupRegistry, TemplateContext, TemplateEngine,
@@ -16,17 +16,16 @@ use crate::config::{
     types::{GateConfig, PreRequestHook},
 };
 use crate::db::{Database, UsageEvent};
-use crate::proxy::{CompiledRoute, Router as GateRouter, SharedRouter};
+use crate::proxy::SharedRouter;
 use crate::stream::SseStreamProcessor;
 use axum::{
     body::Body,
     extract::State,
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
 use futures::StreamExt;
-use http::request::Parts;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -49,6 +48,7 @@ const HOP_BY_HOP: &[&str] = &[
 
 /// Application state shared across all requests.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AppState {
     pub config: Arc<RwLock<GateConfig>>,
     pub router: SharedRouter,

@@ -14,7 +14,7 @@ mod stream;
 use crate::admin::{AdminState, admin_router};
 use crate::auth::{JwtMinter, SharedJwtMinter, build_authenticators};
 use crate::cache::{GateCache, start_cache_invalidation_listener};
-use crate::config::{GateConfig, load_config};
+use crate::config::{GateConfig, LookupRegistry, load_config};
 use crate::db::Database;
 use crate::middleware::{AppState, proxy_handler};
 use crate::proxy::{Router as GateRouter, SharedRouter};
@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
         .build()
         .context("building HTTP client")?;
 
-    let auth_providers = Arc::new(build_authenticators(&initial_config.auth_providers, &http_client));
+    let auth_providers = Arc::new(build_authenticators(&initial_config.auth_providers, &http_client, db.clone()));
     info!(count = auth_providers.len(), "auth providers initialized");
 
     // 7. Build JWT minter
@@ -172,18 +172,22 @@ async fn main() -> Result<()> {
         start_cache_invalidation_listener(d.pool(), Arc::clone(&cache), ch).await;
     }
 
-    // 10. Assemble AppState
+    // 10. Build lookup registry
+    let lookup_registry = Arc::new(LookupRegistry::new(db.clone()));
+
+    // 11. Assemble AppState
     let app_state = Arc::new(AppState {
-        config:         Arc::clone(&shared_config),
-        router:         Arc::clone(&shared_router),
-        auth_providers: Arc::clone(&auth_providers),
-        jwt_minter:     Arc::clone(&jwt_minter),
-        cache:          Arc::clone(&cache),
-        db:             db.clone(),
-        http_client:    http_client.clone(),
+        config:          Arc::clone(&shared_config),
+        router:          Arc::clone(&shared_router),
+        auth_providers:  Arc::clone(&auth_providers),
+        jwt_minter:      Arc::clone(&jwt_minter),
+        cache:           Arc::clone(&cache),
+        db:              db.clone(),
+        http_client:     http_client.clone(),
+        lookup_registry: Arc::clone(&lookup_registry),
     });
 
-    // 11. Start proxy server
+    // 12. Start proxy server
     let proxy_listen = initial_config.server.listen.clone();
     let proxy_app = Router::new()
         .fallback(any(proxy_handler))
@@ -197,7 +201,7 @@ async fn main() -> Result<()> {
         if let Err(e) = axum::serve(proxy_listener, proxy_app).await { error!(error = %e, "proxy server error"); }
     });
 
-    // 12. Start admin server
+    // 13. Start admin server
     let admin_listen = initial_config.server.admin_listen.clone();
     let admin_state = AdminState { cache: Arc::clone(&cache), db: db.clone(), router: Arc::clone(&shared_router), config: Arc::clone(&shared_config) };
     let admin_app = admin_router(admin_state).layer(TraceLayer::new_for_http());
@@ -209,7 +213,7 @@ async fn main() -> Result<()> {
         if let Err(e) = axum::serve(admin_listener, admin_app).await { error!(error = %e, "admin server error"); }
     });
 
-    // 13. Config hot-reload — re-apply CLI overrides after every file change
+    // 14. Config hot-reload — re-apply CLI overrides after every file change
     let reload_router  = Arc::clone(&shared_router);
     let reload_shared  = Arc::clone(&shared_config);
     let cli_for_reload = cli.clone();

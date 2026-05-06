@@ -6,6 +6,7 @@
 /// - `{{ request_id }}` — the per-request UUID
 /// - `{{ api_key.client_id }}` — API key metadata
 /// - `{{ coalesce(a, b, 'fallback') }}` — first non-empty value
+/// - `{{ lookup:name(arg) }}` — pre-resolved async lookup (see `LookupRegistry`)
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -30,6 +31,9 @@ pub struct TemplateContext {
     pub request_id: String,
     /// API key metadata (client_id, scopes).
     pub api_key: HashMap<String, String>,
+    /// Pre-resolved lookup results: `"name(resolved_arg)"` → value.
+    /// Populated by `LookupRegistry::resolve_all` before hook execution.
+    pub lookups: HashMap<String, String>,
 }
 
 impl TemplateContext {
@@ -45,6 +49,7 @@ impl TemplateContext {
             body,
             request_id,
             api_key,
+            lookups: HashMap::new(),
         }
     }
 }
@@ -150,12 +155,27 @@ impl TemplateEngine {
         args
     }
 
-    /// Evaluate `lookup:name(arg)` — placeholder for the lookup registry.
+    /// Evaluate `lookup:name(arg_expr)` — read from pre-resolved `ctx.lookups`.
     ///
-    /// Returns empty string until a registry is wired in.
-    fn eval_lookup(expr: &str, _ctx: &TemplateContext) -> String {
-        tracing::debug!(expr, "lookup expression not resolved (no registry)");
-        String::new()
+    /// The argument expression is itself rendered first so that
+    /// `lookup:usage_budget(identity.id)` resolves correctly.
+    fn eval_lookup(expr: &str, ctx: &TemplateContext) -> String {
+        // Parse `name(arg_expr)` — split on first '('
+        let (name, rest) = match expr.split_once('(') {
+            Some(parts) => parts,
+            None => return String::new(),
+        };
+        let arg_expr = rest.trim_end_matches(')');
+
+        // Resolve the argument expression
+        let resolved_arg = Self::eval_expr(arg_expr.trim(), ctx);
+
+        // Look up the pre-resolved result
+        let key = format!("{name}({resolved_arg})");
+        ctx.lookups.get(&key).cloned().unwrap_or_else(|| {
+            tracing::debug!(key, "lookup not pre-resolved");
+            String::new()
+        })
     }
 
     /// Resolve a dot-separated path into a [`serde_json::Value`].

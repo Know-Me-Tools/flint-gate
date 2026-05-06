@@ -201,6 +201,19 @@ impl Database {
         }
     }
 
+    /// Return the lifetime token total for a user (for `usage_budget` lookup).
+    pub async fn get_user_token_total(&self, user_id: &str) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(tokens), 0) AS total FROM usage_events WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("querying user token total")?;
+        let total: i64 = row.try_get("total")?;
+        Ok(total)
+    }
+
     /// Send a Postgres NOTIFY on the invalidation channel.
     async fn notify(&self, payload: &str) -> Result<()> {
         sqlx::query("SELECT pg_notify('flintgate_config_changed', $1)")

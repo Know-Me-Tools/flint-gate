@@ -4,16 +4,18 @@
 /// 1. Route matching
 /// 2. Authentication
 /// 3. Template context construction
-/// 4. Pre-request hook execution
-/// 5. Upstream proxying (streaming or buffered)
-/// 6. Response forwarding
+/// 4. Lookup pre-resolution (async, before sync template rendering)
+/// 5. Pre-request hook execution
+/// 6. Upstream proxying (streaming or buffered)
+/// 7. Response forwarding + post-response usage logging
 use crate::auth::{AuthError, AuthMethod, Authenticator, Identity, JwtMinter, SharedJwtMinter};
 use crate::cache::GateCache;
 use crate::config::{
-    TemplateContext, TemplateEngine,
+    LookupRegistry, TemplateContext, TemplateEngine,
+    lookup::collect_hook_templates,
     types::{GateConfig, PreRequestHook},
 };
-use crate::db::Database;
+use crate::db::{Database, UsageEvent};
 use crate::proxy::{CompiledRoute, Router as GateRouter, SharedRouter};
 use crate::stream::SseStreamProcessor;
 use axum::{
@@ -55,6 +57,7 @@ pub struct AppState {
     pub cache: Arc<GateCache>,
     pub db: Option<Arc<Database>>,
     pub http_client: reqwest::Client,
+    pub lookup_registry: Arc<LookupRegistry>,
 }
 
 /// The main proxy handler — catches all requests on the proxy port.
@@ -186,12 +189,19 @@ async fn handle_request(
         api_key_ctx.insert("scopes".to_string(), scopes.join(","));
     }
 
-    let template_ctx = TemplateContext::new(
+    let mut template_ctx = TemplateContext::new(
         identity.to_value(),
         body_value,
         request_id.to_string(),
         api_key_ctx,
     );
+
+    // ── 5b. Pre-resolve async lookups ─────────────────────────────────────
+    {
+        let hook_templates = collect_hook_templates(&matched_route.config.hooks.pre_request);
+        let resolved = state.lookup_registry.resolve_all(&hook_templates, &template_ctx).await;
+        template_ctx.lookups = resolved;
+    }
 
     // ── 6. Pre-request hooks ───────────────────────────────────────────────
     let mut injected_headers: HashMap<String, String> = HashMap::new();
@@ -335,6 +345,7 @@ async fn handle_request(
 
     // ── 10. Stream or buffer response ─────────────────────────────────────
     let stream_enabled = matched_route.config.stream.enabled;
+    let request_start = std::time::Instant::now();
 
     let response_body = if stream_enabled {
         let stream_config = matched_route.config.stream.clone();
@@ -348,6 +359,8 @@ async fn handle_request(
 
         let mut processor = SseStreamProcessor::new(stream_config, user_scopes);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+        // oneshot channel: streaming task sends total tokens when stream is done
+        let (metrics_tx, metrics_rx) = tokio::sync::oneshot::channel::<u64>();
 
         tokio::spawn(async move {
             let mut byte_stream = upstream_response.bytes_stream();
@@ -380,7 +393,24 @@ async fn handle_request(
                     }
                 }
             }
+            // Send total token count to the post-response task
+            let _ = metrics_tx.send(processor.metrics().estimated_tokens);
         });
+
+        // Post-response: wait for stream completion and log usage
+        if let Some(db) = state.db.clone() {
+            let user_id = identity.id.clone();
+            let rid = request_id.to_string();
+            let rid_clone = rid.clone();
+            tokio::spawn(async move {
+                let tokens = metrics_rx.await.unwrap_or(0);
+                let duration_ms = request_start.elapsed().as_millis() as u64;
+                let event = UsageEvent::new(rid_clone, user_id, route_id, tokens, duration_ms);
+                if let Err(e) = db.log_usage(&event).await {
+                    tracing::warn!(error = %e, request_id = %rid, "failed to log usage event");
+                }
+            });
+        }
 
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx))
     } else {

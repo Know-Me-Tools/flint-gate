@@ -1,13 +1,18 @@
 /// Authentication module — pluggable authenticator trait and built-in implementations.
+pub mod api_key;
 pub mod identity;
 pub mod jwt_mint;
+pub mod jwt_verify;
 pub mod kratos;
 
+pub use api_key::ApiKeyAuthenticator;
 pub use identity::Identity;
 pub use jwt_mint::{JwtMinter, SharedJwtMinter};
+pub use jwt_verify::JwtVerifyAuthenticator;
 pub use kratos::KratosAuthenticator;
 
 use crate::config::types::AuthProviderConfig;
+use crate::db::Database;
 use async_trait::async_trait;
 use http::request::Parts;
 use std::collections::HashMap;
@@ -78,9 +83,13 @@ impl Authenticator for AnonymousAuthenticator {
 }
 
 /// Build a map of named authenticators from the config's `auth_providers` section.
+///
+/// `db` is required by the API key authenticator; if it is `None` and an
+/// `api_key` provider is configured, that provider will always return 503.
 pub fn build_authenticators(
     providers: &HashMap<String, AuthProviderConfig>,
     http_client: &reqwest::Client,
+    db: Option<Arc<Database>>,
 ) -> HashMap<String, Arc<dyn Authenticator>> {
     let mut map: HashMap<String, Arc<dyn Authenticator>> = HashMap::new();
     for (name, config) in providers {
@@ -91,20 +100,46 @@ pub fn build_authenticators(
             AuthProviderConfig::Anonymous(cfg) => {
                 Arc::new(AnonymousAuthenticator::new(cfg.default_subject.clone()))
             }
-            AuthProviderConfig::Jwt(_cfg) => {
-                // Phase 3: JWT verification authenticator
-                tracing::warn!(provider = %name, "JWT authenticator not yet implemented; using anonymous fallback");
-                Arc::new(AnonymousAuthenticator::new("jwt-stub"))
+            AuthProviderConfig::Jwt(cfg) => {
+                Arc::new(JwtVerifyAuthenticator::new(cfg.clone(), http_client.clone()))
             }
-            AuthProviderConfig::ApiKey(_cfg) => {
-                // Phase 3: API key authenticator
-                tracing::warn!(provider = %name, "API key authenticator not yet implemented; using anonymous fallback");
-                Arc::new(AnonymousAuthenticator::new("api-key-stub"))
-            }
+            AuthProviderConfig::ApiKey(cfg) => match db.clone() {
+                Some(database) => {
+                    Arc::new(ApiKeyAuthenticator::new(cfg.clone(), database))
+                }
+                None => {
+                    tracing::error!(
+                        provider = %name,
+                        "api_key provider requires a database; none configured — provider will always fail"
+                    );
+                    Arc::new(FailingAuthenticator::new(
+                        "api_key provider requires a database connection".to_string(),
+                    ))
+                }
+            },
         };
         map.insert(name.clone(), auth);
     }
     map
+}
+
+/// Authenticator that always returns a provider error — used when a required
+/// dependency (e.g. database) is missing at startup.
+struct FailingAuthenticator {
+    reason: String,
+}
+
+impl FailingAuthenticator {
+    fn new(reason: String) -> Self {
+        Self { reason }
+    }
+}
+
+#[async_trait]
+impl Authenticator for FailingAuthenticator {
+    async fn authenticate(&self, _parts: &Parts) -> Result<AuthResult, AuthError> {
+        Err(AuthError::ProviderError(self.reason.clone()))
+    }
 }
 
 /// Thread-safe map of named authenticators.

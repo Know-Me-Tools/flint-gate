@@ -20,10 +20,13 @@ use crate::middleware::{AppState, proxy_handler};
 use crate::proxy::{Router as GateRouter, SharedRouter};
 
 use anyhow::{Context, Result};
-use axum::{Router, routing::any};
+use axum::{Json, Router, routing::{any, get}};
 use clap::Parser;
+use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 
@@ -78,6 +81,27 @@ fn apply_overrides(mut cfg: GateConfig, cli: &Cli) -> GateConfig {
     if let Some(v) = &cli.jwt_secret    { cfg.jwt.signing_key_secret  = Some(v.clone()); }
     if let Some(v) = &cli.jwt_key_path  { cfg.jwt.signing_key_path    = Some(v.clone()); }
     cfg
+}
+
+// ── Shutdown signal ───────────────────────────────────────────────────────────
+
+/// Wait for SIGTERM (Unix) or SIGINT (Ctrl-C) — whichever arrives first.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = sigterm.recv() => info!("received SIGTERM"),
+            _ = tokio::signal::ctrl_c() => info!("received SIGINT"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.ok();
+        info!("received SIGINT");
+    }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -203,19 +227,87 @@ async fn main() -> Result<()> {
         lookup_registry: Arc::clone(&lookup_registry),
     });
 
-    // 12. Start proxy server
+    let shutdown_timeout = initial_config.server.shutdown_timeout_secs;
+    let token = CancellationToken::new();
+
+    // 12. Start proxy server — with /health shortcut and optional TLS
     let proxy_listen = initial_config.server.listen.clone();
     let proxy_app = Router::new()
+        .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
         .fallback(any(proxy_handler))
         .with_state(Arc::clone(&app_state))
         .layer(TraceLayer::new_for_http());
-    let proxy_listener = tokio::net::TcpListener::bind(&proxy_listen)
-        .await
-        .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
-    info!(addr = %proxy_listen, "proxy server listening");
-    let proxy_server = tokio::spawn(async move {
-        if let Err(e) = axum::serve(proxy_listener, proxy_app).await { error!(error = %e, "proxy server error"); }
-    });
+
+    let tls_cfg = initial_config.server.tls.clone();
+    let proxy_token = token.clone();
+    let mut proxy_server = if tls_cfg.enabled {
+        match (tls_cfg.cert_path.as_deref(), tls_cfg.key_path.as_deref()) {
+            (Some(cert), Some(key)) => {
+                match axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await {
+                    Ok(rustls_config) => {
+                        let addr: std::net::SocketAddr = proxy_listen.parse()
+                            .with_context(|| format!("invalid proxy listen address: {proxy_listen}"))?;
+                        let axum_handle = axum_server::Handle::new();
+                        let h = axum_handle.clone();
+                        tokio::spawn(async move {
+                            proxy_token.cancelled().await;
+                            h.graceful_shutdown(Some(Duration::from_secs(shutdown_timeout)));
+                        });
+                        info!(addr = %proxy_listen, "proxy server listening (TLS)");
+                        tokio::spawn(async move {
+                            if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
+                                .handle(axum_handle)
+                                .serve(proxy_app.into_make_service())
+                                .await
+                            {
+                                error!(error = %e, "proxy TLS server error");
+                            }
+                        })
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to load TLS cert/key — falling back to plain TCP");
+                        let listener = tokio::net::TcpListener::bind(&proxy_listen).await
+                            .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
+                        info!(addr = %proxy_listen, "proxy server listening");
+                        tokio::spawn(async move {
+                            if let Err(e) = axum::serve(listener, proxy_app)
+                                .with_graceful_shutdown(async move { proxy_token.cancelled().await })
+                                .await
+                            {
+                                error!(error = %e, "proxy server error");
+                            }
+                        })
+                    }
+                }
+            }
+            _ => {
+                warn!("TLS enabled but cert_path/key_path not configured — using plain TCP");
+                let listener = tokio::net::TcpListener::bind(&proxy_listen).await
+                    .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
+                info!(addr = %proxy_listen, "proxy server listening");
+                tokio::spawn(async move {
+                    if let Err(e) = axum::serve(listener, proxy_app)
+                        .with_graceful_shutdown(async move { proxy_token.cancelled().await })
+                        .await
+                    {
+                        error!(error = %e, "proxy server error");
+                    }
+                })
+            }
+        }
+    } else {
+        let listener = tokio::net::TcpListener::bind(&proxy_listen).await
+            .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
+        info!(addr = %proxy_listen, "proxy server listening");
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, proxy_app)
+                .with_graceful_shutdown(async move { proxy_token.cancelled().await })
+                .await
+            {
+                error!(error = %e, "proxy server error");
+            }
+        })
+    };
 
     // 13. Start admin server
     let admin_listen = initial_config.server.admin_listen.clone();
@@ -225,8 +317,14 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("binding admin server to {admin_listen}"))?;
     info!(addr = %admin_listen, "admin server listening");
-    let admin_server = tokio::spawn(async move {
-        if let Err(e) = axum::serve(admin_listener, admin_app).await { error!(error = %e, "admin server error"); }
+    let admin_token = token.clone();
+    let mut admin_server = tokio::spawn(async move {
+        if let Err(e) = axum::serve(admin_listener, admin_app)
+            .with_graceful_shutdown(async move { admin_token.cancelled().await })
+            .await
+        {
+            error!(error = %e, "admin server error");
+        }
     });
 
     // 14. Config hot-reload — re-apply CLI overrides after every file change
@@ -234,7 +332,7 @@ async fn main() -> Result<()> {
     let reload_shared  = Arc::clone(&shared_config);
     let reload_db      = db.clone();
     let cli_for_reload = cli.clone();
-    let config_watcher = tokio::spawn(async move {
+    let mut config_watcher = tokio::spawn(async move {
         while config_rx.changed().await.is_ok() {
             let new_config = apply_overrides(config_rx.borrow().clone(), &cli_for_reload);
             info!("config changed — rebuilding router");
@@ -264,13 +362,23 @@ async fn main() -> Result<()> {
         warn!("config watch channel closed");
     });
 
+    // 15. Wait for first unexpected exit or shutdown signal
     tokio::select! {
-        _ = proxy_server   => error!("proxy server task exited"),
-        _ = admin_server   => error!("admin server task exited"),
-        _ = config_watcher => warn!("config watcher task exited"),
-        _ = tokio::signal::ctrl_c() => info!("received SIGINT — shutting down"),
+        _ = &mut proxy_server   => error!("proxy server task exited unexpectedly"),
+        _ = &mut admin_server   => error!("admin server task exited unexpectedly"),
+        _ = &mut config_watcher => warn!("config watcher task exited"),
+        _ = shutdown_signal()   => info!("shutdown signal — draining connections (timeout: {}s)", shutdown_timeout),
     }
 
+    // Fire graceful shutdown on all servers, then wait up to shutdown_timeout.
+    token.cancel();
+    let _ = tokio::time::timeout(
+        Duration::from_secs(shutdown_timeout),
+        async { let _ = tokio::join!(proxy_server, admin_server); },
+    )
+    .await;
+
+    info!("shutdown complete");
     Ok(())
 }
 
@@ -281,7 +389,7 @@ mod tests {
 
     fn base_config() -> GateConfig {
         GateConfig {
-            server: ServerConfig { listen: "0.0.0.0:4456".to_string(), admin_listen: "0.0.0.0:4457".to_string(), tls: Default::default() },
+            server: ServerConfig { listen: "0.0.0.0:4456".to_string(), admin_listen: "0.0.0.0:4457".to_string(), tls: Default::default(), shutdown_timeout_secs: 30 },
             database: DatabaseConfig { url: "postgres://original".to_string(), max_connections: 20, override_yaml: false },
             jwt: JwtConfig { signing_key_secret: None, ..Default::default() },
             ..Default::default()

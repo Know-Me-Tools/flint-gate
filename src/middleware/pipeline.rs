@@ -13,7 +13,7 @@ use crate::cache::GateCache;
 use crate::config::{
     LookupRegistry, TemplateContext, TemplateEngine,
     lookup::collect_hook_templates,
-    types::{GateConfig, PreRequestHook},
+    types::{GateConfig, PostResponseHook, PreRequestHook},
 };
 use crate::db::{Database, UsageEvent};
 use crate::proxy::SharedRouter;
@@ -232,7 +232,8 @@ async fn handle_request(
     // ── 5b. Pre-resolve async lookups ─────────────────────────────────────
     {
         let hook_templates = collect_hook_templates(&matched_route.config.hooks.pre_request);
-        let resolved = state.lookup_registry.resolve_all(&hook_templates, &template_ctx).await;
+        let template_refs: Vec<&str> = hook_templates.iter().map(String::as_str).collect();
+        let resolved = state.lookup_registry.resolve_all(&template_refs, &template_ctx).await;
         template_ctx.lookups = resolved;
     }
 
@@ -270,6 +271,39 @@ async fn handle_request(
                 for (field, template) in &config.set_fields {
                     let value = TemplateEngine::render(template, &template_ctx);
                     body_overrides.insert(field.clone(), value);
+                }
+            }
+            PreRequestHook::MaxTokenBudget { config } => {
+                let user_id = TemplateEngine::render(
+                    &format!("{{{{ {} }}}}", config.user_id_expr),
+                    &template_ctx,
+                );
+                let lookup_key = format!("usage_budget({})", user_id);
+                let used: u64 = template_ctx
+                    .lookups
+                    .get(&lookup_key)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                if used >= config.limit {
+                    let msg = config
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| "token budget exceeded".to_string());
+                    warn!(
+                        request_id = %request_id,
+                        user_id = %user_id,
+                        used,
+                        limit = config.limit,
+                        "token budget exceeded — blocking request"
+                    );
+                    return Ok(Response::builder()
+                        .status(StatusCode::TOO_MANY_REQUESTS)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"error": "quota_exceeded", "message": msg})
+                                .to_string(),
+                        ))
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
                 }
             }
         }
@@ -430,19 +464,28 @@ async fn handle_request(
             let _ = metrics_tx.send(processor.metrics().estimated_tokens);
         });
 
-        // Post-response: wait for stream completion and log usage
-        if let Some(db) = state.db.clone() {
-            let user_id = identity.id.clone();
-            let rid = request_id.to_string();
-            let rid_clone = rid.clone();
-            tokio::spawn(async move {
-                let tokens = metrics_rx.await.unwrap_or(0);
-                let duration_ms = request_start.elapsed().as_millis() as u64;
-                let event = UsageEvent::new(rid_clone, user_id, route_id, tokens, duration_ms);
-                if let Err(e) = db.log_usage(&event).await {
-                    tracing::warn!(error = %e, request_id = %rid, "failed to log usage event");
-                }
-            });
+        // Post-response: log usage only when a StreamMeter hook with log_to_db=true is configured.
+        let should_log = matched_route.config.hooks.post_response.iter().any(|h| {
+            matches!(h, PostResponseHook::StreamMeter { config } if config.log_to_db)
+        });
+        if should_log {
+            if let Some(db) = state.db.clone() {
+                let user_id = identity.id.clone();
+                let rid = request_id.to_string();
+                let rid_clone = rid.clone();
+                tokio::spawn(async move {
+                    let tokens = metrics_rx.await.unwrap_or(0);
+                    let duration_ms = request_start.elapsed().as_millis() as u64;
+                    let event = UsageEvent::new(rid_clone, user_id, route_id, tokens, duration_ms);
+                    if let Err(e) = db.log_usage(&event).await {
+                        tracing::warn!(error = %e, request_id = %rid, "failed to log usage event");
+                    }
+                });
+            } else {
+                drop(metrics_rx);
+            }
+        } else {
+            drop(metrics_rx);
         }
 
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx))

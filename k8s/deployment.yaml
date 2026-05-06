@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flint-gate
+  labels:
+    app: flint-gate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flint-gate
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: flint-gate
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: flint-gate
+          image: flint-gate:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: proxy
+              containerPort: 4456
+            - name: admin
+              containerPort: 4457
+          env:
+            - name: FLINT_GATE_CONFIG
+              value: /app/config/config.yaml
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: flint-gate-secrets
+                  key: database-url
+            - name: FLINT_GATE_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: flint-gate-secrets
+                  key: jwt-secret
+            - name: RUST_LOG
+              value: info,flint_gate=debug
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: proxy
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: proxy
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: flint-gate-config

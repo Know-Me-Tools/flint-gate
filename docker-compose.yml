@@ -1,0 +1,71 @@
+version: "3.9"
+
+services:
+  # ── Flint Gate ────────────────────────────────────────────────────────────────
+  flint-gate:
+    build: .
+    ports:
+      - "${PROXY_PORT:-4456}:4456"
+      - "${ADMIN_PORT:-4457}:4457"
+    environment:
+      DATABASE_URL: "postgres://flintgate:${POSTGRES_PASSWORD:-flintgate}@postgres:5432/flintgate"
+      FLINT_GATE_JWT_SECRET: "${FLINT_GATE_JWT_SECRET:-change-me-in-production}"
+      FLINT_GATE_CONFIG: "/app/config/config.yaml"
+      RUST_LOG: "${RUST_LOG:-info,flint_gate=debug}"
+    volumes:
+      - ./config.example.yaml:/app/config/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # Uses bash /dev/tcp since curl is not in the slim runtime image.
+      test: ["CMD-SHELL", "printf '' > /dev/tcp/localhost/4456 2>/dev/null && echo ok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Postgres ──────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flintgate
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-flintgate}"
+      POSTGRES_DB: flintgate
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flintgate -d flintgate"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Ory Kratos (optional — comment out if not using Kratos session auth) ──────
+  kratos:
+    image: oryd/kratos:v1.2
+    command: serve all --dev
+    environment:
+      DSN: "postgres://flintgate:${POSTGRES_PASSWORD:-flintgate}@postgres:5432/kratos"
+      LOG_LEVEL: info
+      SERVE_PUBLIC_BASE_URL: "http://localhost:4433/"
+      SERVE_ADMIN_BASE_URL: "http://kratos:4434/"
+    ports:
+      - "4433:4433"
+      - "4434:4434"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4433/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:

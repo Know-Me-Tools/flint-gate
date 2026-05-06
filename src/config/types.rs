@@ -36,6 +36,9 @@ pub struct ServerConfig {
     pub admin_listen: String,
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Seconds to wait for in-flight connections to finish draining on shutdown.
+    #[serde(default = "default_shutdown_timeout")]
+    pub shutdown_timeout_secs: u64,
 }
 
 fn default_listen() -> String {
@@ -44,6 +47,9 @@ fn default_listen() -> String {
 fn default_admin_listen() -> String {
     "0.0.0.0:4457".to_string()
 }
+fn default_shutdown_timeout() -> u64 {
+    30
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -51,6 +57,7 @@ impl Default for ServerConfig {
             listen: default_listen(),
             admin_listen: default_admin_listen(),
             tls: TlsConfig::default(),
+            shutdown_timeout_secs: default_shutdown_timeout(),
         }
     }
 }
@@ -326,6 +333,8 @@ pub enum PreRequestHook {
     ClaimsEnhancement { config: ClaimsEnhancementConfig },
     /// Modify JSON fields in the request body.
     BodyTransform { config: BodyTransformConfig },
+    /// Block the request if the user's lifetime token usage exceeds a limit.
+    MaxTokenBudget { config: MaxTokenBudgetConfig },
 }
 
 /// A single post-response hook step.
@@ -361,6 +370,22 @@ pub struct BodyTransformConfig {
     /// JSON field path → template expression.
     #[serde(default)]
     pub set_fields: HashMap<String, String>,
+}
+
+/// Configuration for the max_token_budget pre-request hook.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaxTokenBudgetConfig {
+    /// Maximum lifetime tokens allowed. Requests exceeding this return 429.
+    pub limit: u64,
+    /// Template expression that resolves to the user identifier.
+    #[serde(default = "default_user_id_expr")]
+    pub user_id_expr: String,
+    /// Custom error message in the 429 response body.
+    pub error_message: Option<String>,
+}
+
+fn default_user_id_expr() -> String {
+    "identity.id".to_string()
 }
 
 /// Configuration for the stream_meter post-response hook.

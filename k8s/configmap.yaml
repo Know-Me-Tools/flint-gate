@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flint-gate-config
+data:
+  # Paste the contents of your config.yaml here, or use `kubectl create configmap`
+  # from a file: kubectl create configmap flint-gate-config --from-file=config.yaml
+  config.yaml: |
+    server:
+      listen: "0.0.0.0:4456"
+      admin_listen: "0.0.0.0:4457"
+      shutdown_timeout_secs: 30
+
+    database:
+      # Injected via DATABASE_URL secret; url here is a fallback placeholder.
+      url: ""
+      max_connections: 20
+      override_yaml: false
+
+    cache:
+      l1:
+        max_capacity: 10000
+        ttl_seconds: 60
+
+    # Add your sites, routes, and auth_providers here.
+    # See config.example.yaml for a fully-annotated example.
+    sites: []
+    routes: []
+    auth_providers: {}

@@ -124,21 +124,25 @@ impl LookupRegistry {
 
 /// Collect all template strings from a route's pre-request hook configs.
 /// Used by the pipeline to feed into `LookupRegistry::resolve_all`.
-pub fn collect_hook_templates<'a>(
-    hooks: &'a [crate::config::types::PreRequestHook],
-) -> Vec<&'a str> {
+///
+/// For `MaxTokenBudget` hooks, synthesizes a `{{ lookup:usage_budget(expr) }}`
+/// template so the registry pre-resolves the user's token total before hooks run.
+pub fn collect_hook_templates(hooks: &[crate::config::types::PreRequestHook]) -> Vec<String> {
     let mut out = Vec::new();
     for hook in hooks {
         match hook {
             crate::config::types::PreRequestHook::ClaimsEnhancement { config } => {
                 for v in config.inject_headers.values() {
-                    out.push(v.as_str());
+                    out.push(v.clone());
                 }
             }
             crate::config::types::PreRequestHook::BodyTransform { config } => {
                 for v in config.set_fields.values() {
-                    out.push(v.as_str());
+                    out.push(v.clone());
                 }
+            }
+            crate::config::types::PreRequestHook::MaxTokenBudget { config } => {
+                out.push(format!("{{{{ lookup:usage_budget({}) }}}}", config.user_id_expr));
             }
         }
     }

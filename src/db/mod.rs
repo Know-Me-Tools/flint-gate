@@ -219,6 +219,80 @@ impl Database {
         }
     }
 
+    /// Create a new API key. Returns `(id, raw_key)` — the raw key is only
+    /// returned once and must be presented to the caller immediately.
+    pub async fn create_api_key(
+        &self,
+        client_id: &str,
+        scopes: &[String],
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(Uuid, String)> {
+        use rand::Rng;
+        use sha2::Digest;
+
+        // Generate a 32-byte random key and encode as hex (64-char string).
+        let raw_bytes: [u8; 32] = rand::thread_rng().gen();
+        let raw_key = hex::encode(raw_bytes);
+        let key_hash = {
+            let mut h = sha2::Sha256::new();
+            h.update(raw_key.as_bytes());
+            hex::encode(h.finalize())
+        };
+
+        let scopes_json = serde_json::to_value(scopes).context("serializing scopes")?;
+
+        let row = sqlx::query(
+            "INSERT INTO api_keys (key_hash, client_id, scopes, expires_at)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id",
+        )
+        .bind(&key_hash)
+        .bind(client_id)
+        .bind(&scopes_json)
+        .bind(expires_at)
+        .fetch_one(&self.pool)
+        .await
+        .context("creating API key")?;
+
+        let id: Uuid = row.try_get("id")?;
+        info!(client_id, %id, "API key created");
+        Ok((id, raw_key))
+    }
+
+    /// List all active API keys (metadata only — never returns key hashes).
+    pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, client_id, scopes, expires_at FROM api_keys WHERE active = true ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing API keys")?;
+
+        let mut keys = Vec::with_capacity(rows.len());
+        for r in rows {
+            let id: Uuid = r.try_get("id")?;
+            let client_id: String = r.try_get("client_id")?;
+            let scopes: serde_json::Value = r.try_get("scopes")?;
+            let expires_at: Option<DateTime<Utc>> = r.try_get("expires_at")?;
+            let scopes: Vec<String> = scopes
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            keys.push(ApiKeyRecord { id, client_id, scopes, expires_at });
+        }
+        Ok(keys)
+    }
+
+    /// Revoke (soft-delete) an API key by ID. Returns `false` if not found.
+    pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("UPDATE api_keys SET active = false WHERE id = $1 AND active = true")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("revoking API key")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Return the lifetime token total for a user (for `usage_budget` lookup).
     pub async fn get_user_token_total(&self, user_id: &str) -> Result<i64> {
         let row = sqlx::query(

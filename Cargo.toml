@@ -78,9 +78,10 @@ dashmap = "6"
 thiserror = "2"
 anyhow = "1"
 
-# Hashing (API key verification)
+# Hashing (API key verification) + random key generation
 sha2 = "0.10"
 hex = "0.4"
+rand = "0.8"
 
 [dev-dependencies]
 wiremock = "0.6"

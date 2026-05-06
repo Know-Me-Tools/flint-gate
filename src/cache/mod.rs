@@ -2,14 +2,16 @@
 ///
 /// Three cache tiers:
 /// - `routes` — compiled route configs (invalidated on config change)
-/// - `sessions` — Kratos session validation results
+/// - `sessions` — Kratos session validation results (keyed by SHA-256 of credential)
 /// - `kv` — generic key-value for API keys, JWKs, etc.
+use crate::auth::identity::Identity;
 use crate::config::types::CacheConfig;
 use moka::future::Cache;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// The central cache store.
 #[derive(Clone)]
@@ -60,10 +62,45 @@ impl GateCache {
         info!("routes cache invalidated");
     }
 
-    /// Invalidate a specific session cache entry.
+    /// Look up a cached session by raw credential (cookie or bearer token).
+    ///
+    /// Hashes the credential so no raw token is ever stored in memory.
+    pub async fn get_session(&self, credential: &str) -> Option<Identity> {
+        let key = Self::session_key(credential);
+        let value = self.sessions.get(&key).await?;
+        match serde_json::from_value(value) {
+            Ok(identity) => {
+                debug!(key = %key, "session cache hit");
+                Some(identity)
+            }
+            Err(e) => {
+                debug!(error = %e, "failed to deserialize cached session");
+                None
+            }
+        }
+    }
+
+    /// Store an authenticated identity in the session cache.
+    pub async fn put_session(&self, credential: &str, identity: &Identity) {
+        let key = Self::session_key(credential);
+        match serde_json::to_value(identity) {
+            Ok(value) => { self.sessions.insert(key, value).await; }
+            Err(e) => debug!(error = %e, "failed to serialize identity for session cache"),
+        }
+    }
+
+    /// Invalidate a specific session cache entry by raw credential.
     #[allow(dead_code)]
-    pub async fn invalidate_session(&self, key: &str) {
-        self.sessions.invalidate(key).await;
+    pub async fn invalidate_session(&self, credential: &str) {
+        let key = Self::session_key(credential);
+        self.sessions.invalidate(&key).await;
+    }
+
+    /// SHA-256 of the credential — the cache key for a session.
+    fn session_key(credential: &str) -> String {
+        let mut h = Sha256::new();
+        h.update(credential.as_bytes());
+        hex::encode(h.finalize())
     }
 
     /// Cache statistics for the admin API.
@@ -140,14 +177,17 @@ mod tests {
 
     #[tokio::test]
     async fn cache_basic_operations() {
+        use crate::auth::identity::Identity;
+
         let cfg = CacheConfig::default();
         let cache = GateCache::from_config(&cfg);
 
-        cache.sessions.insert("token-1".to_string(), serde_json::json!({"id": "u1"})).await;
-        assert!(cache.sessions.get("token-1").await.is_some());
+        let identity = Identity::anonymous("u1");
+        cache.put_session("token-1", &identity).await;
+        assert!(cache.get_session("token-1").await.is_some());
 
         cache.invalidate_session("token-1").await;
-        assert!(cache.sessions.get("token-1").await.is_none());
+        assert!(cache.get_session("token-1").await.is_none());
     }
 
     #[tokio::test]

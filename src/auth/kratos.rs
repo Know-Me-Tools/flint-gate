@@ -111,7 +111,6 @@ impl Authenticator for KratosAuthenticator {
 mod tests {
     use super::*;
     use crate::config::types::KratosAuthConfig;
-    use http::request::Builder;
 
     fn default_config(base_url: &str) -> KratosAuthConfig {
         KratosAuthConfig {

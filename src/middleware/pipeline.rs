@@ -129,25 +129,58 @@ async fn handle_request(
         .as_deref()
         .or(matched_route.site.default_auth.as_deref());
 
+    // Extract the raw credential for cache key derivation (Authorization or Cookie).
+    let raw_credential = parts
+        .headers
+        .get(http::header::AUTHORIZATION)
+        .or_else(|| parts.headers.get(http::header::COOKIE))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
     let auth_result = if let Some(provider_name) = auth_provider_name {
         match state.auth_providers.get(provider_name) {
-            Some(auth) => match auth.authenticate(&parts).await {
-                Ok(result) => result,
-                Err(AuthError::Unauthorized(msg)) => {
-                    warn!(request_id = %request_id, provider = %provider_name, reason = %msg, "authentication failed");
-                    return Err(StatusCode::UNAUTHORIZED);
-                }
-                Err(AuthError::ProviderError(msg)) => {
-                    error!(request_id = %request_id, provider = %provider_name, error = %msg, "auth provider error");
-                    return Err(StatusCode::BAD_GATEWAY);
-                }
-                Err(AuthError::NotConfigured) => {
+            Some(auth) => {
+                // Fast path: check session cache before hitting the upstream auth provider.
+                // Only cache Kratos-style session results; JWT and API key authenticators
+                // manage their own caching internally.
+                let cached = if let Some(ref cred) = raw_credential {
+                    state.cache.get_session(cred).await
+                } else {
+                    None
+                };
+
+                if let Some(cached_identity) = cached {
+                    info!(request_id = %request_id, user_id = %cached_identity.id, "session cache hit");
                     crate::auth::AuthResult {
-                        identity: Identity::anonymous("anonymous"),
-                        method: AuthMethod::Anonymous,
+                        identity: cached_identity,
+                        method: AuthMethod::KratosSession,
+                    }
+                } else {
+                    match auth.authenticate(&parts).await {
+                        Ok(result) => {
+                            // Populate session cache for Kratos results.
+                            if matches!(result.method, AuthMethod::KratosSession) {
+                                if let Some(ref cred) = raw_credential {
+                                    state.cache.put_session(cred, &result.identity).await;
+                                }
+                            }
+                            result
+                        }
+                        Err(AuthError::Unauthorized(msg)) => {
+                            warn!(request_id = %request_id, provider = %provider_name, reason = %msg, "authentication failed");
+                            return Err(StatusCode::UNAUTHORIZED);
+                        }
+                        Err(AuthError::ProviderError(msg)) => {
+                            error!(request_id = %request_id, provider = %provider_name, error = %msg, "auth provider error");
+                            return Err(StatusCode::BAD_GATEWAY);
+                        }
+                        Err(AuthError::NotConfigured) => crate::auth::AuthResult {
+                            identity: Identity::anonymous("anonymous"),
+                            method: AuthMethod::Anonymous,
+                        },
                     }
                 }
-            },
+            }
             None => {
                 error!(request_id = %request_id, provider = %provider_name, "configured auth provider not found");
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);

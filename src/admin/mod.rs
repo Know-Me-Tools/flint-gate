@@ -10,6 +10,9 @@
 /// - `GET  /routes/:id` — get a route
 /// - `PUT  /routes/:id` — update a route
 /// - `DELETE /routes/:id` — delete a route
+/// - `GET  /api-keys` — list active API keys (metadata only)
+/// - `POST /api-keys` — create a new API key (returns raw key once)
+/// - `DELETE /api-keys/:id` — revoke an API key
 use crate::cache::GateCache;
 use crate::config::SharedConfig;
 use crate::db::Database;
@@ -21,8 +24,11 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Shared state for the admin API.
 #[derive(Clone)]
@@ -48,6 +54,8 @@ pub fn admin_router(state: AdminState) -> Router {
                 .put(upsert_route_handler_with_id)
                 .delete(delete_route_handler),
         )
+        .route("/api-keys", get(list_api_keys_handler).post(create_api_key_handler))
+        .route("/api-keys/:id", axum::routing::delete(revoke_api_key_handler))
         .with_state(state)
 }
 
@@ -193,6 +201,108 @@ async fn delete_route_handler(
             Ok(false) => {
                 (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response()
             }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "database not configured"})),
+        )
+            .into_response()
+    }
+}
+
+// ── API key management ────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CreateApiKeyRequest {
+    client_id: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+/// `GET /api-keys` — list active API keys (no key hashes returned).
+async fn list_api_keys_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    if let Some(db) = &state.db {
+        match db.list_api_keys().await {
+            Ok(keys) => {
+                let items: Vec<Value> = keys
+                    .into_iter()
+                    .map(|k| json!({
+                        "id": k.id,
+                        "client_id": k.client_id,
+                        "scopes": k.scopes,
+                        "expires_at": k.expires_at,
+                    }))
+                    .collect();
+                Json(json!({"api_keys": items})).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "database not configured"})),
+        )
+            .into_response()
+    }
+}
+
+/// `POST /api-keys` — create a new API key.
+///
+/// Returns the raw key in the response body. This is the ONLY time the raw key
+/// is accessible; it cannot be recovered later.
+async fn create_api_key_handler(
+    State(state): State<AdminState>,
+    Json(payload): Json<CreateApiKeyRequest>,
+) -> impl IntoResponse {
+    if let Some(db) = &state.db {
+        match db.create_api_key(&payload.client_id, &payload.scopes, payload.expires_at).await {
+            Ok((id, raw_key)) => (
+                StatusCode::CREATED,
+                Json(json!({
+                    "id": id,
+                    "client_id": payload.client_id,
+                    "scopes": payload.scopes,
+                    "expires_at": payload.expires_at,
+                    "key": raw_key,
+                    "note": "Store this key securely — it will not be shown again.",
+                })),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "database not configured"})),
+        )
+            .into_response()
+    }
+}
+
+/// `DELETE /api-keys/:id` — revoke (soft-delete) an API key.
+async fn revoke_api_key_handler(
+    Path(id): Path<Uuid>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    if let Some(db) = &state.db {
+        match db.revoke_api_key(id).await {
+            Ok(true) => Json(json!({"status": "revoked", "id": id})).into_response(),
+            Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),

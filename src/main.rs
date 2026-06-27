@@ -164,11 +164,11 @@ async fn main() -> Result<()> {
     let auth_providers = Arc::new(build_authenticators(&initial_config.auth_providers, &http_client, db.clone()));
     info!(count = auth_providers.len(), "auth providers initialized");
 
-    // 7. Build JWT minter
+    // 7. Build JWT minter (prefer DB-sourced key, fall back to config)
     let jwt_minter: SharedJwtMinter = Arc::new(RwLock::new(None));
     let jwt_cfg = &initial_config.jwt;
-    if jwt_cfg.signing_key_secret.is_some() || jwt_cfg.signing_key_path.is_some() {
-        match JwtMinter::from_config(jwt_cfg).await {
+    if jwt_cfg.signing_key_secret.is_some() || jwt_cfg.signing_key_path.is_some() || db.is_some() {
+        match JwtMinter::from_db_or_config(db.as_deref(), jwt_cfg).await {
             Ok(m) => { *jwt_minter.write().await = Some(m); info!(algorithm = %jwt_cfg.signing_algorithm, "JWT minter initialized"); }
             Err(e) => warn!(error = %e, "JWT minter init failed; minting disabled"),
         }
@@ -199,7 +199,14 @@ async fn main() -> Result<()> {
     let shared_router: SharedRouter = Arc::new(RwLock::new(gate_router));
 
     // 9. Build cache + LISTEN/NOTIFY invalidation
-    let cache = Arc::new(GateCache::from_config(&initial_config.cache));
+        let mut cache = GateCache::from_config(&initial_config.cache);
+        #[cfg(feature = "redis-l2")]
+        {
+            if let Err(e) = cache.connect_l2(&initial_config.cache).await {
+                warn!(error = %e, "Redis L2 cache connection failed — continuing with L1 only");
+            }
+        }
+        let cache = Arc::new(cache);
     if let Some(ref d) = db {
         let ch = initial_config.cache.invalidation_channel.clone();
         // When override_yaml is enabled, pass the router + config + DB so the

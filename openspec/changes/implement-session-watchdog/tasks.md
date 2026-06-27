@@ -1,0 +1,8 @@
+- [ ] Define WatchdogHandle (CancellationToken + credential + authenticator)
+- [ ] Implement interval task re-validating Kratos session at check_interval_seconds
+- [ ] On expiry: fire CancellationToken to terminate stream
+- [ ] Implement per-protocol error (SSE RUN_ERROR, WS close 1008, NDJSON error line)
+- [ ] Plumb credential + authenticator through stream processor constructors
+- [ ] Call cache.invalidate_session on watchdog trip
+- [ ] Add tests: fires on expiry, passes when valid, cancellation cleanup
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

@@ -1,0 +1,7 @@
+- [ ] Implement NdjsonFramer implementing StreamProcessor
+- [ ] Add line-split on \n + JSON parse + EventChain processing
+- [ ] Set Content-Type: application/x-ndjson on response
+- [ ] Wire dispatch from match stream_config.protocol in pipeline.rs
+- [ ] Implement NDJSON error-line format ({"error":"..."} + close)
+- [ ] Add tests: line parsing, JSON parse, filtering, backpressure error line
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

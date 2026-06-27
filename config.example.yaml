@@ -146,6 +146,9 @@ routes:
             - render_component
             - show_toast
             - stream_content
+          theme:
+            mode: dark
+            primary: "#2563eb"
         session_watchdog:
           enabled: true
           check_interval_seconds: 30

@@ -56,6 +56,8 @@ pub fn admin_router(state: AdminState) -> Router {
         )
         .route("/api-keys", get(list_api_keys_handler).post(create_api_key_handler))
         .route("/api-keys/:id", axum::routing::delete(revoke_api_key_handler))
+        .route("/signing-keys", get(list_signing_keys_handler).post(create_signing_key_handler))
+        .route("/signing-keys/:id", axum::routing::delete(deactivate_signing_key_handler))
         .with_state(state)
 }
 
@@ -302,6 +304,100 @@ async fn revoke_api_key_handler(
     if let Some(db) = &state.db {
         match db.revoke_api_key(id).await {
             Ok(true) => Json(json!({"status": "revoked", "id": id})).into_response(),
+            Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "database not configured"})),
+        )
+            .into_response()
+    }
+}
+
+// ── JWT signing key management ───────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CreateSigningKeyRequest {
+    id: String,
+    algorithm: String,
+    public_key: String,
+    private_key: String,
+}
+
+/// `GET /signing-keys` — list all signing keys (public keys only).
+async fn list_signing_keys_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    if let Some(db) = &state.db {
+        match db.list_signing_keys().await {
+            Ok(keys) => Json(json!({"signing_keys": keys})).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "database not configured"})),
+        )
+            .into_response()
+    }
+}
+
+/// `POST /signing-keys` — insert a new signing key (deactivates all others).
+async fn create_signing_key_handler(
+    State(state): State<AdminState>,
+    Json(payload): Json<CreateSigningKeyRequest>,
+) -> impl IntoResponse {
+    if let Some(db) = &state.db {
+        match db
+            .insert_signing_key(
+                &payload.id,
+                &payload.algorithm,
+                &payload.public_key,
+                &payload.private_key,
+            )
+            .await
+        {
+            Ok(_) => (
+                StatusCode::CREATED,
+                Json(json!({
+                    "status": "activated",
+                    "id": payload.id,
+                    "algorithm": payload.algorithm,
+                    "note": "All prior signing keys deactivated."
+                })),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": "database not configured"})),
+        )
+            .into_response()
+    }
+}
+
+/// `DELETE /signing-keys/:id` — deactivate a signing key.
+async fn deactivate_signing_key_handler(
+    Path(id): Path<String>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    if let Some(db) = &state.db {
+        match db.deactivate_signing_key(&id).await {
+            Ok(true) => Json(json!({"status": "deactivated", "id": id})).into_response(),
             Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

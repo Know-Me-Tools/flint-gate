@@ -1,0 +1,9 @@
+- [ ] Add theme: Option<Value> to A2UiConfig with #[serde(default)]
+- [ ] Extend SseStreamProcessor::new to accept metadata Map + theme Option<Value>
+- [ ] Render inject_metadata templates against template_ctx in pipeline.rs
+- [ ] Convert templates to serde_json::Map (parse-JSON-else-string)
+- [ ] Replace Map::new() at processor.rs:201 with stored metadata
+- [ ] Replace None at processor.rs:219 with self.theme.clone()
+- [ ] Update config.example.yaml with theme example
+- [ ] Add tests: metadata resolution, theme passthrough, empty-config no-op
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

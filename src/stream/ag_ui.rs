@@ -121,6 +121,7 @@ impl AgUiTokenCounter {
 }
 
 /// Processes AG-UI events: validates against the allowed list, injects metadata.
+#[derive(Clone)]
 pub struct AgUiProcessor {
     allowed_events: Option<HashSet<String>>,
     validate: bool,

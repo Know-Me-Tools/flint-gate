@@ -1,0 +1,9 @@
+- [ ] Add redis = { version = "1", features = ["tokio-comp", "connection-manager"] } to Cargo.toml
+- [ ] Add l2: Option<ConnectionManager> to GateCache struct
+- [ ] Connect ConnectionManager in from_config when l2.enabled
+- [ ] Implement read-through in get_session (L1 miss → L2 GET → back-fill)
+- [ ] Implement write-through in put_session (L1 + L2 SET EX)
+- [ ] Implement DEL in invalidate_session, SCAN+DEL prefix in invalidate_all
+- [ ] Update README: remove "not yet implemented" note for cache.l2
+- [ ] Add tests: read-through, write-through, invalidation, L2-disabled fallback
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

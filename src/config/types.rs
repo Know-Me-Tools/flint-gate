@@ -445,6 +445,9 @@ pub struct A2UiConfig {
     pub enabled: bool,
     #[serde(default)]
     pub allowed_intents: Vec<String>,
+    /// Theme object injected into `render_component` payloads as `_theme`.
+    #[serde(default)]
+    pub theme: Option<serde_json::Value>,
 }
 
 /// Session watchdog configuration.

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-/// A configured JWT minter. Created from [`JwtConfig`].
+/// A configured JWT minter. Created from [`JwtConfig`] or a DB-sourced key.
 #[derive(Clone)]
 pub struct JwtMinter {
     algorithm: Algorithm,
@@ -27,6 +27,87 @@ pub type SharedJwtMinter = Arc<RwLock<Option<JwtMinter>>>;
 impl JwtMinter {
     /// Build a [`JwtMinter`] from [`JwtConfig`].
     pub async fn from_config(cfg: &JwtConfig) -> Result<Self> {
+        let (algorithm, encoding_key) = Self::load_encoding_key(cfg).await?;
+        Ok(Self {
+            algorithm,
+            encoding_key,
+            issuer: cfg.issuer.clone(),
+            default_ttl_seconds: cfg.default_ttl_seconds,
+        })
+    }
+
+    /// Build a [`JwtMinter`] from a DB-sourced key, preferring it over config.
+    /// Falls back to config when the DB key is unavailable or uses an unsupported format.
+    pub async fn from_db_or_config(
+        db: Option<&crate::db::Database>,
+        cfg: &JwtConfig,
+    ) -> Result<Self> {
+        if let Some(db) = db {
+            if let Ok(Some(key)) = db.get_active_signing_key().await {
+                match Self::from_db_key(&key, &cfg.issuer, cfg.default_ttl_seconds) {
+                    Ok(minter) => {
+                        tracing::info!(
+                            key_id = %key.id,
+                            algorithm = %key.algorithm,
+                            "loaded JWT signing key from database"
+                        );
+                        return Ok(minter);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            key_id = %key.id,
+                            "failed to load DB signing key — falling back to config"
+                        );
+                    }
+                }
+            }
+        }
+        Self::from_config(cfg).await
+    }
+
+    /// Build from a DB-sourced key row.
+    fn from_db_key(
+        key: &crate::db::JwtSigningKey,
+        issuer: &str,
+        default_ttl_seconds: u64,
+    ) -> Result<Self> {
+        let algorithm = match key.algorithm.as_str() {
+            "HS256" => Algorithm::HS256,
+            "HS384" => Algorithm::HS384,
+            "HS512" => Algorithm::HS512,
+            "RS256" => Algorithm::RS256,
+            "RS384" => Algorithm::RS384,
+            "RS512" => Algorithm::RS512,
+            "ES256" => Algorithm::ES256,
+            "ES384" => Algorithm::ES384,
+            other => bail!("unsupported algorithm in DB key: {other}"),
+        };
+
+        let encoding_key = match algorithm {
+            Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
+                EncodingKey::from_secret(key.private_key.as_bytes())
+            }
+            Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
+                EncodingKey::from_rsa_pem(key.private_key.as_bytes())
+                    .context("parsing DB-sourced RSA PEM")?
+            }
+            Algorithm::ES256 | Algorithm::ES384 => {
+                EncodingKey::from_ec_pem(key.private_key.as_bytes())
+                    .context("parsing DB-sourced EC PEM")?
+            }
+            _ => bail!("unsupported algorithm: {algorithm:?}"),
+        };
+
+        Ok(Self {
+            algorithm,
+            encoding_key,
+            issuer: issuer.to_string(),
+            default_ttl_seconds,
+        })
+    }
+
+    async fn load_encoding_key(cfg: &JwtConfig) -> Result<(Algorithm, EncodingKey)> {
         let (algorithm, encoding_key) = match cfg.signing_algorithm.as_str() {
             "HS256" | "HS384" | "HS512" => {
                 let secret = cfg
@@ -73,13 +154,7 @@ impl JwtMinter {
             }
             other => bail!("unsupported signing algorithm: {other}"),
         };
-
-        Ok(Self {
-            algorithm,
-            encoding_key,
-            issuer: cfg.issuer.clone(),
-            default_ttl_seconds: cfg.default_ttl_seconds,
-        })
+        Ok((algorithm, encoding_key))
     }
 
     /// Mint a JWT for the given identity, merging in `additional_claims`.

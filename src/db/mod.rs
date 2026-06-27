@@ -315,6 +315,108 @@ impl Database {
             .context("sending pg_notify")?;
         Ok(())
     }
+
+    /// Get the active JWT signing key from the database.
+    pub async fn get_active_signing_key(&self) -> Result<Option<JwtSigningKey>> {
+        let row = sqlx::query(
+            "SELECT id, algorithm, public_key, private_key, active, created_at \
+             FROM jwt_signing_keys WHERE active = true ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("querying active signing key")?;
+
+        match row {
+            None => Ok(None),
+            Some(r) => Ok(Some(JwtSigningKey {
+                id: r.try_get("id")?,
+                algorithm: r.try_get("algorithm")?,
+                public_key: r.try_get("public_key")?,
+                private_key: r.try_get("private_key")?,
+                active: r.try_get("active")?,
+                created_at: r.try_get("created_at")?,
+            })),
+        }
+    }
+
+    /// List all JWT signing keys (never returns private_key to caller).
+    pub async fn list_signing_keys(&self) -> Result<Vec<JwtSigningKeyPublic>> {
+        let rows = sqlx::query(
+            "SELECT id, algorithm, public_key, active, created_at \
+             FROM jwt_signing_keys ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing signing keys")?;
+
+        let mut keys = Vec::with_capacity(rows.len());
+        for r in rows {
+            keys.push(JwtSigningKeyPublic {
+                id: r.try_get("id")?,
+                algorithm: r.try_get("algorithm")?,
+                public_key: r.try_get("public_key")?,
+                active: r.try_get("active")?,
+                created_at: r.try_get("created_at")?,
+            });
+        }
+        Ok(keys)
+    }
+
+    /// Insert a new JWT signing key and deactivate all others (rotation).
+    pub async fn insert_signing_key(
+        &self,
+        id: &str,
+        algorithm: &str,
+        public_key: &str,
+        private_key: &str,
+    ) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("beginning signing key rotation transaction")?;
+
+        sqlx::query("UPDATE jwt_signing_keys SET active = false WHERE active = true")
+            .execute(&mut *tx)
+            .await
+            .context("deactivating prior signing keys")?;
+
+        sqlx::query(
+            "INSERT INTO jwt_signing_keys (id, algorithm, public_key, private_key, active) \
+             VALUES ($1, $2, $3, $4, true)",
+        )
+        .bind(id)
+        .bind(algorithm)
+        .bind(public_key)
+        .bind(private_key)
+        .execute(&mut *tx)
+        .await
+        .context("inserting new signing key")?;
+
+        tx.commit().await.context("committing signing key rotation")?;
+
+        self.notify("signing_keys").await?;
+        info!(key_id = id, algorithm, "JWT signing key activated");
+        Ok(())
+    }
+
+    /// Deactivate a JWT signing key by ID.
+    pub async fn deactivate_signing_key(&self, id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE jwt_signing_keys SET active = false WHERE id = $1 AND active = true",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .context("deactivating signing key")?;
+
+        if result.rows_affected() > 0 {
+            self.notify("signing_keys").await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 /// A route row from the `gate_routes` table.
@@ -346,6 +448,28 @@ pub struct UsageEvent {
     pub tokens: i64,
     pub duration_ms: i64,
     pub metadata: serde_json::Value,
+}
+
+/// A JWT signing key row from the database (includes private key — internal only).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct JwtSigningKey {
+    pub id: String,
+    pub algorithm: String,
+    pub public_key: String,
+    pub private_key: String,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Public projection of a JWT signing key (no private key — safe for API responses).
+#[derive(Debug, Clone, Serialize)]
+pub struct JwtSigningKeyPublic {
+    pub id: String,
+    pub algorithm: String,
+    pub public_key: String,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
 }
 
 impl UsageEvent {

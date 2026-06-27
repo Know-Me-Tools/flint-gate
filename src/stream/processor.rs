@@ -50,11 +50,20 @@ pub struct SseStreamProcessor {
     started_at: Instant,
     // User scopes for A2UI filtering
     user_scopes: Vec<String>,
+    // AG-UI metadata to inject into each event's _gate_metadata
+    metadata: serde_json::Map<String, serde_json::Value>,
+    // A2UI theme to inject into render_component payloads
+    theme: Option<serde_json::Value>,
 }
 
 impl SseStreamProcessor {
     /// Create a new processor from route stream config.
-    pub fn new(config: StreamConfig, user_scopes: Vec<String>) -> Self {
+    pub fn new(
+        config: StreamConfig,
+        user_scopes: Vec<String>,
+        metadata: serde_json::Map<String, serde_json::Value>,
+        theme: Option<serde_json::Value>,
+    ) -> Self {
         let ag_ui_processor = if config.ai.ag_ui.enabled {
             Some(AgUiProcessor::new(
                 config.ai.ag_ui.validate_events,
@@ -81,6 +90,8 @@ impl SseStreamProcessor {
             token_counter: AgUiTokenCounter::default(),
             started_at: Instant::now(),
             user_scopes,
+            metadata,
+            theme,
         }
     }
 
@@ -140,7 +151,7 @@ impl SseStreamProcessor {
     }
 
     /// Process a single SSE line. Returns the line to forward, or `None` to drop.
-    fn process_line<'a>(&mut self, line: &'a str) -> Option<String> {
+    fn process_line(&mut self, line: &str) -> Option<String> {
         let line = line.trim_end_matches('\r');
 
         // Empty line = end of SSE event
@@ -198,7 +209,7 @@ impl SseStreamProcessor {
             if let Some(event) = AgUiEvent::from_json(&data_str) {
                 self.token_counter.count_event(&event);
 
-                let meta = serde_json::Map::new();
+                let meta = self.metadata.clone();
                 match ag_ui_proc.process(event, meta) {
                     None => {
                         self.metrics.dropped_events += 1;
@@ -216,7 +227,7 @@ impl SseStreamProcessor {
         // Try A2UI processing
         if let Some(a2ui_proc) = &self.a2ui_processor {
             if let Some(event) = A2UiEvent::from_json(&data_str) {
-                match a2ui_proc.process(event, &self.user_scopes, None) {
+                match a2ui_proc.process(event, &self.user_scopes, self.theme.clone()) {
                     None => {
                         self.metrics.dropped_events += 1;
                         return None;
@@ -287,7 +298,8 @@ mod tests {
 
     #[test]
     fn passthrough_simple_event() {
-        let mut proc = SseStreamProcessor::new(passthrough_config(), vec![]);
+        let mut proc =
+            SseStreamProcessor::new(passthrough_config(), vec![], serde_json::Map::new(), None);
         let input = b"data: hello\n\n";
         let output = proc.process_chunk(input).unwrap();
         let s = std::str::from_utf8(&output).unwrap();
@@ -296,7 +308,8 @@ mod tests {
 
     #[test]
     fn passes_done_sentinel() {
-        let mut proc = SseStreamProcessor::new(passthrough_config(), vec![]);
+        let mut proc =
+            SseStreamProcessor::new(passthrough_config(), vec![], serde_json::Map::new(), None);
         let input = b"data: [DONE]\n\n";
         let output = proc.process_chunk(input).unwrap();
         let s = std::str::from_utf8(&output).unwrap();
@@ -305,7 +318,8 @@ mod tests {
 
     #[test]
     fn metrics_accumulate() {
-        let mut proc = SseStreamProcessor::new(passthrough_config(), vec![]);
+        let mut proc =
+            SseStreamProcessor::new(passthrough_config(), vec![], serde_json::Map::new(), None);
         proc.process_chunk(b"data: first\n\n");
         proc.process_chunk(b"data: second\n\n");
         assert_eq!(proc.metrics().total_events, 2);

@@ -1,0 +1,7 @@
+- [ ] Add JwtSigningKey struct + Database CRUD methods (get_active, list, insert, deactivate)
+- [ ] Integrate DB-sourced key into JwtMinter (prefer DB, fallback to config)
+- [ ] Add /signing-keys admin endpoints (GET, POST, DELETE)
+- [ ] Extend pg_notify for signing-key mutations
+- [ ] Extend cache invalidation listener to reload minter on signing_keys NOTIFY
+- [ ] Add tests: insert+activate, minter DB preference, config fallback
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

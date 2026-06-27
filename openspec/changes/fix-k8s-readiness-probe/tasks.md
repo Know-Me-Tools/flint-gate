@@ -1,0 +1,2 @@
+- [ ] Update k8s/deployment.yaml readinessProbe: path /health → /ready, port proxy → admin
+- [ ] Verify livenessProbe is unchanged (/health on proxy)

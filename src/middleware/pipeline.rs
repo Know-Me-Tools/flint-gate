@@ -17,7 +17,7 @@ use crate::config::{
 };
 use crate::db::{Database, UsageEvent};
 use crate::proxy::SharedRouter;
-use crate::stream::SseStreamProcessor;
+use crate::stream::{NdjsonStreamProcessor, SseStreamProcessor, StreamProcessor};
 use axum::{
     body::Body,
     extract::State,
@@ -296,14 +296,14 @@ async fn handle_request(
                         limit = config.limit,
                         "token budget exceeded — blocking request"
                     );
-                    return Ok(Response::builder()
+                    return Response::builder()
                         .status(StatusCode::TOO_MANY_REQUESTS)
                         .header("content-type", "application/json")
                         .body(Body::from(
                             serde_json::json!({"error": "quota_exceeded", "message": msg})
                                 .to_string(),
                         ))
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
                 }
             }
         }
@@ -424,39 +424,111 @@ async fn handle_request(
             .map(|s| s.split(',').map(|sc| sc.trim().to_string()).collect())
             .unwrap_or_default();
 
-        let mut processor = SseStreamProcessor::new(stream_config, user_scopes);
+        // Render AG-UI inject_metadata templates against the per-request context
+        let ag_ui_metadata = {
+            let mut map = serde_json::Map::new();
+            for (key, template) in &stream_config.ai.ag_ui.inject_metadata {
+                let rendered = TemplateEngine::render(template, &template_ctx);
+                let value = serde_json::from_str::<serde_json::Value>(&rendered)
+                    .unwrap_or(serde_json::Value::String(rendered));
+                map.insert(key.clone(), value);
+            }
+            map
+        };
+
+        // A2UI theme from config
+        let a2ui_theme = stream_config.ai.a2ui.theme.clone();
+
+        // Protocol dispatch: create the appropriate processor
+        let processor: Box<dyn StreamProcessor> = match stream_config.protocol.as_str() {
+            "ndjson" => Box::new(NdjsonStreamProcessor::new(
+                stream_config.clone(),
+                user_scopes.clone(),
+                ag_ui_metadata.clone(),
+                a2ui_theme.clone(),
+            )),
+            _ => Box::new(SseStreamProcessor::new(
+                stream_config.clone(),
+                user_scopes.clone(),
+                ag_ui_metadata.clone(),
+                a2ui_theme.clone(),
+            )),
+        };
+
+        // Session watchdog: spawn a periodic re-validation task when enabled
+        let watchdog_cancel = tokio_util::sync::CancellationToken::new();
+        if let Some(ref sw) = stream_config.ai.session_watchdog {
+            if sw.enabled {
+                let interval_secs = sw.check_interval_seconds;
+                let credential = raw_credential.clone();
+                let cache = state.cache.clone();
+                let cancel = watchdog_cancel.clone();
+
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                    ticker.tick().await; // skip immediate first tick
+                    loop {
+                        tokio::select! {
+                            _ = ticker.tick() => {
+                                if let Some(ref cred) = credential {
+                                    match cache.get_session(cred).await {
+                                        Some(_) => { /* session still cached — valid */ }
+                                        None => {
+                                            tracing::warn!(
+                                                "session watchdog: session no longer valid — terminating stream"
+                                            );
+                                            cancel.cancel();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            _ = cancel.cancelled() => break,
+                        }
+                    }
+                });
+            }
+        }
+
+        let mut processor = processor;
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
         // oneshot channel: streaming task sends total tokens when stream is done
         let (metrics_tx, metrics_rx) = tokio::sync::oneshot::channel::<u64>();
 
+        let stream_cancel = watchdog_cancel.clone();
+        let term_payload = processor.termination_payload();
+
         tokio::spawn(async move {
             let mut byte_stream = upstream_response.bytes_stream();
-            while let Some(chunk) = byte_stream.next().await {
-                match chunk {
-                    Ok(bytes) => {
-                        match processor.process_chunk(&bytes) {
-                            Some(processed) if !processed.is_empty() => {
-                                if tx.send(Ok(processed)).await.is_err() {
-                                    break;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = stream_cancel.cancelled() => {
+                        let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                        break;
+                    }
+                    chunk = byte_stream.next() => {
+                        match chunk {
+                            Some(Ok(bytes)) => {
+                                match processor.process_chunk(&bytes) {
+                                    Some(processed) if !processed.is_empty() => {
+                                        if tx.send(Ok(processed)).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    None => {
+                                        let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                                        break;
+                                    }
+                                    Some(_) => {}
                                 }
                             }
-                            None => {
-                                // Backpressure limit hit — send SSE error and stop
-                                let _ = tx
-                                    .send(Ok(Bytes::from(
-                                        "data: {\"type\":\"RUN_ERROR\",\"message\":\"stream limit exceeded\"}\n\n",
-                                    )))
-                                    .await;
+                            Some(Err(e)) => {
+                                let _ = tx.send(Err(std::io::Error::other(e))).await;
                                 break;
                             }
-                            Some(_) => {} // empty processed chunk, skip
+                            None => break,
                         }
-                    }
-                    Err(e) => {
-                        let _ = tx
-                            .send(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-                            .await;
-                        break;
                     }
                 }
             }

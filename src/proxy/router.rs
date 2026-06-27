@@ -149,6 +149,13 @@ impl Router {
                 continue;
             }
 
+            // Route-level host check
+            if let Some(route_host) = &route.config.route_match.host {
+                if !host_matches(route_host, host) {
+                    continue;
+                }
+            }
+
             // Path pattern check
             if !route.path_regex.is_match(path) {
                 continue;
@@ -208,6 +215,24 @@ impl Router {
     /// Iterate over the IDs of all compiled routes.
     pub fn route_ids(&self) -> impl Iterator<Item = String> + '_ {
         self.routes.iter().map(|r| r.config.id.clone())
+    }
+}
+
+/// Check if a host header matches a route-level host pattern.
+///
+/// Supports exact match and `*.example.com` wildcard suffix.
+/// Port is stripped from the host header before comparison.
+/// Comparison is case-insensitive.
+fn host_matches(pattern: &str, host_header: &str) -> bool {
+    let host_no_port = host_header.split(':').next().unwrap_or(host_header);
+    let pattern_lower = pattern.to_lowercase();
+    let host_lower = host_no_port.to_lowercase();
+
+    if let Some(suffix) = pattern_lower.strip_prefix('*') {
+        // *.example.com → suffix is ".example.com"
+        host_lower.ends_with(suffix)
+    } else {
+        pattern_lower == host_lower
     }
 }
 
@@ -492,5 +517,103 @@ mod tests {
         let router = Router::from_config_and_db_routes(&config, &[db_route]);
         // Route was disabled in DB — not compiled
         assert_eq!(router.route_count(), 0);
+    }
+
+    #[test]
+    fn host_matches_exact() {
+        assert!(host_matches("api.example.com", "api.example.com"));
+        assert!(!host_matches("api.example.com", "other.example.com"));
+    }
+
+    #[test]
+    fn host_matches_wildcard() {
+        assert!(host_matches("*.example.com", "api.example.com"));
+        assert!(host_matches("*.example.com", "chat.api.example.com"));
+        assert!(!host_matches("*.example.com", "example.com"));
+        assert!(!host_matches("*.example.com", "other.org"));
+    }
+
+    #[test]
+    fn host_matches_strips_port() {
+        assert!(host_matches("api.example.com", "api.example.com:8080"));
+        assert!(host_matches("*.example.com", "api.example.com:443"));
+    }
+
+    #[test]
+    fn host_matches_case_insensitive() {
+        assert!(host_matches("API.Example.COM", "api.example.com"));
+        assert!(host_matches("*.Example.com", "API.example.COM"));
+    }
+
+    #[test]
+    fn route_level_host_filter() {
+        use crate::config::types::*;
+
+        let config = GateConfig {
+            sites: vec![SiteConfig {
+                id: "app".to_string(),
+                domains: vec![], // empty = match any host at site level
+                default_auth: None,
+                default_upstream: Some("http://backend:3000".to_string()),
+            }],
+            routes: vec![
+                RouteConfig {
+                    id: "api-only".to_string(),
+                    site: "app".to_string(),
+                    route_match: RouteMatch {
+                        path: "/api/**".to_string(),
+                        methods: vec![],
+                        host: Some("api.example.com".to_string()),
+                    },
+                    upstream: Some("http://api-backend:3001".to_string()),
+                    auth: None,
+                    hooks: HooksConfig::default(),
+                    stream: StreamConfig::default(),
+                    priority: 10,
+                    enabled: true,
+                },
+                RouteConfig {
+                    id: "wildcard-host".to_string(),
+                    site: "app".to_string(),
+                    route_match: RouteMatch {
+                        path: "/api/**".to_string(),
+                        methods: vec![],
+                        host: Some("*.example.com".to_string()),
+                    },
+                    upstream: Some("http://wildcard-backend:3002".to_string()),
+                    auth: None,
+                    hooks: HooksConfig::default(),
+                    stream: StreamConfig::default(),
+                    priority: 5,
+                    enabled: true,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let router = Router::from_config(&config);
+
+        // Exact host match — highest priority route wins
+        let matched = router
+            .match_route("api.example.com", "/api/data", "GET")
+            .unwrap();
+        assert_eq!(matched.config.id, "api-only");
+
+        // Wildcard host match — second route
+        let matched = router
+            .match_route("chat.example.com", "/api/data", "GET")
+            .unwrap();
+        assert_eq!(matched.config.id, "wildcard-host");
+
+        // Non-matching host — no route
+        assert!(router
+            .match_route("other.org", "/api/data", "GET")
+            .is_none());
+
+        // Port stripping
+        let matched = router
+            .match_route("api.example.com:8443", "/api/data", "GET")
+            .unwrap();
+        assert_eq!(matched.config.id, "api-only");
     }
 }

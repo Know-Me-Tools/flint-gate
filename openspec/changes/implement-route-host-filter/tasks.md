@@ -1,0 +1,4 @@
+- [ ] Implement host_matches(pattern, host_header) -> bool in router.rs (exact + *.suffix wildcard + port strip + case-insensitive)
+- [ ] Insert route-level host check in match_route loop (between site check and path check)
+- [ ] Add unit tests: exact, wildcard, port-strip, case-insensitive, mismatch-continues
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

@@ -1,0 +1,10 @@
+- [ ] Define StreamProcessor trait in src/stream/mod.rs
+- [ ] Extract EventChain (AG-UI + A2UI + backpressure) from SseStreamProcessor
+- [ ] Refactor SseStreamProcessor → SseFramer implementing StreamProcessor
+- [ ] Add tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] } as direct dep
+- [ ] Implement WsFramer with connect_async + terminate-and-replay event chain
+- [ ] Add protocol dispatch (match stream_config.protocol) in pipeline.rs
+- [ ] Add WS upgrade detection in proxy handler
+- [ ] Ensure existing SSE tests pass after refactor
+- [ ] Add WsFramer unit tests (frame parsing, AG-UI on WS, backpressure close 1008)
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

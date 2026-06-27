@@ -61,6 +61,7 @@ pub fn required_scope(intent: &str) -> &'static str {
 }
 
 /// Processes A2UI events: filters by intent and scope.
+#[derive(Clone)]
 pub struct A2UiProcessor {
     allowed_intents: Option<HashSet<String>>,
 }
@@ -93,14 +94,12 @@ impl A2UiProcessor {
         }
 
         // Scope check (if user has scopes defined)
-        if !user_scopes.is_empty() {
-            if !self.check_scope(&event.intent, user_scopes) {
-                tracing::debug!(
-                    intent = %event.intent,
-                    "A2UI event blocked by scope check"
-                );
-                return None;
-            }
+        if !user_scopes.is_empty() && !self.check_scope(&event.intent, user_scopes) {
+            tracing::debug!(
+                intent = %event.intent,
+                "A2UI event blocked by scope check"
+            );
+            return None;
         }
 
         // Inject theme for render_component

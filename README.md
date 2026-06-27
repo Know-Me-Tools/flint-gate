@@ -195,8 +195,8 @@ cache:
     max_capacity: 10000            # u64     — max entries in moka cache
     ttl_seconds:  60               # u64     — entry TTL
   l2:
-    enabled:   false               # bool    — Redis L2 (not yet implemented)
-    redis_url: ""                  # string?
+    enabled:   false               # bool    — Redis L2 cache tier
+    redis_url: ""                  # string? — Redis connection URL
   invalidation_channel: "flintgate_config_changed"  # string
 
 # Named auth providers — referenced by id in sites/routes

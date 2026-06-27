@@ -4,6 +4,8 @@
 /// - `routes` — compiled route configs (invalidated on config change)
 /// - `sessions` — Kratos session validation results (keyed by SHA-256 of credential)
 /// - `kv` — generic key-value for API keys, JWKs, etc.
+///
+/// Optional Redis L2 cache when `redis-l2` feature is enabled.
 use crate::auth::identity::Identity;
 use crate::config::types::CacheConfig;
 use moka::future::Cache;
@@ -12,6 +14,9 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
+
+#[cfg(feature = "redis-l2")]
+use redis::AsyncCommands;
 
 /// The central cache store.
 #[derive(Clone)]
@@ -22,7 +27,13 @@ pub struct GateCache {
     pub sessions: Cache<String, Value>,
     /// Generic KV cache.
     pub kv: Cache<String, String>,
+    /// Optional Redis L2 cache manager.
+    #[cfg(feature = "redis-l2")]
+    l2: Option<redis::aio::ConnectionManager>,
 }
+
+/// Redis key prefix for L2 cache entries.
+const L2_PREFIX: &str = "flint";
 
 impl GateCache {
     /// Build a cache from config.
@@ -45,7 +56,29 @@ impl GateCache {
             .time_to_live(ttl)
             .build();
 
-        Self { routes, sessions, kv }
+        Self {
+            routes,
+            sessions,
+            kv,
+            #[cfg(feature = "redis-l2")]
+            l2: None,
+        }
+    }
+
+    /// Connect to Redis L2 cache when configured.
+    #[cfg(feature = "redis-l2")]
+    pub async fn connect_l2(&mut self, cfg: &CacheConfig) -> anyhow::Result<()> {
+        if cfg.l2.enabled {
+            if let Some(ref url) = cfg.l2.redis_url {
+                if !url.is_empty() {
+                    let client = redis::Client::open(url.as_str())?;
+                    let manager = client.get_connection_manager().await?;
+                    self.l2 = Some(manager);
+                    info!(redis_url = %url, "Redis L2 cache connected");
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Invalidate all cache entries. Called on config change.
@@ -53,6 +86,20 @@ impl GateCache {
         self.routes.invalidate_all();
         self.sessions.invalidate_all();
         self.kv.invalidate_all();
+
+        #[cfg(feature = "redis-l2")]
+        {
+            if let Some(ref con) = self.l2 {
+                // SCAN + DEL by prefix (non-blocking, best-effort)
+                let pattern = format!("{L2_PREFIX}:*");
+                let mut con = con.clone();
+                match Self::scan_and_del(&mut con, &pattern).await {
+                    Ok(n) => info!(deleted = n, "L2 Redis entries invalidated"),
+                    Err(e) => warn!(error = %e, "L2 Redis invalidation failed"),
+                }
+            }
+        }
+
         info!("all caches invalidated");
     }
 
@@ -65,26 +112,74 @@ impl GateCache {
     /// Look up a cached session by raw credential (cookie or bearer token).
     ///
     /// Hashes the credential so no raw token is ever stored in memory.
+    /// L1 (moka) miss → L2 (Redis) GET → back-fill L1.
     pub async fn get_session(&self, credential: &str) -> Option<Identity> {
         let key = Self::session_key(credential);
-        let value = self.sessions.get(&key).await?;
-        match serde_json::from_value(value) {
-            Ok(identity) => {
-                debug!(key = %key, "session cache hit");
-                Some(identity)
-            }
-            Err(e) => {
-                debug!(error = %e, "failed to deserialize cached session");
-                None
+
+        // L1 check
+        if let Some(value) = self.sessions.get(&key).await {
+            match serde_json::from_value(value) {
+                Ok(identity) => {
+                    debug!(key = %key, "session L1 cache hit");
+                    return Some(identity);
+                }
+                Err(e) => debug!(error = %e, "failed to deserialize L1 cached session"),
             }
         }
+
+        // L2 check (Redis)
+        #[cfg(feature = "redis-l2")]
+        {
+            if let Some(ref con) = self.l2 {
+                let redis_key = Self::l2_session_key(&key);
+                let mut con = con.clone();
+                match con.get::<_, Option<String>>(&redis_key).await {
+                    Ok(Some(json_str)) => {
+                        match serde_json::from_str::<Identity>(&json_str) {
+                            Ok(identity) => {
+                                debug!(key = %key, "session L2 cache hit");
+                                // Back-fill L1
+                                if let Ok(value) = serde_json::to_value(&identity) {
+                                    self.sessions.insert(key, value).await;
+                                }
+                                return Some(identity);
+                            }
+                            Err(e) => debug!(error = %e, "failed to deserialize L2 cached session"),
+                        }
+                    }
+                    Ok(None) => debug!(key = %key, "session L2 cache miss"),
+                    Err(e) => warn!(error = %e, "L2 Redis GET failed"),
+                }
+            }
+        }
+
+        None
     }
 
     /// Store an authenticated identity in the session cache.
+    /// Writes to both L1 (moka) and L2 (Redis) when available.
     pub async fn put_session(&self, credential: &str, identity: &Identity) {
         let key = Self::session_key(credential);
+
+        // L1 write
         match serde_json::to_value(identity) {
-            Ok(value) => { self.sessions.insert(key, value).await; }
+            Ok(value) => {
+                // L2 write (best-effort)
+                #[cfg(feature = "redis-l2")]
+                {
+                    if let Some(ref con) = self.l2 {
+                        let redis_key = Self::l2_session_key(&key);
+                        if let Ok(json_str) = serde_json::to_string(identity) {
+                            let mut con = con.clone();
+                            let ttl = 60u64; // L2 TTL in seconds
+                            if let Err(e) = con.set_ex::<_, _, ()>(&redis_key, &json_str, ttl).await {
+                                warn!(error = %e, "L2 Redis SET failed");
+                            }
+                        }
+                    }
+                }
+                self.sessions.insert(key, value).await;
+            }
             Err(e) => debug!(error = %e, "failed to serialize identity for session cache"),
         }
     }
@@ -94,6 +189,15 @@ impl GateCache {
     pub async fn invalidate_session(&self, credential: &str) {
         let key = Self::session_key(credential);
         self.sessions.invalidate(&key).await;
+
+        #[cfg(feature = "redis-l2")]
+        {
+            if let Some(ref con) = self.l2 {
+                let redis_key = Self::l2_session_key(&key);
+                let mut con = con.clone();
+                let _: Result<(), _> = con.del(&redis_key).await;
+            }
+        }
     }
 
     /// SHA-256 of the credential — the cache key for a session.
@@ -101,6 +205,68 @@ impl GateCache {
         let mut h = Sha256::new();
         h.update(credential.as_bytes());
         hex::encode(h.finalize())
+    }
+
+    /// Redis key for a session: `flint:session:<sha256>`.
+    #[cfg(feature = "redis-l2")]
+    fn l2_session_key(hash: &str) -> String {
+        format!("{L2_PREFIX}:session:{hash}")
+    }
+
+    /// SCAN + DEL all keys matching a pattern (used by invalidate_all).
+    #[cfg(feature = "redis-l2")]
+    async fn scan_and_del(
+        con: &mut redis::aio::ConnectionManager,
+        pattern: &str,
+    ) -> anyhow::Result<usize> {
+        let mut deleted = 0;
+        let mut batch: Vec<String> = Vec::with_capacity(100);
+        let mut cursor: u64 = 0;
+
+        loop {
+            let result: (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(con)
+                .await?;
+
+            cursor = result.0;
+            batch.extend(result.1);
+
+            if batch.len() >= 50 {
+                deleted += Self::del_batch(con, &batch).await?;
+                batch.clear();
+            }
+
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        if !batch.is_empty() {
+            deleted += Self::del_batch(con, &batch).await?;
+        }
+
+        Ok(deleted)
+    }
+
+    /// Delete a batch of keys.
+    #[cfg(feature = "redis-l2")]
+    async fn del_batch(
+        con: &mut redis::aio::ConnectionManager,
+        keys: &[String],
+    ) -> anyhow::Result<usize> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let count: usize = redis::cmd("DEL")
+            .arg(keys)
+            .query_async(con)
+            .await?;
+        Ok(count)
     }
 
     /// Cache statistics for the admin API.

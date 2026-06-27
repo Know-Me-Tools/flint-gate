@@ -28,6 +28,9 @@ http = "1"
 # Upstream HTTP client
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
 
+# WebSocket upstream bridging (already in lockfile via axum ws)
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+
 # Database
 sqlx = { version = "0.8", features = [
     "runtime-tokio-rustls",
@@ -84,6 +87,13 @@ anyhow = "1"
 sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
+
+# Redis L2 cache
+redis = { version = "1", features = ["tokio-comp", "connection-manager"], optional = true }
+
+[features]
+default = ["redis-l2"]
+redis-l2 = ["dep:redis"]
 
 [dev-dependencies]
 wiremock = "0.6"

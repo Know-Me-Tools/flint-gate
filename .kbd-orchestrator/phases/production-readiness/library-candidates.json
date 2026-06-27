@@ -1,0 +1,111 @@
+{
+  "phase": "production-readiness",
+  "generated_at": "2026-06-23T00:00:00Z",
+  "mode": "stack-specified",
+  "stack": "rust",
+  "candidates": [
+    {
+      "gap": "websocket-streaming",
+      "goal_id": 2,
+      "decision": "adopt",
+      "crate": "tokio-tungstenite",
+      "version": "0.28",
+      "already_in_lockfile": true,
+      "lockfile_version": "0.28.0",
+      "features": ["rustls-tls-webpki-roots"],
+      "rationale": "Already compiled into binary via axum ws feature. De facto Rust WebSocket standard. Promote to direct dep to avoid relying on axum internal feature surface.",
+      "alternatives_rejected": [
+        { "crate": "axum::extract::ws", "reason": "Inbound-only server handler; need outbound client (connect_async) for upstream bridging" },
+        { "crate": "ws-bridge", "reason": "Niche endpoint macro; wrong shape for transparent proxy" },
+        { "crate": "atomic_websocket", "reason": "Overkill high-level util" }
+      ],
+      "confidence": "high"
+    },
+    {
+      "gap": "redis-l2-cache",
+      "goal_id": 4,
+      "decision": "adopt",
+      "crate": "redis",
+      "version": "1",
+      "already_in_lockfile": false,
+      "features": ["tokio-comp", "connection-manager"],
+      "rationale": "Simplest fit for trivial GET/SET/DEL L2 tier. ConnectionManager provides native pooling + reconnect. Standard Rust Redis client.",
+      "alternatives_rejected": [
+        { "crate": "fred", "reason": "Overkill — cluster/pubsub/scripting/Valkey for a 3-key-type L2" },
+        { "crate": "deadpool-redis", "reason": "Redundant pool layer on top of redis-rs ConnectionManager" }
+      ],
+      "confidence": "high"
+    },
+    {
+      "gap": "streaming-trait-abstraction",
+      "goal_id": null,
+      "decision": "build",
+      "crate": null,
+      "rationale": "No crate fits — standard Rust trait + composition pattern. Unblocks goals 1, 2, 3, 6, 7. async-trait already a dependency if needed.",
+      "confidence": "high"
+    },
+    {
+      "gap": "session-watchdog",
+      "goal_id": 1,
+      "decision": "build",
+      "crate": null,
+      "rationale": "tokio::time::interval + CancellationToken already in dependency tree. Reuse backpressure cancel path and Kratos authenticator.",
+      "confidence": "high"
+    },
+    {
+      "gap": "ndjson-streaming",
+      "goal_id": 3,
+      "decision": "build",
+      "crate": null,
+      "rationale": "Line-split + serde_json::from_str. No external dep. Reuse AG-UI/A2UI event chain.",
+      "confidence": "high"
+    },
+    {
+      "gap": "route-host-filter",
+      "goal_id": 5,
+      "decision": "build",
+      "crate": null,
+      "rationale": "10-line host_matches helper (exact + *.example.com suffix). Do NOT reuse glob_to_regex (path-oriented).",
+      "confidence": "high"
+    },
+    {
+      "gap": "ag-ui-metadata-injection",
+      "goal_id": 6,
+      "decision": "build",
+      "crate": null,
+      "rationale": "Reuse existing TemplateEngine::render against template_ctx. Same JSON-parse pattern as apply_body_transforms.",
+      "confidence": "high"
+    },
+    {
+      "gap": "a2ui-theme-injection",
+      "goal_id": 7,
+      "decision": "build",
+      "crate": null,
+      "rationale": "Add theme field to A2UiConfig; mechanism (inject_theme) already complete in A2UiProcessor.",
+      "confidence": "high"
+    },
+    {
+      "gap": "k8s-readiness-probe",
+      "goal_id": 8,
+      "decision": "build",
+      "crate": null,
+      "rationale": "One-line YAML edit. /ready endpoint already exists on admin server.",
+      "confidence": "high"
+    },
+    {
+      "gap": "jwt-signing-keys",
+      "goal_id": 9,
+      "decision": "build",
+      "crate": null,
+      "rationale": "Either sqlx CRUD + rotation (reuse /api-keys admin pattern) or delete CREATE TABLE. Decision deferred to plan/user.",
+      "confidence": "medium"
+    }
+  ],
+  "summary": {
+    "total_candidates": 10,
+    "adopt": 2,
+    "build": 8,
+    "already_satisfied": 1,
+    "contested": 0
+  }
+}

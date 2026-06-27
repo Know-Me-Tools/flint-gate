@@ -1,0 +1,26 @@
+{
+  "name": "flint-gate",
+  "description": "AI-native auth proxy and API gateway — Flint brand by KnowMe, LLC",
+  "active_phase": "production-readiness",
+  "focus_project_path": "/Users/gqadonis/Projects/prometheus/flint-gate",
+  "spec_paths": ["openspec/specs/*.md"],
+  "openspec_available": true,
+  "constraint_file": ".kbd-orchestrator/constraints.md",
+  "build_health_command": "cargo check --workspace",
+  "test_command": "cargo test --workspace",
+  "lint_command": "cargo clippy --workspace -- -D warnings",
+  "dev_command": null,
+  "preferred_planning_agent": "antigravity",
+  "preferred_execution_agents": [],
+  "agents_config": {},
+  "workspace": {
+    "workspace_file": null,
+    "folders": [
+      {
+        "path": "/Users/gqadonis/Projects/prometheus/flint-gate",
+        "role": "focus",
+        "write_access": true
+      }
+    ]
+  }
+}

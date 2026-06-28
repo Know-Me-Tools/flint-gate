@@ -1,0 +1,24 @@
+{
+  "id": "sdks/index",
+  "title": "SDKs",
+  "description": "Flint Gate provides client SDKs for services that consume its proxy streams or manage it through the admin API.",
+  "source": "@site/docs/sdks/index.md",
+  "sourceDirName": "sdks",
+  "slug": "/sdks/",
+  "permalink": "/flint-gate/docs/sdks/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/sdks/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Admin API",
+    "permalink": "/flint-gate/docs/admin-api"
+  },
+  "next": {
+    "title": "Rust SDK",
+    "permalink": "/flint-gate/docs/sdks/rust"
+  }
+}

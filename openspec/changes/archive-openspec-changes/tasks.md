@@ -1,0 +1,2 @@
+- [ ] Move 8 completed changes to archive/
+- [ ] Create consolidated specs in openspec/specs/

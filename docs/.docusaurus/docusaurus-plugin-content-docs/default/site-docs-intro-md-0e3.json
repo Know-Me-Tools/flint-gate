@@ -1,0 +1,20 @@
+{
+  "id": "intro",
+  "title": "Introduction",
+  "description": "Flint Gate is an authentication proxy and API gateway designed for streaming LLM workloads. It validates incoming requests, applies pre-request transformations, and forwards them to upstream services, with explicit support for Server-Sent Events (SSE), AG-UI events, A2UI intents, and token metering.",
+  "source": "@site/docs/intro.md",
+  "sourceDirName": ".",
+  "slug": "/intro",
+  "permalink": "/flint-gate/docs/intro",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/intro.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "next": {
+    "title": "Getting Started",
+    "permalink": "/flint-gate/docs/getting-started"
+  }
+}

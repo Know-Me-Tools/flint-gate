@@ -1,0 +1,2 @@
+- [ ] See plan.md for detailed task list
+- [ ] Sycophancy-check all documentation output

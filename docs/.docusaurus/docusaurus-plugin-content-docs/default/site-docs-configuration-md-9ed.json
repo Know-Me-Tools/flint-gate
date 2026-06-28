@@ -1,0 +1,24 @@
+{
+  "id": "configuration",
+  "title": "Configuration Reference",
+  "description": "Flint Gate configuration is resolved in priority order:",
+  "source": "@site/docs/configuration.md",
+  "sourceDirName": ".",
+  "slug": "/configuration",
+  "permalink": "/flint-gate/docs/configuration",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/configuration.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Getting Started",
+    "permalink": "/flint-gate/docs/getting-started"
+  },
+  "next": {
+    "title": "Admin API",
+    "permalink": "/flint-gate/docs/admin-api"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "flint-gate",
+  "version": "0.1.0",
+  "description": "Manage Flint Gate AI auth proxy instances",
+  "author": "KnowMe, LLC",
+  "license": "MIT"
+}

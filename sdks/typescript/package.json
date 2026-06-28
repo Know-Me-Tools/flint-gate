@@ -1,0 +1,64 @@
+{
+  "name": "@know-me/flint-gate",
+  "version": "0.1.0",
+  "description": "TypeScript client SDK for the Flint Gate AI auth proxy — SSE/WebSocket/NDJSON stream consumption and admin API access.",
+  "license": "MIT",
+  "author": "KnowMe, LLC <hello@know-me.tools>",
+  "homepage": "https://github.com/know-me-tools/flint-gate/tree/main/sdks/typescript",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/know-me-tools/flint-gate.git",
+    "directory": "sdks/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/know-me-tools/flint-gate/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "pnpm run typecheck && pnpm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "tsup": "^8.3.0",
+    "vitest": "^2.1.0"
+  },
+  "keywords": [
+    "flint-gate",
+    "flintgate",
+    "auth-proxy",
+    "api-gateway",
+    "sse",
+    "server-sent-events",
+    "websocket",
+    "ndjson",
+    "streaming",
+    "llm",
+    "edge",
+    "edge-runtime"
+  ]
+}

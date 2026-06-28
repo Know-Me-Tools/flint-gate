@@ -1,0 +1,24 @@
+{
+  "id": "sdks/typescript",
+  "title": "TypeScript SDK",
+  "description": "The TypeScript SDK is published as @know-me/flint-gate. It runs in browsers, Node.js 18+, Deno, Bun, Cloudflare Workers, and Vercel Edge. It uses only globalThis.fetch, AbortController, TextDecoder, and WebSocket.",
+  "source": "@site/docs/sdks/typescript.md",
+  "sourceDirName": "sdks",
+  "slug": "/sdks/typescript",
+  "permalink": "/flint-gate/docs/sdks/typescript",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/sdks/typescript.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Go SDK",
+    "permalink": "/flint-gate/docs/sdks/go"
+  },
+  "next": {
+    "title": "Flutter SDK",
+    "permalink": "/flint-gate/docs/sdks/flutter"
+  }
+}

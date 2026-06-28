@@ -1,0 +1,24 @@
+{
+  "id": "admin-api",
+  "title": "Admin API",
+  "description": "The admin API runs on the admin server (default :4457). It is for internal operations only and should never be exposed to the public internet.",
+  "source": "@site/docs/admin-api.md",
+  "sourceDirName": ".",
+  "slug": "/admin-api",
+  "permalink": "/flint-gate/docs/admin-api",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/admin-api.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Configuration Reference",
+    "permalink": "/flint-gate/docs/configuration"
+  },
+  "next": {
+    "title": "SDKs",
+    "permalink": "/flint-gate/docs/sdks/"
+  }
+}

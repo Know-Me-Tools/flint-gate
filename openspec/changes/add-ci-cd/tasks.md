@@ -1,0 +1,5 @@
+- [ ] Create .github/workflows/ci.yml
+- [ ] Create .github/workflows/release.yml
+- [ ] Add npm publish skeleton
+- [ ] Add pub.dev publish skeleton
+- [ ] Add Go module publish skeleton

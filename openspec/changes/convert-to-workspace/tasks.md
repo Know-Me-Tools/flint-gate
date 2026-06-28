@@ -1,0 +1,6 @@
+- [ ] Create crates/flint-gate-core/ lib crate
+- [ ] Create crates/flint-gate/ binary crate
+- [ ] Create crates/flint-gate-client/ stub
+- [ ] Update root Cargo.toml to workspace
+- [ ] Update Dockerfile for new layout
+- [ ] cargo test --workspace && cargo clippy -- -D warnings

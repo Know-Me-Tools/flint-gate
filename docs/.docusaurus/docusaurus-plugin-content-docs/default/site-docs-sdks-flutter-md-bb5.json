@@ -1,0 +1,20 @@
+{
+  "id": "sdks/flutter",
+  "title": "Flutter SDK",
+  "description": "The Flutter / Dart SDK is at sdks/flutter. It provides a typed REST client and an SSE stream client for consuming proxied model endpoints.",
+  "source": "@site/docs/sdks/flutter.md",
+  "sourceDirName": "sdks",
+  "slug": "/sdks/flutter",
+  "permalink": "/flint-gate/docs/sdks/flutter",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/sdks/flutter.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "TypeScript SDK",
+    "permalink": "/flint-gate/docs/sdks/typescript"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "sdks/rust",
+  "title": "Rust SDK",
+  "description": "The Rust SDK is the flint-gate-client crate. It provides an async HTTP client, SSE stream consumer, WebSocket client, and admin API bindings.",
+  "source": "@site/docs/sdks/rust.md",
+  "sourceDirName": "sdks",
+  "slug": "/sdks/rust",
+  "permalink": "/flint-gate/docs/sdks/rust",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/sdks/rust.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "SDKs",
+    "permalink": "/flint-gate/docs/sdks/"
+  },
+  "next": {
+    "title": "Go SDK",
+    "permalink": "/flint-gate/docs/sdks/go"
+  }
+}

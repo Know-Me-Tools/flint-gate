@@ -1,0 +1,36 @@
+[package]
+name = "flint-gate"
+version = "0.1.0"
+edition = "2021"
+authors = ["Travis James <travis@know-me.tools>"]
+description = "AI-native auth proxy and API gateway — Flint brand by KnowMe, LLC"
+license = "MIT"
+repository = "https://github.com/Know-Me-Tools/flint-gate"
+
+[[bin]]
+name = "flint-gate"
+path = "src/main.rs"
+
+[dependencies]
+flint-gate-core = { path = "../flint-gate-core" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio-util = "0.7"
+tower-http = { version = "0.6", features = ["trace"] }
+
+[features]
+default = ["redis-l2"]
+redis-l2 = ["flint-gate-core/redis-l2"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

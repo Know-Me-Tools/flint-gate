@@ -1,0 +1,6 @@
+- [ ] Add utoipa deps to flint-gate-core
+- [ ] Derive ToSchema on response types
+- [ ] Annotate admin handlers with #[utoipa::path]
+- [ ] Register paths in OpenApi struct
+- [ ] Add /openapi.json + /docs routes
+- [ ] cargo test --workspace

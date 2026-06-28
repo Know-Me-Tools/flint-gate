@@ -1,0 +1,114 @@
+{
+  "phase": "sdk-ecosystem-and-docs",
+  "generated_at": "2026-06-27T00:00:00Z",
+  "mode": "stack-specified",
+  "stack": "rust + multi-language SDKs",
+  "research_tool": "firecrawl",
+  "searches_performed": 5,
+  "candidates": [
+    {
+      "gap": "rust-workspace",
+      "goal_id": 3,
+      "decision": "build",
+      "crate": null,
+      "rationale": "Flat crates/* layout per matklad's standard pattern. Modules already cleanly separated.",
+      "confidence": "high"
+    },
+    {
+      "gap": "openapi-generation",
+      "goal_id": 8,
+      "decision": "adopt",
+      "crate": "utoipa",
+      "version": "5",
+      "features": ["axum_extras", "chrono", "uuid"],
+      "stars": 3900,
+      "dependents": 6300,
+      "rationale": "Code-first OpenAPI 3.1 generation. utoipa-axum bindings. 6.3k users. Only viable Rust OpenAPI generator.",
+      "alternatives_rejected": [
+        { "crate": "paperclip", "reason": "Less maintained, no axum bindings" },
+        { "crate": "openapi_type", "reason": "Minimal, no ecosystem" }
+      ],
+      "confidence": "high"
+    },
+    {
+      "gap": "docs-site",
+      "goal_id": 8,
+      "decision": "adopt",
+      "framework": "Docusaurus 3",
+      "version": "3.x",
+      "rationale": "Most mature OSS docs framework. Multi-tab code blocks, versioning, i18n, Algolia search. 58k+ stars.",
+      "alternatives_rejected": [
+        { "framework": "MkDocs Material", "reason": "Python-based; less customizable than React/MDX" },
+        { "framework": "Fumadocs", "reason": "Newest; less ecosystem than Docusaurus" },
+        { "framework": "Mintlify", "reason": "Hosted/paid; prefer OSS" }
+      ],
+      "confidence": "high"
+    },
+    {
+      "gap": "typescript-sdk",
+      "goal_id": 4,
+      "decision": "build",
+      "build_tool": "tsup",
+      "rationale": "fetch + ReadableStream async generator. Edge-safe, dependency-free. ~300 LOC.",
+      "alternatives_rejected": [
+        { "package": "better-sse", "reason": "Server-side SSE; we need client-side consumption" },
+        { "service": "Stainless", "reason": "Paid; SDK is simple enough to hand-write" }
+      ],
+      "confidence": "high"
+    },
+    {
+      "gap": "rust-client-sdk",
+      "goal_id": 3,
+      "decision": "build",
+      "rationale": "Thin wrapper over reqwest + SSE parser. ~500 LOC. Part of workspace as flint-client crate.",
+      "confidence": "high"
+    },
+    {
+      "gap": "go-sdk",
+      "goal_id": 5,
+      "decision": "build",
+      "rationale": "net/http + bufio.Scanner. Idiomatic Go, zero deps. ~400 LOC.",
+      "confidence": "high"
+    },
+    {
+      "gap": "flutter-sdk",
+      "goal_id": 6,
+      "decision": "build",
+      "rationale": "http package + Stream<T>. Matches Dart conventions. ~350 LOC.",
+      "alternatives_rejected": [
+        { "package": "flutter_client_sse", "reason": "Too basic; no typed events" },
+        { "package": "sse", "reason": "Bidirectional protocol; requires matching server" },
+        { "package": "sse_processor", "reason": "Too opinionated; tied to Dio + Get" }
+      ],
+      "confidence": "medium"
+    },
+    {
+      "gap": "ci-cd",
+      "goal_id": null,
+      "decision": "build",
+      "rationale": "GitHub Actions workflows for test/clippy/fmt + multi-language SDK builds + Trusted Publishing.",
+      "confidence": "high"
+    },
+    {
+      "gap": "claude-code-plugin",
+      "goal_id": 10,
+      "decision": "build",
+      "rationale": ".claude-plugin/marketplace.json + plugin.json + skills + commands. Spec confirmed via firecrawl.",
+      "confidence": "high"
+    },
+    {
+      "gap": "sycophancy-gate",
+      "goal_id": 12,
+      "decision": "adopt",
+      "tool": "mcp__sycophancy-correction__detect_sycophancy",
+      "rationale": "Already available in environment. Gate doc/skill PRs on score < 0.3.",
+      "confidence": "high"
+    }
+  ],
+  "summary": {
+    "total_candidates": 10,
+    "adopt": 3,
+    "build": 7,
+    "contested": 0
+  }
+}

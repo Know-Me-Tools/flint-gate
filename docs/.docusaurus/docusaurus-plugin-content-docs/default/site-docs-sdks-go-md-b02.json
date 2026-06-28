@@ -1,0 +1,24 @@
+{
+  "id": "sdks/go",
+  "title": "Go SDK",
+  "description": "The Go SDK is at github.com/know-me-tools/flint-gate/sdks/go. It provides an admin client, SSE stream consumer, WebSocket client, and downstream service middleware for rehydrating identity headers.",
+  "source": "@site/docs/sdks/go.md",
+  "sourceDirName": "sdks",
+  "slug": "/sdks/go",
+  "permalink": "/flint-gate/docs/sdks/go",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/sdks/go.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Rust SDK",
+    "permalink": "/flint-gate/docs/sdks/rust"
+  },
+  "next": {
+    "title": "TypeScript SDK",
+    "permalink": "/flint-gate/docs/sdks/typescript"
+  }
+}

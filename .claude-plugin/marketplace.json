@@ -1,0 +1,7 @@
+{
+  "name": "know-me-tools",
+  "owner": { "name": "KnowMe, LLC", "url": "https://know-me.tools" },
+  "plugins": [
+    { "name": "flint-gate", "source": "./", "description": "Manage Flint Gate AI auth proxy instances" }
+  ]
+}

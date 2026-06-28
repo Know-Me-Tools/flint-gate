@@ -1,0 +1,19 @@
+name: flint_gate_chat_example
+description: Minimal Flutter chat app that connects to Flint Gate SSE stream.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flint_gate:
+    path: ../../sdks/flutter
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

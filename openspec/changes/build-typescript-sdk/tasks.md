@@ -1,0 +1,9 @@
+- [ ] Create package structure (Cargo.toml/package.json/go.mod/pubspec.yaml)
+- [ ] Implement client class with auth + base URL config
+- [ ] Implement SSE streaming consumer (async iterator / Stream / channel)
+- [ ] Implement WebSocket consumer where applicable
+- [ ] Implement admin API methods (routes, keys, health)
+- [ ] Add typed event classes matching OpenAPI
+- [ ] Write unit tests
+- [ ] Write README.md with quickstart (sycophancy-checked)
+- [ ] Verify build + test passes

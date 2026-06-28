@@ -1,0 +1,73 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "default": {
+      "path": "/flint-gate/docs",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/flint-gate/docs",
+          "mainDocId": "intro",
+          "docs": [
+            {
+              "id": "admin-api",
+              "path": "/flint-gate/docs/admin-api",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "configuration",
+              "path": "/flint-gate/docs/configuration",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "getting-started",
+              "path": "/flint-gate/docs/getting-started",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "intro",
+              "path": "/flint-gate/docs/intro",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "sdks/flutter",
+              "path": "/flint-gate/docs/sdks/flutter",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "sdks/go",
+              "path": "/flint-gate/docs/sdks/go",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "sdks/index",
+              "path": "/flint-gate/docs/sdks/",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "sdks/rust",
+              "path": "/flint-gate/docs/sdks/rust",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "sdks/typescript",
+              "path": "/flint-gate/docs/sdks/typescript",
+              "sidebar": "docsSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "docsSidebar": {
+              "link": {
+                "path": "/flint-gate/docs/intro",
+                "label": "intro"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

@@ -3,3 +3,6 @@
 config.yaml
 *.pem
 *.key
+node_modules/
+**/node_modules/
+.opencode/opencode-loop/

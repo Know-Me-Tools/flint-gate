@@ -17,13 +17,15 @@ RUN apt-get update && apt-get install -y \
 
 # Cache dependencies separately from source
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
+COPY crates ./crates
+RUN mkdir -p crates/flint-gate/src && echo 'fn main() {}' > crates/flint-gate/src/main.rs
+RUN mkdir -p crates/flint-gate-core/src && echo '' > crates/flint-gate-core/src/lib.rs
+RUN mkdir -p crates/flint-gate-client/src && echo '' > crates/flint-gate-client/src/lib.rs
 RUN cargo build --release 2>/dev/null || true
-RUN rm -rf src
 
 # Build the actual source
-COPY src ./src
-RUN touch src/main.rs && cargo build --release
+COPY crates ./crates
+RUN touch crates/flint-gate/src/main.rs && cargo build --release
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim

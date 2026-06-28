@@ -1,0 +1,461 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Flint Gate Admin API",
+    "description": "Admin API for Flint Gate — AI-native auth proxy and API gateway. Runs on the admin port (default 4457) and must not be exposed to the public internet.",
+    "version": "0.1.0",
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4457",
+      "description": "Default local admin server"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness probe",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {"type": "string", "example": "ok"},
+                    "service": {"type": "string", "example": "flint-gate"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Readiness probe",
+        "operationId": "getReady",
+        "responses": {
+          "200": {
+            "description": "Ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {"type": "string", "example": "ready"},
+                    "db": {"type": "string", "example": "ok"}
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready — DB unreachable"
+          }
+        }
+      }
+    },
+    "/cache/stats": {
+      "get": {
+        "summary": "Cache entry counts",
+        "operationId": "getCacheStats",
+        "responses": {
+          "200": {
+            "description": "Cache statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "l1": {"type": "integer", "example": 42},
+                    "l2": {"type": "integer", "example": 0}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cache/invalidate": {
+      "post": {
+        "summary": "Flush all caches",
+        "operationId": "invalidateCache",
+        "responses": {
+          "200": {
+            "description": "Cache invalidated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {"type": "string", "example": "invalidated"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/routes": {
+      "get": {
+        "summary": "List routes",
+        "operationId": "listRoutes",
+        "responses": {
+          "200": {
+            "description": "List of routes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "routes": {"type": "array", "items": {"$ref": "#/components/schemas/Route"}},
+                    "source": {"type": "string", "example": "database"}
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or update a route",
+        "operationId": "upsertRoute",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Route"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Route created or updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {"type": "string", "example": "ok"},
+                    "id": {"type": "string", "example": "chat-stream"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing route id"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      }
+    },
+    "/routes/{id}": {
+      "get": {
+        "summary": "Get a route",
+        "operationId": "getRoute",
+        "parameters": [
+          {"$ref": "#/components/parameters/RouteId"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Route configuration",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Route"}
+              }
+            }
+          },
+          "404": {
+            "description": "Route not found"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      },
+      "put": {
+        "summary": "Update a route",
+        "operationId": "updateRoute",
+        "parameters": [
+          {"$ref": "#/components/parameters/RouteId"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Route"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Route updated"
+          },
+          "400": {
+            "description": "Missing route id"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a route",
+        "operationId": "deleteRoute",
+        "parameters": [
+          {"$ref": "#/components/parameters/RouteId"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Route deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {"type": "string", "example": "deleted"},
+                    "id": {"type": "string", "example": "chat-stream"}
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Route not found"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      }
+    },
+    "/api-keys": {
+      "get": {
+        "summary": "List active API keys",
+        "operationId": "listApiKeys",
+        "responses": {
+          "200": {
+            "description": "List of API keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "api_keys": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/ApiKey"}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an API key",
+        "operationId": "createApiKey",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CreateApiKeyRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "API key created",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CreatedApiKey"}
+              }
+            }
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      }
+    },
+    "/api-keys/{id}": {
+      "delete": {
+        "summary": "Revoke an API key",
+        "operationId": "revokeApiKey",
+        "parameters": [
+          {"$ref": "#/components/parameters/ApiKeyId"}
+        ],
+        "responses": {
+          "200": {
+            "description": "API key revoked"
+          },
+          "404": {
+            "description": "API key not found"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      }
+    },
+    "/signing-keys": {
+      "get": {
+        "summary": "List signing keys",
+        "operationId": "listSigningKeys",
+        "responses": {
+          "200": {
+            "description": "List of signing keys"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a signing key",
+        "operationId": "createSigningKey",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CreateSigningKeyRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Signing key activated"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      }
+    },
+    "/signing-keys/{id}": {
+      "delete": {
+        "summary": "Deactivate a signing key",
+        "operationId": "deactivateSigningKey",
+        "parameters": [
+          {"$ref": "#/components/parameters/SigningKeyId"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Signing key deactivated"
+          },
+          "404": {
+            "description": "Signing key not found"
+          },
+          "501": {
+            "description": "Database not configured"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Route": {
+        "type": "object",
+        "required": ["id", "site", "match"],
+        "properties": {
+          "id": {"type": "string", "example": "chat-stream"},
+          "site": {"type": "string", "example": "my-app"},
+          "enabled": {"type": "boolean", "example": true},
+          "priority": {"type": "integer", "example": 10},
+          "match": {
+            "type": "object",
+            "properties": {
+              "path": {"type": "string", "example": "/api/chat/**"},
+              "methods": {"type": "array", "items": {"type": "string"}, "example": ["POST"]},
+              "host": {"type": "string", "nullable": true}
+            }
+          },
+          "upstream": {"type": "string", "example": "http://llm-backend:8000/v1/chat/completions"},
+          "auth": {"type": "string", "example": "kratos_session"},
+          "hooks": {"type": "object"},
+          "stream": {"type": "object"}
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "client_id": {"type": "string", "example": "billing-svc"},
+          "scopes": {"type": "array", "items": {"type": "string"}},
+          "expires_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreateApiKeyRequest": {
+        "type": "object",
+        "required": ["client_id"],
+        "properties": {
+          "client_id": {"type": "string", "example": "mobile-app"},
+          "scopes": {"type": "array", "items": {"type": "string"}, "example": ["chat", "embed"]},
+          "expires_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreatedApiKey": {
+        "allOf": [
+          {"$ref": "#/components/schemas/ApiKey"},
+          {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "description": "Raw key returned only once"},
+              "note": {"type": "string"}
+            }
+          }
+        ]
+      },
+      "CreateSigningKeyRequest": {
+        "type": "object",
+        "required": ["id", "algorithm", "public_key", "private_key"],
+        "properties": {
+          "id": {"type": "string", "example": "key-2026"},
+          "algorithm": {"type": "string", "example": "RS256"},
+          "public_key": {"type": "string"},
+          "private_key": {"type": "string"}
+        }
+      }
+    },
+    "parameters": {
+      "RouteId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string"}
+      },
+      "ApiKeyId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "SigningKeyId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string"}
+      }
+    }
+  }
+}

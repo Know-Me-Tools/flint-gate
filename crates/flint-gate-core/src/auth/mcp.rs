@@ -215,14 +215,21 @@ impl Authenticator for McpAuthenticator {
         let decoding_key = self.jwks()?.decoding_key(header.kid.as_deref()).await?;
 
         // ── Validation rules ───────────────────────────────────────────────
-        // Pin the accepted algorithms to the asymmetric allowlist (defense in
-        // depth alongside the header check above). We do NOT delegate audience
-        // validation to jsonwebtoken here: RFC 8707 requires that the RS's
-        // resource be *present in* the token audience, and we want a distinct,
-        // auditable rejection at the exact enforcement point below — so we
-        // disable the library's aud check and enforce it ourselves after decode.
+        // Pin `validation.algorithms` to exactly the token's header alg. It has
+        // already passed the `ALLOWED_ALGS` allowlist above, so this is safe and
+        // is defense-in-depth. NOTE: we must NOT stuff the whole mixed-family
+        // allowlist (RSA + EC) into `validation.algorithms` — jsonwebtoken@9
+        // rejects a verify whose algorithm list spans a different key family
+        // than the resolved key (`InvalidAlgorithm`). The up-front allowlist
+        // check is the actual gate; this just scopes the verifier to one alg.
+        //
+        // We do NOT delegate audience validation to jsonwebtoken here: RFC 8707
+        // requires that the RS's resource be *present in* the token audience,
+        // and we want a distinct, auditable rejection at the exact enforcement
+        // point below — so we disable the library's aud check and enforce it
+        // ourselves after decode.
         let mut validation = Validation::new(header.alg);
-        validation.algorithms = ALLOWED_ALGS.to_vec();
+        validation.algorithms = vec![header.alg];
         validation.leeway = self.config.leeway_seconds;
         validation.validate_aud = false;
         if let Some(iss) = &self.config.issuer {

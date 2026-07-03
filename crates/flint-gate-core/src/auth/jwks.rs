@@ -372,7 +372,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn rejects_ipv6_link_local() {
         let e = validate_jwks_url("https://[fe80::1]/jwks");
         assert!(matches!(e, Err(AuthError::ProviderError(_))));
@@ -489,7 +488,6 @@ mod tests {
         assert!(matches!(r, Err(AuthError::Unauthorized(_))));
     }
 
-    #[test]
     #[test]
     fn known_kid_resolves() {
         let jwks = two_key_rsa_jwks();

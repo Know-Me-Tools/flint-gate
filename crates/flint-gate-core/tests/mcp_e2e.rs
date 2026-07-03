@@ -123,7 +123,10 @@ fn parts_with_bearer(token: &str) -> http::request::Parts {
 #[tokio::test]
 async fn valid_token_authorizes_with_identity_and_scopes() {
     let server = start_mock_as().await;
-    let cfg = mcp_config(format!("{}/jwks", server.uri()), vec!["mcp:read".to_string()]);
+    let cfg = mcp_config(
+        format!("{}/jwks", server.uri()),
+        vec!["mcp:read".to_string()],
+    );
     let auth = McpAuthenticator::new(cfg, reqwest::Client::new());
 
     let token = mint_token(RESOURCE, "mcp:read mcp:write");
@@ -154,7 +157,10 @@ async fn wrong_audience_is_rejected() {
     let result = auth.authenticate(&parts_with_bearer(&token)).await;
     match result {
         Err(AuthError::Unauthorized(msg)) => {
-            assert!(msg.contains("audience"), "expected aud rejection, got: {msg}");
+            assert!(
+                msg.contains("audience"),
+                "expected aud rejection, got: {msg}"
+            );
         }
         other => panic!("expected Unauthorized (RFC 8707), got {other:?}"),
     }

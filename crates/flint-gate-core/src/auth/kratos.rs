@@ -132,11 +132,11 @@ mod tests {
 
     #[tokio::test]
     async fn returns_unauthorized_on_401() {
-        let mut server = wiremock::MockServer::start().await;
+        let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/sessions/whoami"))
             .respond_with(wiremock::ResponseTemplate::new(401))
-            .mount(&mut server)
+            .mount(&server)
             .await;
 
         let auth = KratosAuthenticator::new(default_config(&server.uri()), reqwest::Client::new());

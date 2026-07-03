@@ -281,6 +281,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)] // test fixture retained for AG-UI event-filter cases
     fn ag_ui_config(allowed: Vec<&str>) -> StreamConfig {
         StreamConfig {
             enabled: true,

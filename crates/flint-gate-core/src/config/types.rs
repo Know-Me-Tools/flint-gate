@@ -39,6 +39,44 @@ pub struct ServerConfig {
     /// Seconds to wait for in-flight connections to finish draining on shutdown.
     #[serde(default = "default_shutdown_timeout")]
     pub shutdown_timeout_secs: u64,
+    /// In-process per-replica request-rate limiter (coarse burst shield).
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+}
+
+/// In-process request-rate limiting via `tower_governor`.
+///
+/// This is the per-replica, in-memory burst shield keyed on the API key /
+/// identity (falling back to peer IP). It is intentionally coarse — the
+/// authoritative, cross-replica limiting lives in the Redis window counters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Enable the in-process request-rate layer on the proxy router.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Sustained requests-per-second replenishment rate per key.
+    #[serde(default = "default_rate_per_second")]
+    pub per_second: u64,
+    /// Maximum burst size (bucket capacity) per key.
+    #[serde(default = "default_rate_burst")]
+    pub burst: u32,
+}
+
+fn default_rate_per_second() -> u64 {
+    50
+}
+fn default_rate_burst() -> u32 {
+    100
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            per_second: default_rate_per_second(),
+            burst: default_rate_burst(),
+        }
+    }
 }
 
 fn default_listen() -> String {
@@ -58,6 +96,7 @@ impl Default for ServerConfig {
             admin_listen: default_admin_listen(),
             tls: TlsConfig::default(),
             shutdown_timeout_secs: default_shutdown_timeout(),
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
@@ -375,17 +414,97 @@ pub struct BodyTransformConfig {
 /// Configuration for the max_token_budget pre-request hook.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaxTokenBudgetConfig {
-    /// Maximum lifetime tokens allowed. Requests exceeding this return 429.
+    /// Maximum tokens allowed within `window`. Requests exceeding this return 429.
     pub limit: u64,
     /// Template expression that resolves to the user identifier.
     #[serde(default = "default_user_id_expr")]
     pub user_id_expr: String,
     /// Custom error message in the 429 response body.
     pub error_message: Option<String>,
+    /// Budget accounting window. `lifetime` (default) preserves the original
+    /// behavior of summing all-time usage from the `usage_events` ledger.
+    #[serde(default)]
+    pub window: BudgetWindow,
+    /// Whether the budget is accounted per-user or per-team.
+    #[serde(default)]
+    pub scope: BudgetScope,
 }
 
 fn default_user_id_expr() -> String {
     "identity.id".to_string()
+}
+
+/// The accounting window for a token budget.
+///
+/// `Lifetime` is the default and reproduces the pre-windowing behavior
+/// (all-time sum from `usage_events`). The fixed windows are enforced via
+/// Redis fixed-window counters (or a Postgres time-bounded sum fallback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetWindow {
+    /// All-time cumulative usage (original behavior).
+    #[default]
+    Lifetime,
+    /// Rolling per-minute fixed window.
+    Minute,
+    /// Rolling per-hour fixed window.
+    Hour,
+    /// Rolling per-day fixed window.
+    Day,
+}
+
+impl BudgetWindow {
+    /// The fixed-window length in seconds, or `None` for `Lifetime`.
+    pub fn duration_secs(&self) -> Option<u64> {
+        match self {
+            BudgetWindow::Lifetime => None,
+            BudgetWindow::Minute => Some(60),
+            BudgetWindow::Hour => Some(3_600),
+            BudgetWindow::Day => Some(86_400),
+        }
+    }
+
+    /// A short, stable string tag used in Redis keys and Postgres intervals.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            BudgetWindow::Lifetime => "lifetime",
+            BudgetWindow::Minute => "minute",
+            BudgetWindow::Hour => "hour",
+            BudgetWindow::Day => "day",
+        }
+    }
+
+    /// Postgres interval literal for the windowed fallback query.
+    /// Returns `None` for `Lifetime` (no time bound).
+    pub fn pg_interval(&self) -> Option<&'static str> {
+        match self {
+            BudgetWindow::Lifetime => None,
+            BudgetWindow::Minute => Some("1 minute"),
+            BudgetWindow::Hour => Some("1 hour"),
+            BudgetWindow::Day => Some("1 day"),
+        }
+    }
+}
+
+/// The subject a budget is accounted against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetScope {
+    /// Per-user accounting (default).
+    #[default]
+    User,
+    /// Per-team accounting.
+    Team,
+}
+
+impl BudgetScope {
+    /// A short, stable string tag used in Redis keys.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            BudgetScope::User => "user",
+            BudgetScope::Team => "team",
+        }
+    }
 }
 
 /// Configuration for the stream_meter post-response hook.
@@ -506,5 +625,144 @@ base_url: "http://kratos:4433"
             }
             _ => panic!("expected Anonymous"),
         }
+    }
+
+    // ── Task 2: MaxTokenBudget window/scope backward compatibility ──────────
+
+    #[test]
+    fn legacy_max_token_budget_yaml_defaults_to_lifetime_user() {
+        // Arrange — a pre-windowing config with only limit + user_id_expr.
+        let yaml = r#"
+limit: 100000
+user_id_expr: "identity.id"
+"#;
+        // Act
+        let cfg: MaxTokenBudgetConfig = serde_yaml::from_str(yaml).unwrap();
+        // Assert — serde defaults preserve the original all-time, per-user semantics.
+        assert_eq!(cfg.limit, 100_000);
+        assert_eq!(cfg.user_id_expr, "identity.id");
+        assert_eq!(cfg.window, BudgetWindow::Lifetime);
+        assert_eq!(cfg.scope, BudgetScope::User);
+        assert!(cfg.error_message.is_none());
+    }
+
+    #[test]
+    fn minimal_max_token_budget_yaml_only_limit_still_deserializes() {
+        // Arrange — the absolute minimum: user_id_expr also defaults.
+        let yaml = r#"limit: 42"#;
+        // Act
+        let cfg: MaxTokenBudgetConfig = serde_yaml::from_str(yaml).unwrap();
+        // Assert
+        assert_eq!(cfg.limit, 42);
+        assert_eq!(cfg.user_id_expr, "identity.id");
+        assert_eq!(cfg.window, BudgetWindow::Lifetime);
+        assert_eq!(cfg.scope, BudgetScope::User);
+    }
+
+    #[test]
+    fn windowed_max_token_budget_yaml_deserializes() {
+        // Arrange — new-style config selecting an hourly, team-scoped budget.
+        let yaml = r#"
+limit: 5000
+window: hour
+scope: team
+error_message: "team hourly cap reached"
+"#;
+        // Act
+        let cfg: MaxTokenBudgetConfig = serde_yaml::from_str(yaml).unwrap();
+        // Assert
+        assert_eq!(cfg.limit, 5000);
+        assert_eq!(cfg.window, BudgetWindow::Hour);
+        assert_eq!(cfg.scope, BudgetScope::Team);
+        assert_eq!(
+            cfg.error_message.as_deref(),
+            Some("team hourly cap reached")
+        );
+    }
+
+    #[test]
+    fn max_token_budget_as_pre_request_hook_variant() {
+        // Arrange — full hook shape with the snake_case tag.
+        let yaml = r#"
+type: max_token_budget
+config:
+  limit: 10
+  window: day
+  scope: user
+"#;
+        // Act
+        let hook: PreRequestHook = serde_yaml::from_str(yaml).unwrap();
+        // Assert
+        match hook {
+            PreRequestHook::MaxTokenBudget { config } => {
+                assert_eq!(config.window, BudgetWindow::Day);
+                assert_eq!(config.scope, BudgetScope::User);
+            }
+            _ => panic!("expected MaxTokenBudget"),
+        }
+    }
+
+    #[test]
+    fn budget_window_serde_round_trip() {
+        for (window, tag) in [
+            (BudgetWindow::Lifetime, "lifetime"),
+            (BudgetWindow::Minute, "minute"),
+            (BudgetWindow::Hour, "hour"),
+            (BudgetWindow::Day, "day"),
+        ] {
+            // snake_case tag matches the enum's `tag()` helper.
+            assert_eq!(window.tag(), tag);
+            let json = serde_json::to_string(&window).unwrap();
+            assert_eq!(json, format!("\"{tag}\""));
+            let back: BudgetWindow = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, window);
+        }
+    }
+
+    #[test]
+    fn budget_scope_serde_round_trip() {
+        for (scope, tag) in [(BudgetScope::User, "user"), (BudgetScope::Team, "team")] {
+            assert_eq!(scope.tag(), tag);
+            let json = serde_json::to_string(&scope).unwrap();
+            assert_eq!(json, format!("\"{tag}\""));
+            let back: BudgetScope = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, scope);
+        }
+    }
+
+    #[test]
+    fn budget_window_duration_and_interval_mapping() {
+        // Fixed windows expose both a TTL (seconds) and a Postgres interval.
+        assert_eq!(BudgetWindow::Lifetime.duration_secs(), None);
+        assert_eq!(BudgetWindow::Minute.duration_secs(), Some(60));
+        assert_eq!(BudgetWindow::Hour.duration_secs(), Some(3_600));
+        assert_eq!(BudgetWindow::Day.duration_secs(), Some(86_400));
+
+        assert_eq!(BudgetWindow::Lifetime.pg_interval(), None);
+        assert_eq!(BudgetWindow::Minute.pg_interval(), Some("1 minute"));
+        assert_eq!(BudgetWindow::Hour.pg_interval(), Some("1 hour"));
+        assert_eq!(BudgetWindow::Day.pg_interval(), Some("1 day"));
+    }
+
+    #[test]
+    fn budget_defaults_are_lifetime_and_user() {
+        assert_eq!(BudgetWindow::default(), BudgetWindow::Lifetime);
+        assert_eq!(BudgetScope::default(), BudgetScope::User);
+    }
+
+    // ── Task 3: RateLimitConfig defaults ──────────────────────────────────
+
+    #[test]
+    fn rate_limit_config_defaults_disabled_with_sane_rate() {
+        let cfg = RateLimitConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.per_second, 50);
+        assert_eq!(cfg.burst, 100);
+    }
+
+    #[test]
+    fn server_config_includes_default_rate_limit() {
+        let cfg = ServerConfig::default();
+        assert!(!cfg.rate_limit.enabled);
     }
 }

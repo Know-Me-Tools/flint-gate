@@ -241,7 +241,10 @@ async fn stream_sse_parses_events_end_to_end() {
 
     let client = client_for(&server).await;
     let req = json!({"stream": true});
-    let events = client.collect_sse("/v1/chat/completions", &req).await.unwrap();
+    let events = client
+        .collect_sse("/v1/chat/completions", &req)
+        .await
+        .unwrap();
 
     assert_eq!(events.len(), 3);
     assert_eq!(events[0].event, "ping");
@@ -276,7 +279,10 @@ async fn stream_sse_handles_chunked_delivery() {
 
     let client = client_for(&server).await;
     let req = json!({"stream": true});
-    let events = client.collect_sse("/v1/chat/completions", &req).await.unwrap();
+    let events = client
+        .collect_sse("/v1/chat/completions", &req)
+        .await
+        .unwrap();
     // Even if the wiremock only delivered part_a in one body, the parser must
     // still emit the event whose data line ends with a newline — but only if
     // the trailing blank line is present. Here part_a ends mid-line, so we
@@ -338,11 +344,13 @@ fn list_routes_ignores_unparseable_items() {
     let arr = raw.get("routes").and_then(|v| v.as_array()).unwrap();
     let parsed: Vec<RouteConfig> = arr
         .iter()
-        .map(|v| serde_json::from_value(v.clone()).unwrap_or(RouteConfig {
-            id: String::new(),
-            priority: 0,
-            extra: Value::Null,
-        }))
+        .map(|v| {
+            serde_json::from_value(v.clone()).unwrap_or(RouteConfig {
+                id: String::new(),
+                priority: 0,
+                extra: Value::Null,
+            })
+        })
         .collect();
     assert_eq!(parsed.len(), 3);
     assert_eq!(parsed[0].id, "ok");

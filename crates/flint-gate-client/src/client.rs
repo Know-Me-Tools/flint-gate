@@ -154,16 +154,17 @@ impl FlintGateClient {
             #[serde(default)]
             source: Option<String>,
         }
-        let envelope: ListRoutesEnvelope =
-            self.send_admin(Method::GET, "/routes", None).await?;
+        let envelope: ListRoutesEnvelope = self.send_admin(Method::GET, "/routes", None).await?;
         Ok(envelope
             .routes
             .into_iter()
-            .map(|v| serde_json::from_value(v).unwrap_or(RouteConfig {
-                id: String::new(),
-                priority: 0,
-                extra: serde_json::Value::Null,
-            }))
+            .map(|v| {
+                serde_json::from_value(v).unwrap_or(RouteConfig {
+                    id: String::new(),
+                    priority: 0,
+                    extra: serde_json::Value::Null,
+                })
+            })
             .collect())
     }
 
@@ -209,9 +210,7 @@ impl FlintGateClient {
             #[serde(default, rename = "api_keys")]
             api_keys: Vec<ApiKey>,
         }
-        let envelope: ListEnvelope = self
-            .send_admin(Method::GET, "/api-keys", None)
-            .await?;
+        let envelope: ListEnvelope = self.send_admin(Method::GET, "/api-keys", None).await?;
         Ok(envelope.api_keys)
     }
 
@@ -256,11 +255,7 @@ impl FlintGateClient {
     /// Convenience wrapper around [`Self::stream_sse`] that drives the stream
     /// to completion, returning every event in a `Vec`. Useful for tests and
     /// short-lived streams.
-    pub async fn collect_sse<B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<Vec<SseEvent>> {
+    pub async fn collect_sse<B: Serialize>(&self, path: &str, body: &B) -> Result<Vec<SseEvent>> {
         let stream = self.stream_sse(path, body).await?;
         stream.try_collect().await
     }

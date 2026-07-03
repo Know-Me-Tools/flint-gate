@@ -1,0 +1,8 @@
+- [x] Add governor + tower_governor deps to flint-gate-core
+- [x] Extend MaxTokenBudgetConfig with window + scope (serde defaults)
+- [x] tower_governor request-rate layer on proxy router with key extractor
+- [x] Redis Lua window counters (token budget + rate limit) behind redis-l2
+- [x] Enforce in middleware/pipeline.rs — block with typed error over threshold
+- [x] Postgres SUM(tokens) windowed fallback when redis-l2 off
+- [x] Tests: budget block, rate-limit block, fallback path (≥80%)
+- [x] cargo check/clippy/test --workspace

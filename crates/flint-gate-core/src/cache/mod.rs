@@ -33,6 +33,7 @@ pub struct GateCache {
 }
 
 /// Redis key prefix for L2 cache entries.
+#[cfg(feature = "redis-l2")]
 const L2_PREFIX: &str = "flint";
 
 impl GateCache {
@@ -76,6 +77,16 @@ impl GateCache {
             }
         }
         Ok(())
+    }
+
+    /// Return a clone of the Redis L2 connection manager, if connected.
+    ///
+    /// Reused by the rate-limit module so it shares the single connection
+    /// manager/pool established by [`GateCache::connect_l2`] rather than
+    /// opening a second connection.
+    #[cfg(feature = "redis-l2")]
+    pub fn l2_connection(&self) -> Option<redis::aio::ConnectionManager> {
+        self.l2.clone()
     }
 
     /// Invalidate all cache entries. Called on config change.

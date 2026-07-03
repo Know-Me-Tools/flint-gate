@@ -234,6 +234,8 @@ async fn main() -> Result<()> {
     let shared_router: SharedRouter = Arc::new(RwLock::new(gate_router));
 
     // 9. Build cache + LISTEN/NOTIFY invalidation
+    // `mut` is only needed by `connect_l2` under the `redis-l2` feature.
+    #[cfg_attr(not(feature = "redis-l2"), allow(unused_mut))]
     let mut cache = GateCache::from_config(&initial_config.cache);
     #[cfg(feature = "redis-l2")]
     {
@@ -261,6 +263,16 @@ async fn main() -> Result<()> {
     // 10. Build lookup registry
     let lookup_registry = Arc::new(LookupRegistry::new(db.clone()));
 
+    // 10b. Build the shared Redis rate limiter by reusing the L2 connection.
+    #[cfg(feature = "redis-l2")]
+    let rate_limiter = cache
+        .l2_connection()
+        .map(flint_gate_core::ratelimit::RedisRateLimiter::new);
+    #[cfg(feature = "redis-l2")]
+    if rate_limiter.is_some() {
+        info!("shared Redis window counters enabled (budgets + request-rate)");
+    }
+
     // 11. Assemble AppState
     let app_state = Arc::new(AppState {
         config: Arc::clone(&shared_config),
@@ -271,6 +283,8 @@ async fn main() -> Result<()> {
         db: db.clone(),
         http_client: http_client.clone(),
         lookup_registry: Arc::clone(&lookup_registry),
+        #[cfg(feature = "redis-l2")]
+        rate_limiter,
     });
 
     let shutdown_timeout = initial_config.server.shutdown_timeout_secs;
@@ -278,11 +292,30 @@ async fn main() -> Result<()> {
 
     // 12. Start proxy server — with /health shortcut and optional TLS
     let proxy_listen = initial_config.server.listen.clone();
-    let proxy_app = Router::new()
+    let mut proxy_app = Router::new()
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
         .fallback(any(proxy_handler))
         .with_state(Arc::clone(&app_state))
         .layer(TraceLayer::new_for_http());
+
+    // Coarse in-process request-rate shield (per replica), keyed on credential
+    // with client-IP fallback. Authoritative cross-replica limiting is the
+    // Redis window counters; this only clips bursts.
+    let rate_cfg = &initial_config.server.rate_limit;
+    if rate_cfg.enabled {
+        match flint_gate_core::ratelimit::build_governor_layer(rate_cfg.per_second, rate_cfg.burst)
+        {
+            Some(layer) => {
+                proxy_app = proxy_app.layer(layer);
+                info!(
+                    per_second = rate_cfg.per_second,
+                    burst = rate_cfg.burst,
+                    "in-process request-rate limiter enabled"
+                );
+            }
+            None => warn!("rate_limit enabled but config was degenerate — limiter not applied"),
+        }
+    }
 
     let tls_cfg = initial_config.server.tls.clone();
     let proxy_token = token.clone();
@@ -453,6 +486,7 @@ mod tests {
                 admin_listen: "0.0.0.0:4457".to_string(),
                 tls: Default::default(),
                 shutdown_timeout_secs: 30,
+                rate_limit: Default::default(),
             },
             database: DatabaseConfig {
                 url: "postgres://original".to_string(),

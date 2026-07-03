@@ -142,10 +142,16 @@ pub fn collect_hook_templates(hooks: &[crate::config::types::PreRequestHook]) ->
                 }
             }
             crate::config::types::PreRequestHook::MaxTokenBudget { config } => {
-                out.push(format!(
-                    "{{{{ lookup:usage_budget({}) }}}}",
-                    config.user_id_expr
-                ));
+                // Only lifetime budgets use the pre-resolved DB lookup. Windowed
+                // budgets are resolved inline in the pipeline (Redis / windowed
+                // Postgres), so synthesizing a lifetime lookup for them would be
+                // a wasted all-time SUM query.
+                if config.window == crate::config::types::BudgetWindow::Lifetime {
+                    out.push(format!(
+                        "{{{{ lookup:usage_budget({}) }}}}",
+                        config.user_id_expr
+                    ));
+                }
             }
         }
     }

@@ -12,7 +12,7 @@ name = "flint-gate"
 path = "src/main.rs"
 
 [dependencies]
-flint-gate-core = { path = "../flint-gate-core" }
+flint-gate-core = { path = "../flint-gate-core", default-features = false }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"

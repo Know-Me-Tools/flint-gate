@@ -5,4 +5,5 @@ pub mod config;
 pub mod db;
 pub mod middleware;
 pub mod proxy;
+pub mod ratelimit;
 pub mod stream;

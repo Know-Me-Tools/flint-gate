@@ -332,6 +332,30 @@ impl Database {
         Ok(total)
     }
 
+    /// Return the token total for a user within a rolling time window.
+    ///
+    /// `interval` must be a Postgres interval literal (e.g. `"1 hour"`). Only
+    /// `usage_events` rows newer than `now() - interval` are summed. This is the
+    /// fallback path for windowed token budgets when Redis (`redis-l2`) is not
+    /// enabled. The `created_at TIMESTAMPTZ` column is the event timestamp.
+    pub async fn get_user_token_total_windowed(
+        &self,
+        user_id: &str,
+        interval: &str,
+    ) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(tokens), 0) AS total FROM usage_events \
+             WHERE user_id = $1 AND created_at > now() - $2::interval",
+        )
+        .bind(user_id)
+        .bind(interval)
+        .fetch_one(&self.pool)
+        .await
+        .context("querying windowed user token total")?;
+        let total: i64 = row.try_get("total")?;
+        Ok(total)
+    }
+
     /// Send a Postgres NOTIFY on the invalidation channel.
     async fn notify(&self, payload: &str) -> Result<()> {
         sqlx::query("SELECT pg_notify('flintgate_config_changed', $1)")
@@ -517,5 +541,56 @@ impl UsageEvent {
             duration_ms: duration_ms as i64,
             metadata: serde_json::Value::Object(Default::default()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::types::BudgetWindow;
+
+    /// The windowed fallback binds `window.pg_interval()` into the query's
+    /// `$2::interval` placeholder. This asserts the exact literals so a change
+    /// to the window→interval contract is caught without a live database.
+    #[test]
+    fn windowed_fallback_binds_expected_pg_intervals() {
+        assert_eq!(BudgetWindow::Minute.pg_interval(), Some("1 minute"));
+        assert_eq!(BudgetWindow::Hour.pg_interval(), Some("1 hour"));
+        assert_eq!(BudgetWindow::Day.pg_interval(), Some("1 day"));
+        // Lifetime has no time bound and never reaches the windowed query.
+        assert_eq!(BudgetWindow::Lifetime.pg_interval(), None);
+    }
+
+    /// Integration test for `get_user_token_total_windowed`. Requires a live
+    /// Postgres at `DATABASE_URL` and is `#[ignore]`d so the default test run
+    /// needs no database. Run explicitly with:
+    ///   DATABASE_URL=postgres://... cargo test -p flint-gate-core --all-features -- --ignored
+    #[tokio::test]
+    #[ignore = "requires a live Postgres via DATABASE_URL"]
+    async fn windowed_total_sums_only_recent_events() {
+        use super::{Database, UsageEvent};
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let db = Database::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+
+        let user = format!("wtest-{}", uuid::Uuid::new_v4());
+        db.log_usage(&UsageEvent::new("r1", &user, "route", 300, 5))
+            .await
+            .unwrap();
+
+        // A generous window includes the just-written event.
+        let hour = db
+            .get_user_token_total_windowed(&user, "1 hour")
+            .await
+            .unwrap();
+        assert_eq!(hour, 300);
+
+        // A negative-ish window would exclude it; use a tiny interval to prove
+        // the time bound is applied (the row is newer than now()-'0 seconds' is
+        // false, so it must be excluded).
+        let none = db
+            .get_user_token_total_windowed(&user, "0 seconds")
+            .await
+            .unwrap();
+        assert_eq!(none, 0);
     }
 }

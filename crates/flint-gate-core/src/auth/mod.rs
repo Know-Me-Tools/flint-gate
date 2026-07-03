@@ -1,15 +1,20 @@
 /// Authentication module — pluggable authenticator trait and built-in implementations.
 pub mod api_key;
 pub mod identity;
+pub mod jwks;
 pub mod jwt_mint;
 pub mod jwt_verify;
 pub mod kratos;
+pub mod mcp;
+pub mod mcp_metadata;
+pub mod pkce;
 
 pub use api_key::ApiKeyAuthenticator;
 pub use identity::Identity;
 pub use jwt_mint::{JwtMinter, SharedJwtMinter};
 pub use jwt_verify::JwtVerifyAuthenticator;
 pub use kratos::KratosAuthenticator;
+pub use mcp::McpAuthenticator;
 
 use crate::config::types::AuthProviderConfig;
 use crate::db::Database;
@@ -26,6 +31,10 @@ pub enum AuthError {
     /// The credential is missing or invalid — return 401.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// The token verified but lacks a required scope — return 403 with an
+    /// `insufficient_scope` `WWW-Authenticate` challenge (OAuth 2.1 step-up).
+    #[error("insufficient scope: requires {}", required.join(" "))]
+    InsufficientScope { required: Vec<String> },
     /// The upstream auth provider is unreachable or returned an error — return 502.
     #[error("auth provider error: {0}")]
     ProviderError(String),
@@ -39,6 +48,10 @@ pub enum AuthError {
 pub enum AuthMethod {
     KratosSession,
     BearerJwt,
+    /// MCP OAuth 2.1 access token (RFC 8707 audience-bound) with granted scopes.
+    McpBearer {
+        scopes: Vec<String>,
+    },
     ApiKey {
         client_id: String,
         scopes: Vec<String>,
@@ -107,6 +120,33 @@ pub fn build_authenticators(
                 cfg.clone(),
                 http_client.clone(),
             )),
+            AuthProviderConfig::Mcp(cfg) => {
+                // Fail CLOSED on a misconfigured MCP RS. Without an `audience`
+                // the RFC 8707 confused-deputy check is a no-op (any signed
+                // token would pass — C1); without an `issuer` we cannot pin the
+                // trusted AS (M3). Refuse to build a permissive authenticator;
+                // mirror the api_key-without-db pattern with a FailingAuthenticator.
+                let mut missing: Vec<&str> = Vec::new();
+                if cfg.audience.is_none() {
+                    missing.push("audience");
+                }
+                if cfg.issuer.is_none() {
+                    missing.push("issuer");
+                }
+                if missing.is_empty() {
+                    Arc::new(McpAuthenticator::new(cfg.clone(), http_client.clone()))
+                } else {
+                    let fields = missing.join(", ");
+                    tracing::error!(
+                        provider = %name,
+                        missing = %fields,
+                        "mcp provider missing required security fields ({fields}) — provider will always fail (fail-closed)"
+                    );
+                    Arc::new(FailingAuthenticator::new(format!(
+                        "mcp provider requires {fields} to be configured"
+                    )))
+                }
+            }
             AuthProviderConfig::ApiKey(cfg) => match db.clone() {
                 Some(database) => Arc::new(ApiKeyAuthenticator::new(cfg.clone(), database)),
                 None => {
@@ -155,5 +195,68 @@ mod tests {
         let result = auth.authenticate(&parts).await.unwrap();
         assert_eq!(result.identity.id, "guest");
         assert!(matches!(result.method, AuthMethod::Anonymous));
+    }
+
+    // ── C1/M3: MCP provider misconfiguration fails closed ──────────────────
+
+    use crate::config::types::McpAuthConfig;
+
+    fn mcp_provider(audience: Option<&str>, issuer: Option<&str>) -> AuthProviderConfig {
+        AuthProviderConfig::Mcp(McpAuthConfig {
+            jwks_url: "https://as.example/jwks".to_string(),
+            issuer: issuer.map(str::to_string),
+            audience: audience.map(str::to_string),
+            resource: "https://rs.example/mcp".to_string(),
+            authorization_servers: vec!["https://as.example".to_string()],
+            required_scopes: vec![],
+            leeway_seconds: 5,
+        })
+    }
+
+    async fn build_single(name: &str, cfg: AuthProviderConfig) -> Arc<dyn Authenticator> {
+        let mut providers = HashMap::new();
+        providers.insert(name.to_string(), cfg);
+        let map = build_authenticators(&providers, &reqwest::Client::new(), None);
+        map.get(name).expect("provider built").clone()
+    }
+
+    #[tokio::test]
+    async fn mcp_without_audience_yields_failing_authenticator() {
+        // C1: no audience → RFC 8707 check would be a no-op → MUST fail closed.
+        let auth = build_single("mcp", mcp_provider(None, Some("https://as.example"))).await;
+        let (mut parts, _) = http::Request::new(()).into_parts();
+        parts.headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer whatever"),
+        );
+        let result = auth.authenticate(&parts).await;
+        assert!(
+            matches!(result, Err(AuthError::ProviderError(_))),
+            "MCP provider without audience must be a FailingAuthenticator"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_without_issuer_yields_failing_authenticator() {
+        // M3: no issuer → cannot pin trusted AS → fail closed.
+        let auth = build_single("mcp", mcp_provider(Some("https://rs.example/mcp"), None)).await;
+        let (parts, _) = http::Request::new(()).into_parts();
+        let result = auth.authenticate(&parts).await;
+        assert!(matches!(result, Err(AuthError::ProviderError(_))));
+    }
+
+    #[tokio::test]
+    async fn mcp_with_audience_and_issuer_builds_real_authenticator() {
+        // Sanity: a correctly configured provider does NOT fail at build; it
+        // reaches the token path (missing Bearer → Unauthorized, not
+        // ProviderError).
+        let auth = build_single(
+            "mcp",
+            mcp_provider(Some("https://rs.example/mcp"), Some("https://as.example")),
+        )
+        .await;
+        let (parts, _) = http::Request::new(()).into_parts();
+        let result = auth.authenticate(&parts).await;
+        assert!(matches!(result, Err(AuthError::Unauthorized(_))));
     }
 }

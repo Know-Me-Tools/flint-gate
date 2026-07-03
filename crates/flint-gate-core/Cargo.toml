@@ -39,6 +39,8 @@ dashmap = "6"
 thiserror = "2"
 anyhow = "1"
 sha2 = "0.10"
+base64 = "0.22"
+url = "2"
 hex = "0.4"
 rand = "0.8"
 redis = { version = "1", features = ["tokio-comp", "connection-manager"], optional = true }

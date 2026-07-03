@@ -292,8 +292,22 @@ async fn main() -> Result<()> {
 
     // 12. Start proxy server — with /health shortcut and optional TLS
     let proxy_listen = initial_config.server.listen.clone();
+    // RFC 9728 Protected Resource Metadata — served on the PUBLIC proxy surface
+    // (MCP clients must reach it) rather than the private admin port. Captures
+    // the shared config so a hot-reload of MCP providers is reflected live.
+    let metadata_config = Arc::clone(&shared_config);
     let mut proxy_app = Router::new()
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
+        .route(
+            flint_gate_core::auth::mcp_metadata::PROTECTED_RESOURCE_METADATA_PATH,
+            get(move || {
+                let cfg = Arc::clone(&metadata_config);
+                async move {
+                    flint_gate_core::auth::mcp_metadata::protected_resource_metadata_handler(cfg)
+                        .await
+                }
+            }),
+        )
         .fallback(any(proxy_handler))
         .with_state(Arc::clone(&app_state))
         .layer(TraceLayer::new_for_http());

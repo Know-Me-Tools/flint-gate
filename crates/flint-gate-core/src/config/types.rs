@@ -204,6 +204,9 @@ pub enum AuthProviderConfig {
     Jwt(JwtAuthConfig),
     ApiKey(ApiKeyAuthConfig),
     Anonymous(AnonymousAuthConfig),
+    /// MCP-era OAuth 2.1 Resource Server (RFC 8707 audience binding, scope
+    /// enforcement, RFC 9728 metadata discovery). Superset of `Jwt`.
+    Mcp(McpAuthConfig),
 }
 
 /// Ory Kratos session authentication.
@@ -236,6 +239,36 @@ pub struct JwtAuthConfig {
 
 fn default_leeway() -> u64 {
     5
+}
+
+/// MCP OAuth 2.1 Resource Server authentication.
+///
+/// This RS validates access tokens minted by an external Authorization Server.
+/// It NEVER acts as an AS itself. The security crux is RFC 8707: a token whose
+/// `aud` does not include this RS's `audience` MUST be rejected even when its
+/// signature is valid (confused-deputy defense).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpAuthConfig {
+    /// JWKS endpoint of the trusted Authorization Server.
+    pub jwks_url: String,
+    /// Expected `iss` claim. When set, tokens with a different issuer are rejected.
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// RFC 8707 resource identifier this RS accepts in the token `aud`.
+    /// When set, the token's audience MUST include this value.
+    #[serde(default)]
+    pub audience: Option<String>,
+    /// This server's canonical resource URI, advertised in the RFC 9728
+    /// Protected Resource Metadata document.
+    pub resource: String,
+    /// Authorization Server issuer URLs advertised in the metadata document.
+    #[serde(default)]
+    pub authorization_servers: Vec<String>,
+    /// Scopes the caller's token MUST carry (superset check). Empty = no scope gate.
+    #[serde(default)]
+    pub required_scopes: Vec<String>,
+    #[serde(default = "default_leeway")]
+    pub leeway_seconds: u64,
 }
 
 /// API key header extraction + database lookup.
@@ -624,6 +657,58 @@ base_url: "http://kratos:4433"
                 assert_eq!(cfg.default_subject, "anonymous");
             }
             _ => panic!("expected Anonymous"),
+        }
+    }
+
+    #[test]
+    fn deserialize_mcp_auth_full() {
+        let yaml = r#"
+type: mcp
+jwks_url: "https://as.example/.well-known/jwks.json"
+issuer: "https://as.example"
+audience: "https://gate.example/mcp"
+resource: "https://gate.example/mcp"
+authorization_servers:
+  - "https://as.example"
+required_scopes:
+  - "mcp:read"
+  - "mcp:write"
+leeway_seconds: 10
+"#;
+        let provider: AuthProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        match provider {
+            AuthProviderConfig::Mcp(cfg) => {
+                assert_eq!(cfg.jwks_url, "https://as.example/.well-known/jwks.json");
+                assert_eq!(cfg.issuer.as_deref(), Some("https://as.example"));
+                assert_eq!(cfg.audience.as_deref(), Some("https://gate.example/mcp"));
+                assert_eq!(cfg.resource, "https://gate.example/mcp");
+                assert_eq!(cfg.authorization_servers, vec!["https://as.example"]);
+                assert_eq!(cfg.required_scopes, vec!["mcp:read", "mcp:write"]);
+                assert_eq!(cfg.leeway_seconds, 10);
+            }
+            _ => panic!("expected Mcp"),
+        }
+    }
+
+    #[test]
+    fn deserialize_mcp_auth_defaults() {
+        // Only the required fields; optional fields default (empty vecs, None,
+        // leeway = 5). This exercises the fail-open-only-where-safe defaults.
+        let yaml = r#"
+type: mcp
+jwks_url: "https://as.example/jwks"
+resource: "https://gate.example/mcp"
+"#;
+        let provider: AuthProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        match provider {
+            AuthProviderConfig::Mcp(cfg) => {
+                assert!(cfg.issuer.is_none());
+                assert!(cfg.audience.is_none());
+                assert!(cfg.authorization_servers.is_empty());
+                assert!(cfg.required_scopes.is_empty());
+                assert_eq!(cfg.leeway_seconds, 5);
+            }
+            _ => panic!("expected Mcp"),
         }
     }
 

@@ -4,84 +4,38 @@
 /// verifies inbound `Authorization: Bearer <token>` requests, and maps the
 /// JWT claims to an `Identity`.
 use crate::auth::identity::Identity;
+use crate::auth::jwks::JwksCache;
 use crate::auth::{AuthError, AuthMethod, AuthResult, Authenticator};
 use crate::config::types::JwtAuthConfig;
 use async_trait::async_trait;
 use http::header::AUTHORIZATION;
 use http::request::Parts;
-use jsonwebtoken::jwk::JwkSet;
-use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
+use jsonwebtoken::{decode, decode_header, Validation};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
-use tracing::debug;
-
-/// How long a fetched JWKS is considered valid before re-fetching.
-const JWKS_TTL: Duration = Duration::from_secs(300);
-
-struct CachedJwks {
-    jwks: JwkSet,
-    fetched_at: Instant,
-}
 
 /// JWT Bearer authenticator — verifies tokens against a JWKS endpoint.
 pub struct JwtVerifyAuthenticator {
     config: JwtAuthConfig,
-    client: reqwest::Client,
-    jwks_cache: Arc<RwLock<Option<CachedJwks>>>,
+    /// The JWKS cache, or the construction error (invalid/SSRF `jwks_url`).
+    /// Held as a `Result` so a bad URL fails CLOSED at authenticate time rather
+    /// than panicking at build; the `new` signature stays infallible.
+    jwks: Result<JwksCache, AuthError>,
 }
 
 impl JwtVerifyAuthenticator {
     pub fn new(config: JwtAuthConfig, client: reqwest::Client) -> Self {
-        Self {
-            config,
-            client,
-            jwks_cache: Arc::new(RwLock::new(None)),
-        }
+        let jwks = JwksCache::new(config.jwks_url.clone(), client);
+        Self { config, jwks }
     }
 
-    /// Return the cached JWKS, fetching from the network if stale or absent.
-    async fn jwks(&self) -> Result<JwkSet, AuthError> {
-        // Fast path — read-lock check
-        {
-            let guard = self.jwks_cache.read().await;
-            if let Some(c) = guard.as_ref() {
-                if c.fetched_at.elapsed() < JWKS_TTL {
-                    return Ok(c.jwks.clone());
-                }
-            }
-        }
-
-        // Slow path — fetch and update
-        debug!(url = %self.config.jwks_url, "fetching JWKS");
-        let resp = self
-            .client
-            .get(&self.config.jwks_url)
-            .send()
-            .await
-            .map_err(|e| AuthError::ProviderError(format!("JWKS fetch error: {e}")))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(AuthError::ProviderError(format!(
-                "JWKS endpoint returned {status}"
-            )));
-        }
-
-        let jwks: JwkSet = resp
-            .json()
-            .await
-            .map_err(|e| AuthError::ProviderError(format!("JWKS parse error: {e}")))?;
-
-        *self.jwks_cache.write().await = Some(CachedJwks {
-            jwks: jwks.clone(),
-            fetched_at: Instant::now(),
-        });
-
-        Ok(jwks)
+    /// Borrow the cache or reproduce the stored construction error.
+    fn jwks(&self) -> Result<&JwksCache, AuthError> {
+        self.jwks.as_ref().map_err(|e| match e {
+            AuthError::ProviderError(m) => AuthError::ProviderError(m.clone()),
+            other => AuthError::ProviderError(other.to_string()),
+        })
     }
 }
 
@@ -111,26 +65,8 @@ impl Authenticator for JwtVerifyAuthenticator {
         let header = decode_header(token)
             .map_err(|e| AuthError::Unauthorized(format!("invalid JWT header: {e}")))?;
 
-        // ── Resolve decoding key from JWKS ─────────────────────────────────
-        let jwks = self.jwks().await?;
-        let decoding_key = match &header.kid {
-            Some(kid) => {
-                let jwk = jwks.find(kid).ok_or_else(|| {
-                    AuthError::Unauthorized(format!("no JWKS key found for kid={kid}"))
-                })?;
-                DecodingKey::from_jwk(jwk)
-                    .map_err(|e| AuthError::ProviderError(format!("invalid JWK: {e}")))?
-            }
-            None => {
-                // No kid — use first available key
-                let jwk = jwks
-                    .keys
-                    .first()
-                    .ok_or_else(|| AuthError::ProviderError("JWKS has no keys".to_string()))?;
-                DecodingKey::from_jwk(jwk)
-                    .map_err(|e| AuthError::ProviderError(format!("invalid JWK: {e}")))?
-            }
-        };
+        // ── Resolve decoding key from JWKS (shared cache + rotation) ───────
+        let decoding_key = self.jwks()?.decoding_key(header.kid.as_deref()).await?;
 
         // ── Build validation rules ─────────────────────────────────────────
         let mut validation = Validation::new(header.alg);

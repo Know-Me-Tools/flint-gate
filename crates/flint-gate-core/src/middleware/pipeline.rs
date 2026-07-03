@@ -134,6 +134,20 @@ async fn handle_request(
         .as_deref()
         .or(matched_route.site.default_auth.as_deref());
 
+    // Is the resolved provider an MCP Resource Server? If so, auth failures emit
+    // OAuth 2.1 `WWW-Authenticate` discovery/step-up headers, and the inbound
+    // access token is stripped before proxying (confused-deputy guard).
+    let mcp_provider_cfg: Option<crate::config::types::McpAuthConfig> =
+        if let Some(name) = auth_provider_name {
+            match state.config.read().await.auth_providers.get(name) {
+                Some(crate::config::types::AuthProviderConfig::Mcp(cfg)) => Some(cfg.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+    let is_mcp_auth = mcp_provider_cfg.is_some();
+
     // Extract the raw credential for cache key derivation (Authorization or Cookie).
     let raw_credential = parts
         .headers
@@ -173,7 +187,17 @@ async fn handle_request(
                         }
                         Err(AuthError::Unauthorized(msg)) => {
                             warn!(request_id = %request_id, provider = %provider_name, reason = %msg, "authentication failed");
+                            // MCP RS: 401 carries a discovery pointer to the
+                            // Protected Resource Metadata (RFC 9728 + OAuth 2.1).
+                            if is_mcp_auth {
+                                return Ok(mcp_discovery_unauthorized(&host, &parts));
+                            }
                             return Err(StatusCode::UNAUTHORIZED);
+                        }
+                        Err(AuthError::InsufficientScope { required }) => {
+                            warn!(request_id = %request_id, provider = %provider_name, ?required, "insufficient scope");
+                            // 403 step-up: tell the client which scope to request.
+                            return Ok(mcp_insufficient_scope(&required));
                         }
                         Err(AuthError::ProviderError(msg)) => {
                             error!(request_id = %request_id, provider = %provider_name, error = %msg, "auth provider error");
@@ -348,6 +372,15 @@ async fn handle_request(
     for (name, value) in &headers {
         let name_str = name.as_str().to_lowercase();
         if HOP_BY_HOP.contains(&name_str.as_str()) {
+            continue;
+        }
+        // Confused-deputy guard (RFC 8707 §3, MCP auth spec): the inbound MCP
+        // access token was minted for THIS resource server. It MUST NOT be
+        // forwarded upstream, where a compromised/rogue upstream could replay
+        // it against the AS or another RS. Drop the Authorization header on the
+        // MCP-auth path; a downstream-facing credential (if any) is re-attached
+        // only via an explicit ClaimsEnhancement mint_jwt hook below.
+        if is_mcp_auth && name_str == "authorization" {
             continue;
         }
         if let (Ok(n), Ok(v)) = (
@@ -650,6 +683,59 @@ fn budget_error_message(config: &MaxTokenBudgetConfig) -> String {
         .unwrap_or_else(|| "token budget exceeded".to_string())
 }
 
+/// Derive the absolute URL of this proxy's RFC 9728 Protected Resource Metadata
+/// document from the inbound request. Scheme is inferred from the
+/// `x-forwarded-proto` header (TLS terminators / load balancers set it),
+/// defaulting to `https` — never downgrade a discovery pointer to `http`.
+fn resource_metadata_url(host: &str, parts: &http::request::Parts) -> String {
+    let scheme = parts
+        .headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| *s == "http" || *s == "https")
+        .unwrap_or("https");
+    format!(
+        "{scheme}://{host}{}",
+        crate::auth::mcp_metadata::PROTECTED_RESOURCE_METADATA_PATH
+    )
+}
+
+/// Build the `401 Unauthorized` response for an MCP-protected route, carrying the
+/// `WWW-Authenticate: Bearer resource_metadata="…"` discovery header (RFC 9728 +
+/// OAuth 2.1). The body is a small JSON envelope for humans/debuggers.
+fn mcp_discovery_unauthorized(host: &str, parts: &http::request::Parts) -> Response {
+    let metadata_url = resource_metadata_url(host, parts);
+    let header = crate::auth::mcp_metadata::www_authenticate_discovery(&metadata_url);
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("content-type", "application/json")
+        .header(http::header::WWW_AUTHENTICATE, header)
+        .body(Body::from(
+            serde_json::json!({"error": "unauthorized"}).to_string(),
+        ))
+        .unwrap_or_else(|_| StatusCode::UNAUTHORIZED.into_response())
+}
+
+/// Build the `403 Forbidden` step-up response for an MCP-protected route whose
+/// token verified but lacked a required scope. Emits
+/// `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"` so the
+/// client knows which scope to request from the AS.
+fn mcp_insufficient_scope(required: &[String]) -> Response {
+    let header = crate::auth::mcp_metadata::www_authenticate_insufficient_scope(required);
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header("content-type", "application/json")
+        .header(http::header::WWW_AUTHENTICATE, header)
+        .body(Body::from(
+            serde_json::json!({
+                "error": "insufficient_scope",
+                "scope": required.join(" "),
+            })
+            .to_string(),
+        ))
+        .unwrap_or_else(|_| StatusCode::FORBIDDEN.into_response())
+}
+
 /// Build the `429 Too Many Requests` JSON response used when a budget is
 /// exceeded: `{"error":"quota_exceeded","message":<msg>}`. Falls back to a
 /// minimal body if the builder somehow fails (it never does for these inputs).
@@ -830,6 +916,86 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "quota_exceeded");
         assert_eq!(json["message"], "over the line");
+    }
+
+    // ── MCP auth-failure responses (Task 3) ────────────────────────────────
+
+    fn parts_with_forwarded_proto(proto: Option<&str>) -> http::request::Parts {
+        let (mut parts, _) = http::Request::new(()).into_parts();
+        if let Some(p) = proto {
+            parts
+                .headers
+                .insert("x-forwarded-proto", http::HeaderValue::from_str(p).unwrap());
+        }
+        parts
+    }
+
+    #[test]
+    fn resource_metadata_url_defaults_to_https() {
+        // No x-forwarded-proto → never downgrade the discovery pointer.
+        let parts = parts_with_forwarded_proto(None);
+        let url = resource_metadata_url("gate.example", &parts);
+        assert_eq!(
+            url,
+            "https://gate.example/.well-known/oauth-protected-resource"
+        );
+    }
+
+    #[test]
+    fn resource_metadata_url_honors_forwarded_http() {
+        let parts = parts_with_forwarded_proto(Some("http"));
+        let url = resource_metadata_url("localhost:4456", &parts);
+        assert_eq!(
+            url,
+            "http://localhost:4456/.well-known/oauth-protected-resource"
+        );
+    }
+
+    #[test]
+    fn resource_metadata_url_ignores_bogus_forwarded_proto() {
+        // A garbage proto value must not be reflected verbatim — fall back to https.
+        let parts = parts_with_forwarded_proto(Some("javascript"));
+        let url = resource_metadata_url("gate.example", &parts);
+        assert!(url.starts_with("https://"));
+    }
+
+    #[tokio::test]
+    async fn mcp_discovery_unauthorized_is_401_with_www_authenticate() {
+        let parts = parts_with_forwarded_proto(None);
+        let resp = mcp_discovery_unauthorized("gate.example", &parts);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let wa = resp
+            .headers()
+            .get(http::header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            wa,
+            "Bearer resource_metadata=\"https://gate.example/.well-known/oauth-protected-resource\""
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_insufficient_scope_is_403_with_scope_challenge() {
+        let resp = mcp_insufficient_scope(&["read".to_string(), "write".to_string()]);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let wa = resp
+            .headers()
+            .get(http::header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            wa,
+            "Bearer error=\"insufficient_scope\", scope=\"read write\""
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "insufficient_scope");
+        assert_eq!(json["scope"], "read write");
     }
 
     // ── Lifetime path (unchanged): usage read from the pre-resolved lookups ──

@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS jwt_signing_keys (
     active      BOOLEAN NOT NULL DEFAULT true,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS authz_policies (
+    id            TEXT PRIMARY KEY,
+    policy_text   TEXT NOT NULL,
+    schema_json   JSONB,
+    entities_json JSONB,
+    enabled       BOOLEAN NOT NULL DEFAULT true,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 "#;
 
 /// Database access wrapper.
@@ -469,6 +479,112 @@ impl Database {
             Ok(false)
         }
     }
+
+    // ── Authorization policies ───────────────────────────────────────────────
+
+    /// Load all ENABLED authorization policies, oldest first.
+    ///
+    /// Ordering is stable (`created_at`, then `id`) so the merged Cedar bundle
+    /// is deterministic and the "first schema/entities wins" rule in
+    /// [`crate::authz::CedarBundle::from_records`] is reproducible.
+    pub async fn load_enabled_policies(&self) -> Result<Vec<PolicyRow>> {
+        let rows = sqlx::query(
+            "SELECT id, policy_text, schema_json, entities_json, enabled \
+             FROM authz_policies WHERE enabled = true ORDER BY created_at ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("loading enabled authz policies")?;
+
+        let mut policies = Vec::with_capacity(rows.len());
+        for r in rows {
+            policies.push(PolicyRow::from_row(&r)?);
+        }
+        Ok(policies)
+    }
+
+    /// List all authorization policies (enabled and disabled), newest first.
+    pub async fn list_policies(&self) -> Result<Vec<PolicyRow>> {
+        let rows = sqlx::query(
+            "SELECT id, policy_text, schema_json, entities_json, enabled \
+             FROM authz_policies ORDER BY created_at DESC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing authz policies")?;
+
+        let mut policies = Vec::with_capacity(rows.len());
+        for r in rows {
+            policies.push(PolicyRow::from_row(&r)?);
+        }
+        Ok(policies)
+    }
+
+    /// Fetch a single authorization policy by id.
+    pub async fn get_policy(&self, id: &str) -> Result<Option<PolicyRow>> {
+        let row = sqlx::query(
+            "SELECT id, policy_text, schema_json, entities_json, enabled \
+             FROM authz_policies WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("fetching authz policy")?;
+
+        match row {
+            None => Ok(None),
+            Some(r) => Ok(Some(PolicyRow::from_row(&r)?)),
+        }
+    }
+
+    /// Insert or update an authorization policy (upsert on `id`).
+    ///
+    /// The caller MUST have validated `policy_text` (and `schema_json`) with the
+    /// Cedar validator before calling this — the store is not a validation
+    /// boundary. Emits a `policies` NOTIFY so peers reload.
+    pub async fn upsert_policy(
+        &self,
+        id: &str,
+        policy_text: &str,
+        schema_json: Option<&serde_json::Value>,
+        entities_json: Option<&serde_json::Value>,
+        enabled: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO authz_policies (id, policy_text, schema_json, entities_json, enabled, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, NOW()) \
+             ON CONFLICT (id) DO UPDATE SET \
+               policy_text = $2, schema_json = $3, entities_json = $4, enabled = $5, updated_at = NOW()",
+        )
+        .bind(id)
+        .bind(policy_text)
+        .bind(schema_json)
+        .bind(entities_json)
+        .bind(enabled)
+        .execute(&self.pool)
+        .await
+        .context("upserting authz policy")?;
+
+        self.notify("policies").await?;
+        info!(policy_id = id, enabled, "authz policy upserted");
+        Ok(())
+    }
+
+    /// Delete an authorization policy by id. Returns `false` if not found.
+    pub async fn delete_policy(&self, id: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM authz_policies WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("deleting authz policy")?;
+
+        if result.rows_affected() > 0 {
+            self.notify("policies").await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 /// A route row from the `gate_routes` table.
@@ -478,6 +594,41 @@ pub struct DbRoute {
     pub config: serde_json::Value,
     pub priority: i32,
     pub enabled: bool,
+}
+
+/// An authorization policy row from the `authz_policies` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRow {
+    pub id: String,
+    pub policy_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_json: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entities_json: Option<serde_json::Value>,
+    pub enabled: bool,
+}
+
+impl PolicyRow {
+    /// Build a `PolicyRow` from a sqlx row selecting the standard columns.
+    fn from_row(r: &sqlx::postgres::PgRow) -> Result<Self> {
+        Ok(Self {
+            id: r.try_get("id")?,
+            policy_text: r.try_get("policy_text")?,
+            schema_json: r.try_get("schema_json")?,
+            entities_json: r.try_get("entities_json")?,
+            enabled: r.try_get("enabled")?,
+        })
+    }
+
+    /// Convert into the authz engine's [`crate::authz::PolicyRecord`].
+    pub fn into_record(self) -> crate::authz::PolicyRecord {
+        crate::authz::PolicyRecord {
+            id: self.id,
+            policy_text: self.policy_text,
+            schema_json: self.schema_json,
+            entities_json: self.entities_json,
+        }
+    }
 }
 
 /// An API key record from the `api_keys` table.

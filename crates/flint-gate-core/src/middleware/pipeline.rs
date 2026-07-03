@@ -58,6 +58,10 @@ pub struct AppState {
     pub db: Option<Arc<Database>>,
     pub http_client: reqwest::Client,
     pub lookup_registry: Arc<LookupRegistry>,
+    /// Embedded Cedar authorization engine, shared lock-free via `ArcSwap`.
+    /// The `Authorize` pre-request hook evaluates route-level decisions against
+    /// the live policy bundle held here.
+    pub authz: Arc<crate::authz::AuthzEngine>,
     /// Shared Redis-backed window counters for authoritative token budgets and
     /// request-rate limits. `None` when the `redis-l2` feature is disabled or
     /// Redis is not configured — callers then use the Postgres windowed sum.
@@ -328,6 +332,40 @@ async fn handle_request(
                         "token budget exceeded — blocking request"
                     );
                     return Ok(quota_exceeded_response(&msg));
+                }
+            }
+            PreRequestHook::Authorize { config } => {
+                // Build the Cedar request from identity + route + request attrs.
+                // The action is generic (default "invoke"); per-route/per-tool
+                // distinctions live in `context`, not in distinct action ids.
+                let authz_context = build_authz_context(&identity, &route_id, method_str, path);
+                let decision =
+                    state
+                        .authz
+                        .authorize(&identity.id, &config.action, &route_id, &authz_context);
+                if !decision.is_allow() {
+                    if config.enforce {
+                        warn!(
+                            request_id = %request_id,
+                            user_id = %identity.id,
+                            route_id = %route_id,
+                            action = %config.action,
+                            "authorization denied — blocking request (403)"
+                        );
+                        let msg = config
+                            .error_message
+                            .clone()
+                            .unwrap_or_else(|| "authorization denied".to_string());
+                        return Ok(forbidden_response(&msg));
+                    }
+                    // Shadow / audit mode: log the deny but let the request pass.
+                    warn!(
+                        request_id = %request_id,
+                        user_id = %identity.id,
+                        route_id = %route_id,
+                        action = %config.action,
+                        "authorization would deny (enforce=false) — allowing request"
+                    );
                 }
             }
         }
@@ -749,6 +787,36 @@ fn quota_exceeded_response(msg: &str) -> Response {
         .unwrap_or_else(|_| StatusCode::TOO_MANY_REQUESTS.into_response())
 }
 
+/// Build the Cedar request `context` record for an `Authorize` hook.
+///
+/// Carries the request attributes a policy may branch on: HTTP method, path,
+/// route id, and the authenticated principal's id. Kept as a plain JSON object
+/// so [`crate::authz::AuthzEngine::authorize`] maps it into a Cedar context.
+/// Identity traits are included as a nested object when present so policies can
+/// reference e.g. `context.identity.email` without a schema change.
+fn build_authz_context(identity: &Identity, route_id: &str, method: &str, path: &str) -> Value {
+    serde_json::json!({
+        "method": method,
+        "path": path,
+        "route_id": route_id,
+        "principal_id": identity.id,
+        "identity": identity.traits,
+    })
+}
+
+/// Build the `403 Forbidden` JSON response used when an `Authorize` hook denies:
+/// `{"error":"forbidden","message":<msg>}`. Mirrors the 429 budget response
+/// shape but with a 403 status.
+fn forbidden_response(msg: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"error": "forbidden", "message": msg}).to_string(),
+        ))
+        .unwrap_or_else(|_| StatusCode::FORBIDDEN.into_response())
+}
+
 /// Read the lifetime (all-time) usage a lookup registry pre-resolved for
 /// `user_id`. The key is `usage_budget(<user_id>)`; a missing or unparseable
 /// value yields `0` (fail-open). This mirrors the original inline lifetime read
@@ -916,6 +984,39 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "quota_exceeded");
         assert_eq!(json["message"], "over the line");
+    }
+
+    // ── Authorize hook: 403 response + context shape ───────────────────────
+
+    #[tokio::test]
+    async fn forbidden_response_is_403_json_with_forbidden_error() {
+        let resp = forbidden_response("nope");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "forbidden");
+        assert_eq!(json["message"], "nope");
+    }
+
+    #[test]
+    fn build_authz_context_carries_request_attributes() {
+        let identity = Identity {
+            id: "user-7".to_string(),
+            traits: serde_json::json!({"email": "u7@example.com"}),
+            ..Default::default()
+        };
+        let ctx = build_authz_context(&identity, "route-9", "GET", "/api/x");
+        assert_eq!(ctx["method"], "GET");
+        assert_eq!(ctx["path"], "/api/x");
+        assert_eq!(ctx["route_id"], "route-9");
+        assert_eq!(ctx["principal_id"], "user-7");
+        assert_eq!(ctx["identity"]["email"], "u7@example.com");
     }
 
     // ── MCP auth-failure responses (Task 3) ────────────────────────────────

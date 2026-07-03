@@ -31,7 +31,12 @@ pub struct ServerConfig {
     /// Proxy server listen address (default: `0.0.0.0:4456`).
     #[serde(default = "default_listen")]
     pub listen: String,
-    /// Admin API listen address (default: `0.0.0.0:4457`).
+    /// Admin API listen address (default: `127.0.0.1:4457` — LOOPBACK ONLY).
+    ///
+    /// The admin API is unauthenticated and MUST NEVER be internet-exposed. It
+    /// defaults to loopback so operators must opt in explicitly (e.g. bind
+    /// `0.0.0.0` behind a firewall / private network) rather than accidentally
+    /// exposing route, key, and policy management to the public internet.
     #[serde(default = "default_admin_listen")]
     pub admin_listen: String,
     #[serde(default)]
@@ -83,7 +88,10 @@ fn default_listen() -> String {
     "0.0.0.0:4456".to_string()
 }
 fn default_admin_listen() -> String {
-    "0.0.0.0:4457".to_string()
+    // Loopback by default: the admin API is unauthenticated and must be
+    // firewalled / kept off the public internet. Operators opt into wider
+    // exposure explicitly.
+    "127.0.0.1:4457".to_string()
 }
 fn default_shutdown_timeout() -> u64 {
     30
@@ -407,6 +415,8 @@ pub enum PreRequestHook {
     BodyTransform { config: BodyTransformConfig },
     /// Block the request if the user's lifetime token usage exceeds a limit.
     MaxTokenBudget { config: MaxTokenBudgetConfig },
+    /// Evaluate an embedded Cedar authorization policy for this route.
+    Authorize { config: AuthorizeConfig },
 }
 
 /// A single post-response hook step.
@@ -442,6 +452,40 @@ pub struct BodyTransformConfig {
     /// JSON field path → template expression.
     #[serde(default)]
     pub set_fields: HashMap<String, String>,
+}
+
+/// Configuration for the `authorize` pre-request hook (Cedar policy engine).
+///
+/// The engine models actions generically: this hook contributes the request's
+/// `principal` (the authenticated identity), a single generic `action` (default
+/// `"invoke"`), the matched `resource` (the route), and a `context` record built
+/// from request attributes. Per-tool-call decisions are a later change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizeConfig {
+    /// Generic Cedar action id to evaluate. Defaults to `"invoke"`.
+    #[serde(default = "default_authorize_action")]
+    pub action: String,
+    /// When `false`, a `Deny` decision is logged but the request is allowed to
+    /// proceed (audit/shadow mode). Defaults to `true` (enforce → 403 on deny).
+    #[serde(default = "default_true")]
+    pub enforce: bool,
+    /// Custom message returned in the 403 body on a denied request.
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+fn default_authorize_action() -> String {
+    "invoke".to_string()
+}
+
+impl Default for AuthorizeConfig {
+    fn default() -> Self {
+        Self {
+            action: default_authorize_action(),
+            enforce: true,
+            error_message: None,
+        }
+    }
 }
 
 /// Configuration for the max_token_budget pre-request hook.
@@ -630,7 +674,9 @@ mod tests {
     fn default_server_config() {
         let cfg = ServerConfig::default();
         assert_eq!(cfg.listen, "0.0.0.0:4456");
-        assert_eq!(cfg.admin_listen, "0.0.0.0:4457");
+        // Admin API defaults to LOOPBACK — it is unauthenticated and must never
+        // be internet-exposed (H3). Operators opt into wider binds explicitly.
+        assert_eq!(cfg.admin_listen, "127.0.0.1:4457");
     }
 
     #[test]
@@ -833,6 +879,53 @@ config:
     fn budget_defaults_are_lifetime_and_user() {
         assert_eq!(BudgetWindow::default(), BudgetWindow::Lifetime);
         assert_eq!(BudgetScope::default(), BudgetScope::User);
+    }
+
+    // ── Authorize pre-request hook (Cedar policy engine) ───────────────────
+
+    #[test]
+    fn authorize_hook_deserializes_with_defaults() {
+        // Minimal config: action defaults to "invoke", enforce defaults to true.
+        let yaml = r#"
+type: authorize
+config: {}
+"#;
+        let hook: PreRequestHook = serde_yaml::from_str(yaml).unwrap();
+        match hook {
+            PreRequestHook::Authorize { config } => {
+                assert_eq!(config.action, "invoke");
+                assert!(config.enforce, "enforce must default to true (fail-closed)");
+                assert!(config.error_message.is_none());
+            }
+            _ => panic!("expected Authorize"),
+        }
+    }
+
+    #[test]
+    fn authorize_hook_deserializes_full_config() {
+        let yaml = r#"
+type: authorize
+config:
+  action: read
+  enforce: false
+  error_message: "not allowed here"
+"#;
+        let hook: PreRequestHook = serde_yaml::from_str(yaml).unwrap();
+        match hook {
+            PreRequestHook::Authorize { config } => {
+                assert_eq!(config.action, "read");
+                assert!(!config.enforce);
+                assert_eq!(config.error_message.as_deref(), Some("not allowed here"));
+            }
+            _ => panic!("expected Authorize"),
+        }
+    }
+
+    #[test]
+    fn authorize_config_default_is_enforcing_invoke() {
+        let cfg = AuthorizeConfig::default();
+        assert_eq!(cfg.action, "invoke");
+        assert!(cfg.enforce);
     }
 
     // ── Task 3: RateLimitConfig defaults ──────────────────────────────────

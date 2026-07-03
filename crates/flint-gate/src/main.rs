@@ -5,6 +5,7 @@
 
 use flint_gate_core::admin::{admin_router, AdminState};
 use flint_gate_core::auth::{build_authenticators, JwtMinter, SharedJwtMinter};
+use flint_gate_core::authz::AuthzEngine;
 use flint_gate_core::cache::{start_cache_invalidation_listener, GateCache};
 use flint_gate_core::config::{load_config, GateConfig, LookupRegistry};
 use flint_gate_core::db::Database;
@@ -244,6 +245,17 @@ async fn main() -> Result<()> {
         }
     }
     let cache = Arc::new(cache);
+
+    // Build the embedded Cedar authorization engine BEFORE the LISTEN/NOTIFY
+    // listener so its handle can be threaded in — a "policies" NOTIFY on any
+    // replica must reload this engine (multi-replica hot-reload). When a
+    // database is present, load enabled policies into the initial bundle
+    // (lenient — bad rows are skipped); otherwise start empty (default-deny).
+    let authz = match &db {
+        Some(d) => Arc::new(AuthzEngine::from_database(d).await),
+        None => Arc::new(AuthzEngine::empty()),
+    };
+
     if let Some(ref d) = db {
         let ch = initial_config.cache.invalidation_channel.clone();
         // When override_yaml is enabled, pass the router + config + DB so the
@@ -257,7 +269,10 @@ async fn main() -> Result<()> {
         } else {
             None
         };
-        start_cache_invalidation_listener(d.pool(), Arc::clone(&cache), ch, router_ctx).await;
+        // Thread the authz engine + DB so a "policies" NOTIFY reloads it.
+        let authz_ctx = Some((Arc::clone(&authz), Arc::clone(d)));
+        start_cache_invalidation_listener(d.pool(), Arc::clone(&cache), ch, router_ctx, authz_ctx)
+            .await;
     }
 
     // 10. Build lookup registry
@@ -283,6 +298,7 @@ async fn main() -> Result<()> {
         db: db.clone(),
         http_client: http_client.clone(),
         lookup_registry: Arc::clone(&lookup_registry),
+        authz: Arc::clone(&authz),
         #[cfg(feature = "redis-l2")]
         rate_limiter,
     });
@@ -416,6 +432,7 @@ async fn main() -> Result<()> {
         db: db.clone(),
         router: Arc::clone(&shared_router),
         config: Arc::clone(&shared_config),
+        authz: Arc::clone(&authz),
     };
     let admin_app = admin_router(admin_state).layer(TraceLayer::new_for_http());
     let admin_listener = tokio::net::TcpListener::bind(&admin_listen)

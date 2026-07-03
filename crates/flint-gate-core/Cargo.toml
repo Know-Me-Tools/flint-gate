@@ -46,6 +46,8 @@ rand = "0.8"
 redis = { version = "1", features = ["tokio-comp", "connection-manager"], optional = true }
 governor = "0.10"
 tower_governor = "0.8"
+cedar-policy = "4"
+arc-swap = "1"
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 

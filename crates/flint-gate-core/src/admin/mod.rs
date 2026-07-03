@@ -13,6 +13,7 @@
 /// - `GET  /api-keys` — list active API keys (metadata only)
 /// - `POST /api-keys` — create a new API key (returns raw key once)
 /// - `DELETE /api-keys/:id` — revoke an API key
+use crate::authz::{policy_warnings, validate_policy, AuthzEngine, PolicyRecord};
 use crate::cache::GateCache;
 use crate::config::SharedConfig;
 use crate::db::Database;
@@ -40,6 +41,8 @@ pub struct AdminState {
     pub db: Option<Arc<Database>>,
     pub router: SharedRouter,
     pub config: SharedConfig,
+    /// Shared Cedar authorization engine. Policy writes validate then reload it.
+    pub authz: Arc<AuthzEngine>,
 }
 
 /// Build the admin Axum router.
@@ -89,6 +92,16 @@ pub fn admin_router(state: AdminState) -> Router {
         .route(
             "/signing-keys/:id",
             axum::routing::delete(deactivate_signing_key_handler),
+        )
+        .route(
+            "/policies",
+            get(list_policies_handler).post(create_policy_handler),
+        )
+        .route(
+            "/policies/:id",
+            get(get_policy_handler)
+                .put(update_policy_handler)
+                .delete(delete_policy_handler),
         )
         .merge(SwaggerUi::new("/docs").url("/openapi.json", AdminApiDoc::openapi()))
         .with_state(state)
@@ -458,4 +471,198 @@ async fn deactivate_signing_key_handler(
         )
             .into_response()
     }
+}
+
+// ── Authorization policy management ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct UpsertPolicyRequest {
+    /// Required on POST; supplied via the path on PUT.
+    #[serde(default)]
+    id: Option<String>,
+    policy_text: String,
+    #[serde(default)]
+    schema_json: Option<Value>,
+    #[serde(default)]
+    entities_json: Option<Value>,
+    #[serde(default = "default_policy_enabled")]
+    enabled: bool,
+}
+
+fn default_policy_enabled() -> bool {
+    true
+}
+
+/// `GET /policies` — list all authorization policies.
+async fn list_policies_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.list_policies().await {
+        Ok(policies) => Json(json!({"policies": policies})).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// `GET /policies/:id` — fetch one authorization policy.
+async fn get_policy_handler(
+    Path(id): Path<String>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.get_policy(&id).await {
+        Ok(Some(policy)) => Json(json!(policy)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// `POST /policies` — create/upsert a policy (id in the body).
+async fn create_policy_handler(
+    State(state): State<AdminState>,
+    Json(payload): Json<UpsertPolicyRequest>,
+) -> impl IntoResponse {
+    let id = match payload.id.clone() {
+        Some(id) if !id.is_empty() => id,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing policy id"})),
+            )
+                .into_response();
+        }
+    };
+    upsert_policy_inner(&state, &id, payload).await
+}
+
+/// `PUT /policies/:id` — update/upsert a policy (id from the path).
+async fn update_policy_handler(
+    Path(id): Path<String>,
+    State(state): State<AdminState>,
+    Json(payload): Json<UpsertPolicyRequest>,
+) -> impl IntoResponse {
+    upsert_policy_inner(&state, &id, payload).await
+}
+
+/// Shared create/update path: VALIDATE (Cedar) → persist → reload the engine.
+///
+/// Write-time validation is the gate: an invalid policy returns 400 with the
+/// Cedar error and is NEVER written, so it can neither reach the DB nor the hot
+/// path. After a successful write the engine is reloaded parse-before-swap; a
+/// reload failure there does not undo the (already-validated) write but is
+/// surfaced so operators can see the bundle did not advance.
+async fn upsert_policy_inner(
+    state: &AdminState,
+    id: &str,
+    payload: UpsertPolicyRequest,
+) -> axum::response::Response {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+
+    // 1. Write-time Cedar validation — reject bad policy (text, schema, AND
+    // entities) BEFORE it is stored. This is a true superset of what the loader
+    // can fail on, so a validated write always compiles on reload.
+    let record = PolicyRecord {
+        id: id.to_string(),
+        policy_text: payload.policy_text.clone(),
+        schema_json: payload.schema_json.clone(),
+        entities_json: payload.entities_json.clone(),
+    };
+    if let Err(e) = validate_policy(&record) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid_policy", "message": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Advisory (non-blocking) breadth warnings, e.g. an allow-all permit.
+    let warnings = policy_warnings(&record);
+
+    // 2. Persist (parameterized upsert).
+    if let Err(e) = db
+        .upsert_policy(
+            id,
+            &payload.policy_text,
+            payload.schema_json.as_ref(),
+            payload.entities_json.as_ref(),
+            payload.enabled,
+        )
+        .await
+    {
+        return internal_error(&e.to_string());
+    }
+
+    // 3. Reload the live engine (parse-before-swap, lenient, retains last-good
+    // on a DB-load failure). If the reload could not run, the policy is stored
+    // but NOT active on this replica — surface that as a 500 so a non-loading
+    // bundle can't ship silently (H1).
+    match state.authz.reload_from_database(db).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"status": "ok", "id": id, "reloaded": true, "warnings": warnings})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "stored_but_not_activated",
+                "message": format!("policy stored but engine reload failed: {e}"),
+                "id": id,
+                "reloaded": false,
+                "warnings": warnings,
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /policies/:id` — delete a policy, then reload the engine.
+async fn delete_policy_handler(
+    Path(id): Path<String>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.delete_policy(&id).await {
+        Ok(true) => match state.authz.reload_from_database(db).await {
+            Ok(()) => {
+                Json(json!({"status": "deleted", "id": id, "reloaded": true})).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "deleted_but_not_reloaded",
+                    "message": format!("policy deleted but engine reload failed: {e}"),
+                    "id": id,
+                    "reloaded": false,
+                })),
+            )
+                .into_response(),
+        },
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// Standard 501 response when no database is configured.
+fn db_not_configured() -> axum::response::Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({"error": "database not configured"})),
+    )
+        .into_response()
+}
+
+/// Standard 500 response carrying an error message.
+fn internal_error(msg: &str) -> axum::response::Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": msg})),
+    )
+        .into_response()
 }

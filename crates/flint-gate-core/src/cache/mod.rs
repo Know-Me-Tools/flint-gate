@@ -293,11 +293,35 @@ pub struct CacheStats {
     pub kv_entry_count: u64,
 }
 
+/// The action a NOTIFY payload maps to. Extracted so the dispatch logic is
+/// unit-testable without a live Postgres LISTEN/NOTIFY connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotifyAction {
+    /// Route/site change — invalidate route cache and rebuild the router.
+    Routes,
+    /// Authorization policy change — reload the Cedar engine from the DB.
+    Policies,
+    /// Anything else — conservatively flush all caches.
+    All,
+}
+
+/// Classify a raw NOTIFY payload into a [`NotifyAction`].
+pub(crate) fn classify_notification(payload: &str) -> NotifyAction {
+    match payload {
+        "routes" | "sites" => NotifyAction::Routes,
+        "policies" => NotifyAction::Policies,
+        _ => NotifyAction::All,
+    }
+}
+
 /// Start the Postgres LISTEN/NOTIFY cache invalidation listener.
 ///
 /// Subscribes to the configured channel and invalidates caches when a
 /// notification arrives. When `db` and `router` are provided and a "routes"
 /// notification is received, the router is rebuilt from the DB + YAML config.
+/// When `authz` is provided and a "policies" notification is received, the
+/// shared authorization engine is reloaded from the database (parse-before-swap,
+/// retain last-good) so peer replicas pick up policy edits WITHOUT a restart.
 /// This is best-effort — errors are logged, not fatal.
 pub async fn start_cache_invalidation_listener(
     pool: sqlx::PgPool,
@@ -308,6 +332,7 @@ pub async fn start_cache_invalidation_listener(
         crate::config::SharedConfig,
         Arc<crate::db::Database>,
     )>,
+    authz: Option<(Arc<crate::authz::AuthzEngine>, Arc<crate::db::Database>)>,
 ) {
     tokio::spawn(async move {
         let mut listener = match sqlx::postgres::PgListener::connect_with(&pool).await {
@@ -330,15 +355,30 @@ pub async fn start_cache_invalidation_listener(
                 Ok(notification) => {
                     let payload = notification.payload();
                     info!(channel = %channel, payload = %payload, "cache invalidation notification received");
-                    match payload {
-                        "routes" | "sites" => {
+                    match classify_notification(payload) {
+                        NotifyAction::Routes => {
                             cache.invalidate_routes().await;
                             // Rebuild router from DB + YAML when override mode is active.
                             if let Some((ref shared_router, ref shared_config, ref db)) = router {
                                 rebuild_router_from_db(shared_router, shared_config, db).await;
                             }
                         }
-                        _ => cache.invalidate_all().await,
+                        NotifyAction::Policies => {
+                            // Reload the shared Cedar engine from the DB. Reload
+                            // is parse-before-swap + lenient (skip bad rows), so a
+                            // poisoned remote row can neither blank nor over-open
+                            // this replica's policy bundle.
+                            if let Some((ref authz, ref db)) = authz {
+                                if let Err(e) = authz.reload_from_database(db).await {
+                                    error!(error = %e, "policy reload from NOTIFY failed — retaining last-good");
+                                }
+                            } else {
+                                // No engine wired (no DB / authz on this replica);
+                                // fall back to a cache flush for safety.
+                                cache.invalidate_all().await;
+                            }
+                        }
+                        NotifyAction::All => cache.invalidate_all().await,
                     }
                 }
                 Err(e) => {
@@ -405,5 +445,27 @@ mod tests {
             .await;
         cache.invalidate_all().await;
         assert!(cache.kv.get("key").await.is_none());
+    }
+
+    // ── C1: NOTIFY payload dispatch (the arm the listener selects) ───────────
+
+    #[test]
+    fn classify_routes_and_sites_map_to_routes() {
+        assert_eq!(classify_notification("routes"), NotifyAction::Routes);
+        assert_eq!(classify_notification("sites"), NotifyAction::Routes);
+    }
+
+    #[test]
+    fn classify_policies_maps_to_policies_reload() {
+        // This is the fix for C1: a "policies" NOTIFY must trigger an authz
+        // reload, NOT fall through to the generic invalidate_all arm.
+        assert_eq!(classify_notification("policies"), NotifyAction::Policies);
+    }
+
+    #[test]
+    fn classify_unknown_payload_falls_back_to_all() {
+        assert_eq!(classify_notification("signing_keys"), NotifyAction::All);
+        assert_eq!(classify_notification("something_else"), NotifyAction::All);
+        assert_eq!(classify_notification(""), NotifyAction::All);
     }
 }

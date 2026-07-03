@@ -8,8 +8,10 @@
 server:
   # Proxy server — receives all inbound traffic. Expose to the internet.
   listen: "0.0.0.0:4456"
-  # Admin API — internal only. NEVER expose to the public internet.
-  admin_listen: "0.0.0.0:4457"
+  # Admin API — internal only, UNAUTHENTICATED. NEVER expose to the public
+  # internet. Defaults to loopback; only widen this bind behind a firewall /
+  # private network.
+  admin_listen: "127.0.0.1:4457"
   tls:
     enabled: false
     # cert_path: "/etc/flint-gate/tls/cert.pem"

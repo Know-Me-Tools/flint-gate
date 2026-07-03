@@ -10,6 +10,18 @@ pub mod websocket;
 pub use ndjson::NdjsonStreamProcessor;
 pub use processor::{SseStreamProcessor, StreamMetrics};
 
+/// Default cap (bytes) on a single assembled SSE/NDJSON event payload and on
+/// the raw line buffer. Exceeding it terminates the stream (C1 DoS guard).
+/// 256 KiB comfortably fits any legitimate AG-UI/A2UI event or JSON-RPC body
+/// while bounding a hostile upstream that never emits a newline / blank line.
+pub const DEFAULT_MAX_EVENT_BYTES: usize = 256 * 1024;
+
+/// Default cap (bytes) on the accumulated arguments of one tool call held
+/// pending authorization. Exceeding it denies that tool call (fail-closed)
+/// without tearing down the stream. 1 MiB is generous for tool arguments yet
+/// bounds a malicious `TOOL_CALL_ARGS` flood targeting one id.
+pub const DEFAULT_MAX_TOOL_ARGS_BYTES: usize = 1024 * 1024;
+
 /// Trait for all stream protocol processors (SSE, NDJSON, WebSocket).
 ///
 /// Each processor wraps the wire-format framing while sharing the same

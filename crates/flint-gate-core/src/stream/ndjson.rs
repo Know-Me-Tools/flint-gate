@@ -21,6 +21,8 @@ pub struct NdjsonStreamProcessor {
     user_scopes: Vec<String>,
     metadata: serde_json::Map<String, serde_json::Value>,
     theme: Option<serde_json::Value>,
+    // C1: cap (bytes) on a single NDJSON line buffered without a newline.
+    max_event_bytes: usize,
 }
 
 impl NdjsonStreamProcessor {
@@ -30,20 +32,52 @@ impl NdjsonStreamProcessor {
         metadata: serde_json::Map<String, serde_json::Value>,
         theme: Option<serde_json::Value>,
     ) -> Self {
+        Self::with_tool_authz(config, user_scopes, metadata, theme, None)
+    }
+
+    /// Create a new processor, optionally threading a per-tool-call
+    /// authorization context into the AG-UI processor. `None` → identical to
+    /// [`Self::new`] (backward-compatible).
+    pub fn with_tool_authz(
+        config: StreamConfig,
+        user_scopes: Vec<String>,
+        metadata: serde_json::Map<String, serde_json::Value>,
+        theme: Option<serde_json::Value>,
+        tool_authz: Option<crate::authz::ToolAuthzContext>,
+    ) -> Self {
+        let max_tool_args_bytes = config
+            .ai
+            .backpressure
+            .max_tool_args_bytes
+            .unwrap_or(crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES);
+
         let ag_ui_processor = if config.ai.ag_ui.enabled {
-            Some(AgUiProcessor::new(
-                config.ai.ag_ui.validate_events,
-                config.ai.ag_ui.allowed_events.clone(),
-            ))
+            Some(
+                AgUiProcessor::new(
+                    config.ai.ag_ui.validate_events,
+                    config.ai.ag_ui.allowed_events.clone(),
+                )
+                .with_tool_authz(tool_authz.clone())
+                .with_max_tool_args_bytes(max_tool_args_bytes),
+            )
         } else {
             None
         };
 
         let a2ui_processor = if config.ai.a2ui.enabled {
-            Some(A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone()))
+            Some(
+                A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
+                    .with_tool_authz(tool_authz.clone()),
+            )
         } else {
             None
         };
+
+        let max_event_bytes = config
+            .ai
+            .backpressure
+            .max_event_bytes
+            .unwrap_or(crate::stream::DEFAULT_MAX_EVENT_BYTES);
 
         Self {
             config,
@@ -53,6 +87,7 @@ impl NdjsonStreamProcessor {
             metrics: StreamMetrics::default(),
             token_counter: AgUiTokenCounter::default(),
             started_at: Instant::now(),
+            max_event_bytes,
             user_scopes,
             metadata,
             theme,
@@ -68,21 +103,25 @@ impl NdjsonStreamProcessor {
 
         self.metrics.total_events += 1;
 
-        // Try AG-UI processing
+        // Try AG-UI processing. `process_multi` returns 0..N events: 0 when
+        // dropped or HELD (buffered tool call), N when a `TOOL_CALL_END`
+        // releases a held call. Each released event is its own NDJSON line.
         if let Some(ref ag_ui_proc) = self.ag_ui_processor {
             if let Some(event) = AgUiEvent::from_json(line) {
                 self.token_counter.count_event(&event);
                 let meta = self.metadata.clone();
-                match ag_ui_proc.process(event, meta) {
-                    None => {
-                        self.metrics.dropped_events += 1;
-                        return None;
-                    }
-                    Some(processed) => {
-                        self.metrics.passed_events += 1;
-                        return Some(processed.to_json());
-                    }
+                let released = ag_ui_proc.process_multi(event, meta);
+                if released.is_empty() {
+                    self.metrics.dropped_events += 1;
+                    return None;
                 }
+                self.metrics.passed_events += 1;
+                let joined = released
+                    .iter()
+                    .map(AgUiEvent::to_json)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Some(joined);
             }
         }
 
@@ -134,6 +173,15 @@ impl crate::stream::StreamProcessor for NdjsonStreamProcessor {
         while pos < chunk.len() {
             match chunk[pos..].iter().position(|&b| b == b'\n') {
                 Some(newline_pos) => {
+                    // C1: a line already over the cap before its newline is DoS.
+                    if self.line_buffer.len().saturating_add(newline_pos) > self.max_event_bytes {
+                        self.metrics.terminated_by_limit = true;
+                        tracing::warn!(
+                            cap = self.max_event_bytes,
+                            "NDJSON stream terminated: line exceeded byte cap"
+                        );
+                        return None;
+                    }
                     self.line_buffer
                         .extend_from_slice(&chunk[pos..pos + newline_pos]);
                     let line = std::mem::take(&mut self.line_buffer);
@@ -147,6 +195,17 @@ impl crate::stream::StreamProcessor for NdjsonStreamProcessor {
                     pos += newline_pos + 1;
                 }
                 None => {
+                    // C1: cap the partial line so an upstream that never emits a
+                    // newline cannot grow the buffer without bound.
+                    let remaining = chunk.len() - pos;
+                    if self.line_buffer.len().saturating_add(remaining) > self.max_event_bytes {
+                        self.metrics.terminated_by_limit = true;
+                        tracing::warn!(
+                            cap = self.max_event_bytes,
+                            "NDJSON stream terminated: unbounded partial line exceeded byte cap"
+                        );
+                        return None;
+                    }
                     self.line_buffer.extend_from_slice(&chunk[pos..]);
                     break;
                 }

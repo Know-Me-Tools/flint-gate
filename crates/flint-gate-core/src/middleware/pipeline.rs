@@ -509,19 +509,28 @@ async fn handle_request(
         // A2UI theme from config
         let a2ui_theme = stream_config.ai.a2ui.theme.clone();
 
+        // Per-tool-call authorization: enabled for a route that carries an
+        // enforcing `Authorize` hook. That hook already opted the route into
+        // Cedar authz; per-tool authz extends the same policy bundle to each
+        // in-stream tool call and to `list_tools` visibility. Routes without an
+        // enforcing Authorize hook get `None` — completely unaffected.
+        let tool_authz_ctx = build_tool_authz_context(&state, &matched_route, &identity, &route_id);
+
         // Protocol dispatch: create the appropriate processor
         let processor: Box<dyn StreamProcessor> = match stream_config.protocol.as_str() {
-            "ndjson" => Box::new(NdjsonStreamProcessor::new(
+            "ndjson" => Box::new(NdjsonStreamProcessor::with_tool_authz(
                 stream_config.clone(),
                 user_scopes.clone(),
                 ag_ui_metadata.clone(),
                 a2ui_theme.clone(),
+                tool_authz_ctx.clone(),
             )),
-            _ => Box::new(SseStreamProcessor::new(
+            _ => Box::new(SseStreamProcessor::with_tool_authz(
                 stream_config.clone(),
                 user_scopes.clone(),
                 ag_ui_metadata.clone(),
                 a2ui_theme.clone(),
+                tool_authz_ctx.clone(),
             )),
         };
 
@@ -669,6 +678,29 @@ async fn handle_request(
             error!(request_id = %request_id, error = %e, "failed to read upstream response body");
             StatusCode::BAD_GATEWAY
         })?;
+
+        // Task 3: filter denied tools out of a buffered MCP `tools/list`
+        // response. MCP tool listings most commonly arrive as a single
+        // JSON-RPC body (not SSE). Only attempt this when the route opts into
+        // per-tool authz (an enforcing Authorize hook); otherwise forward
+        // untouched. `filter_list_tools_body` returns `None` for any body that
+        // is not a tools/list result, so non-listing responses are unaffected.
+        let bytes = if let Some(ctx) =
+            build_tool_authz_context(&state, &matched_route, &identity, &route_id)
+        {
+            match crate::authz::filter_list_tools_body(
+                &bytes,
+                &ctx.engine,
+                &ctx.principal_id,
+                &ctx.route_id,
+            ) {
+                Some(filtered) => Bytes::from(filtered),
+                None => bytes,
+            }
+        } else {
+            bytes
+        };
+
         Body::from(bytes)
     };
 
@@ -801,6 +833,39 @@ fn build_authz_context(identity: &Identity, route_id: &str, method: &str, path: 
         "route_id": route_id,
         "principal_id": identity.id,
         "identity": identity.traits,
+    })
+}
+
+/// Build a [`ToolAuthzContext`](crate::authz::ToolAuthzContext) for the stream
+/// when the route opts into per-tool authorization.
+///
+/// The opt-in signal is an *enforcing* `Authorize` pre-request hook on the
+/// route: that hook already authorized the connection against the Cedar bundle,
+/// and per-tool authz extends the same bundle to each in-stream tool call. A
+/// shadow-mode (`enforce = false`) Authorize hook does NOT enable blocking of
+/// tool calls — it only logs at the route level — so it yields `None` here too,
+/// keeping the enforce semantics consistent between route and tool granularity.
+///
+/// Returns `None` when no such hook is present, leaving the stream unaffected.
+fn build_tool_authz_context(
+    state: &Arc<AppState>,
+    matched_route: &crate::proxy::router::CompiledRoute,
+    identity: &Identity,
+    route_id: &str,
+) -> Option<crate::authz::ToolAuthzContext> {
+    let enforcing = matched_route
+        .config
+        .hooks
+        .pre_request
+        .iter()
+        .any(|h| matches!(h, PreRequestHook::Authorize { config } if config.enforce));
+    if !enforcing {
+        return None;
+    }
+    Some(crate::authz::ToolAuthzContext {
+        engine: state.authz.clone(),
+        principal_id: identity.id.clone(),
+        route_id: route_id.to_string(),
     })
 }
 

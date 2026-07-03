@@ -229,17 +229,25 @@ async fn filter_ws_text(
     theme: &Option<serde_json::Value>,
     token_counter: &Arc<tokio::sync::Mutex<AgUiTokenCounter>>,
 ) -> Option<String> {
-    // Try AG-UI processing
+    // Try AG-UI processing. `process_multi` returns 0..N events: 0 when dropped
+    // or HELD (buffered tool call), N when a `TOOL_CALL_END` releases a held
+    // call. Multiple released events are newline-joined into one WS text frame.
     if let Some(proc) = ag_ui {
         if let Some(event) = AgUiEvent::from_json(text) {
             {
                 let mut tc = token_counter.lock().await;
                 tc.count_event(&event);
             }
-            match proc.process(event, metadata.clone()) {
-                Some(processed) => return Some(processed.to_json()),
-                None => return None,
+            let released = proc.process_multi(event, metadata.clone());
+            if released.is_empty() {
+                return None;
             }
+            let joined = released
+                .iter()
+                .map(AgUiEvent::to_json)
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Some(joined);
         }
     }
 

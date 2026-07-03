@@ -664,6 +664,18 @@ fn default_watchdog_interval() -> u64 {
 pub struct BackpressureConfig {
     pub max_stream_duration_seconds: Option<u64>,
     pub max_events: Option<u64>,
+    /// Cap (bytes) on a single buffered SSE/NDJSON event's assembled payload
+    /// (and the raw line buffer). Exceeding this terminates the stream — a
+    /// guard against unbounded-buffering DoS (C1). `None` → built-in default
+    /// [`crate::stream::DEFAULT_MAX_EVENT_BYTES`].
+    #[serde(default)]
+    pub max_event_bytes: Option<usize>,
+    /// Cap (bytes) on the accumulated arguments of a single tool call buffered
+    /// pending authorization. Exceeding it denies that tool call (drop + emit a
+    /// RUN_ERROR) without tearing down the whole stream. `None` → built-in
+    /// default [`crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES`].
+    #[serde(default)]
+    pub max_tool_args_bytes: Option<usize>,
 }
 
 #[cfg(test)]

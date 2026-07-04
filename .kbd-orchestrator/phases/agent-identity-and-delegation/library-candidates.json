@@ -1,0 +1,68 @@
+{
+  "phase": "agent-identity-and-delegation",
+  "generated": "2026-07-04",
+  "mode": "stack-specified",
+  "stack": "rust-axum-tokio-postgres",
+  "governing_constraint": "Support any IdM that can produce a verifiable JWT (JWKS + iss/aud). Ory Kratos/Hydra is the reference standard. flint-gate federates; it is NOT an IdP/authorization-server.",
+  "decisions": [
+    {
+      "gap": "G1-admin-authn",
+      "verdict": "reuse-existing-providers",
+      "choice": ["axum::middleware::from_fn", "auth/jwt_verify.rs", "auth/kratos.rs"],
+      "version": {"jsonwebtoken": "9 (existing — DO NOT bump)"},
+      "confidence": "high",
+      "rationale": "Admin router has zero authn today. Wire a tower middleware that verifies against a configured AuthProviderConfig (JWT or Kratos). Reuses tested primitives; no new crate, no new identity model; single-binary preserved. Satisfies 'Ory is standard' (Kratos session or Hydra JWT) AND 'any IdM with a JWT'.",
+      "fallback": "dedicated admin bearer credential when no provider configured",
+      "rejected": ["axum-login@0.18 (duplicates identity + session store)", "tower-sessions@0.15 (adds a session store)", "bespoke admin password (off-standard, weaker)"],
+      "license": "existing",
+      "integration_notes": "New `admin_auth` config block referencing an AuthProviderConfig id. Loopback-dev keeps an explicit `none` opt-in so local workflows stay ergonomic."
+    },
+    {
+      "gap": "G2-rfc8693-token-exchange",
+      "verdict": "federate-first-plus-handroll-fallback",
+      "choice": ["hand-rolled grant_type=token-exchange endpoint", "auth/jwt_verify.rs (verify subject_token)", "auth/jwt_mint.rs JwtMinter.mint (issue delegated token + act claim)", "Hydra token endpoint (delegate mode, optional)"],
+      "version": {"jsonwebtoken": "9 (existing)"},
+      "confidence": "high",
+      "rationale": "No Rust server crate abstracts RFC 8693 (Tier-1: AWS SDK, openai/codex, warp all hand-roll the x-www-form-urlencoded POST). Issuance + verification halves already exist. Gateway-local downscoping (verify subject_token via JWKS -> mint downscoped token with act claim) is the vendor-neutral guarantee for 'any IdM with a JWT'. Delegate-mode proxies to Ory Hydra where configured (Hydra owns 8693, with known external-aud caveats).",
+      "fallback": "gateway-local-only (skip Hydra delegate mode in v1)",
+      "rejected": ["oauth2@5 (client-only + newer TLS/http stack)", "openidconnect@4 (client-only)", "becoming a full OAuth2 AS"],
+      "license": "existing",
+      "open_questions": ["delegate-mode (proxy to Hydra) in-scope now vs gateway-local-first (lean: local-first with a config seam)", "Hydra external-token aud handling (ory/hydra#3723) if delegate mode is used"]
+    },
+    {
+      "gap": "G3-client-credentials-introspection",
+      "verdict": "hybrid-consume-hydra-plus-handroll-local",
+      "choice": ["hand-rolled RFC 7662 /introspect for gateway-minted tokens (reuse jwt_verify)", "consume/proxy Hydra RFC 7662 for Hydra-issued tokens", "hand-rolled grant_type=client_credentials (mint via JwtMinter, client store extends api-keys)"],
+      "version": {"jsonwebtoken": "9 (existing)"},
+      "confidence": "high",
+      "rationale": "Hydra implements both RFC 7662 and client-credentials natively (first-class introspection endpoint). Duplicating them wholesale is off-identity; flint-gate adds only the local surface for its OWN minted tokens plus a federation seam that prefers Hydra where it is the AS.",
+      "fallback": "JWT-bearer-only introspection first; opaque-token store deferred",
+      "rejected": ["standing up a parallel full OAuth2 authorization server"],
+      "license": "existing",
+      "open_questions": ["opaque-token store: reuse api-keys table vs new store; bearer-JWT-only first?"]
+    },
+    {
+      "gap": "G4-nhi-cedar-principal",
+      "verdict": "extend-engine-plus-lifecycle-store",
+      "choice": ["thread principal entity-type through authz/engine.rs::authorize (make_uid already generic)", "identity-kind on auth/identity.rs::Identity", "NHI lifecycle store (issue/rotate/revoke) via Admin API + UI + audit"],
+      "version": {"cedar-policy": "4 (existing)"},
+      "confidence": "medium",
+      "rationale": "Cedar plumbing is close: make_uid(type_name, id) is already generic over entity type, so adding Agent::/Service:: principals alongside User:: is a targeted thread-through. Real work is the lifecycle store + revocation-takes-effect-on-next-authorize semantics. Keeps NHI a first-class policy principal without a new engine.",
+      "fallback": "User principal + `kind` attribute (no new Cedar entity type) if distinct types prove heavy",
+      "rejected": ["a second policy engine", "external identity provider for NHI (off single-binary)"],
+      "license": "existing",
+      "open_questions": ["distinct Cedar `Agent::` entity type vs `User` + kind attribute (lean: distinct type)"]
+    }
+  ],
+  "new_crates": [],
+  "reused_crates": ["jsonwebtoken@9", "cedar-policy@4", "axum", "tower", "reqwest (Hydra delegate/introspection calls)", "sqlx (client + NHI stores)"],
+  "explicitly_excluded": ["oauth2", "openidconnect", "axum-login", "tower-sessions", "biscuit", "jsonwebtoken@10 (pin conflict)"],
+  "build_order": ["G1-admin-authn", "G2-rfc8693-token-exchange", "G3-client-credentials-introspection", "G4-nhi-cedar-principal"],
+  "open_questions": [
+    "G2 delegate-mode (proxy to Hydra) in-scope now vs gateway-local-first",
+    "G4 agent principal: distinct Cedar Agent:: type vs User + kind attribute",
+    "G3 opaque-token store: reuse api-keys table vs new store; bearer-JWT-only first",
+    "Admin authn default posture: none-on-loopback opt-in vs always-require when admin_auth set",
+    "Carried: Redis-L2 as hard dep for accurate cross-replica budgets"
+  ]
+}

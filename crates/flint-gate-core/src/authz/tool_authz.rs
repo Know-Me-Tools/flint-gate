@@ -69,10 +69,18 @@ impl std::fmt::Debug for ToolAuditSink {
 pub struct ToolAuthzContext {
     /// Shared Cedar engine (ArcSwap-backed; lock-free snapshot on read).
     pub engine: Arc<AuthzEngine>,
-    /// Authenticated principal id → Cedar `User::"<principal_id>"`.
+    /// The principal **kind** (User / Agent / Service) — selects the Cedar
+    /// entity type so a policy can name a non-human identity as principal.
+    pub principal_kind: crate::authz::PrincipalKind,
+    /// Authenticated principal id → Cedar `<kind>::"<principal_id>"`.
     pub principal_id: String,
     /// Route id carried into the Cedar context for route-scoped policies.
     pub route_id: String,
+    /// Whether this principal's non-human identity has been **revoked**. Checked
+    /// once when the context is built (per request); a revoked NHI is denied for
+    /// every tool call this request makes, so revocation takes effect on the
+    /// next authorize (fail-closed). `false` for human users and un-revoked NHIs.
+    pub revoked: bool,
     /// Optional best-effort audit sink. When present, a per-tool DENY is written
     /// to the authz audit trail (non-blocking); `None` disables per-tool audit
     /// (e.g. in tests or when no DB is configured).
@@ -99,8 +107,15 @@ impl ToolAuthzContext {
     /// are intentionally NOT recorded here to keep the streaming hot path cheap
     /// and avoid one audit row per streamed tool call).
     pub fn authorize(&self, tool_name: &str, arguments: &Value) -> AuthzDecision {
+        // A revoked non-human identity is denied unconditionally — before the
+        // policy engine even runs (fail-closed revocation).
+        if self.revoked {
+            self.record_tool_deny(tool_name);
+            return AuthzDecision::Deny;
+        }
         let decision = authorize_tool_call(
             &self.engine,
+            self.principal_kind,
             &self.principal_id,
             tool_name,
             arguments,
@@ -153,6 +168,7 @@ impl ToolAuthzContext {
 /// collapses every failure to [`AuthzDecision::Deny`].
 pub fn authorize_tool_call(
     engine: &AuthzEngine,
+    principal_kind: crate::authz::PrincipalKind,
     principal_id: &str,
     tool_name: &str,
     arguments: &Value,
@@ -163,7 +179,13 @@ pub fn authorize_tool_call(
         return AuthzDecision::Deny;
     }
     let context = build_tool_context(tool_name, arguments, route_id);
-    engine.authorize(principal_id, ACTION_CALL_TOOL, tool_name, &context)
+    engine.authorize_as(
+        principal_kind,
+        principal_id,
+        ACTION_CALL_TOOL,
+        tool_name,
+        &context,
+    )
 }
 
 /// Build the Cedar request `context` record for a tool call.
@@ -241,9 +263,18 @@ pub fn filter_list_tools_response(
                     let empty_args = json!({});
                     tools.retain(|tool| {
                         let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
-                        let allow =
-                            authorize_tool_call(engine, principal_id, name, &empty_args, route_id)
-                                .is_allow();
+                        // The list-tools preview authorizes as a User (the human
+                        // principal viewing the catalog); the live per-tool-call
+                        // gate threads the real principal kind via ToolAuthzContext.
+                        let allow = authorize_tool_call(
+                            engine,
+                            crate::authz::PrincipalKind::User,
+                            principal_id,
+                            name,
+                            &empty_args,
+                            route_id,
+                        )
+                        .is_allow();
                         if !allow {
                             tracing::info!(tool = %name, "tool filtered from list_tools (deny)");
                         }
@@ -307,14 +338,14 @@ mod tests {
     #[test]
     fn allowed_tool_call_returns_allow() {
         let engine = engine_permit_all();
-        let decision = authorize_tool_call(&engine, "alice", "read_file", &json!({}), "route-1");
+        let decision = authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "read_file", &json!({}), "route-1");
         assert_eq!(decision, AuthzDecision::Allow);
     }
 
     #[test]
     fn denied_when_no_policy_permits() {
         let engine = AuthzEngine::empty();
-        let decision = authorize_tool_call(&engine, "alice", "read_file", &json!({}), "route-1");
+        let decision = authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "read_file", &json!({}), "route-1");
         assert_eq!(decision, AuthzDecision::Deny);
     }
 
@@ -323,11 +354,11 @@ mod tests {
         // Even a permit-all engine must deny a nameless tool call.
         let engine = engine_permit_all();
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "", &json!({}), "route-1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "", &json!({}), "route-1"),
             AuthzDecision::Deny
         );
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "   ", &json!({}), "route-1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "   ", &json!({}), "route-1"),
             AuthzDecision::Deny
         );
     }
@@ -341,11 +372,11 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "safe_tool", &json!({}), "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "safe_tool", &json!({}), "r1"),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "danger_tool", &json!({}), "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "danger_tool", &json!({}), "r1"),
             AuthzDecision::Deny
         );
     }
@@ -358,11 +389,11 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "allowed", &json!({}), "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "allowed", &json!({}), "r1"),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "other", &json!({}), "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "other", &json!({}), "r1"),
             AuthzDecision::Deny
         );
     }
@@ -375,11 +406,11 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "t", &json!({"safe": true}), "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &json!({"safe": true}), "r1"),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "t", &json!({"safe": false}), "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &json!({"safe": false}), "r1"),
             AuthzDecision::Deny
         );
     }
@@ -395,11 +426,11 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "t", &json!("not-an-object"), "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &json!("not-an-object"), "r1"),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, "alice", "t", &Value::Null, "r1"),
+            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &Value::Null, "r1"),
             AuthzDecision::Allow
         );
     }
@@ -408,11 +439,28 @@ mod tests {
     fn context_authorize_helper_matches_free_function() {
         let ctx = ToolAuthzContext {
             engine: Arc::new(engine_permit_all()),
+            principal_kind: crate::authz::PrincipalKind::User,
+            revoked: false,
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
             audit: None,
         };
         assert_eq!(ctx.authorize("read_file", &json!({})), AuthzDecision::Allow);
+    }
+
+    #[test]
+    fn revoked_nhi_is_denied_even_against_permit_all() {
+        // A revoked non-human identity is denied on the next authorize, before
+        // the policy engine runs — even a permit-all bundle cannot re-enable it.
+        let ctx = ToolAuthzContext {
+            engine: Arc::new(engine_permit_all()),
+            principal_kind: crate::authz::PrincipalKind::Agent,
+            revoked: true,
+            principal_id: "bot-7".to_string(),
+            route_id: "r1".to_string(),
+            audit: None,
+        };
+        assert_eq!(ctx.authorize("read_file", &json!({})), AuthzDecision::Deny);
     }
 
     // ── list_tools filtering ────────────────────────────────────────────────

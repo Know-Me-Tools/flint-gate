@@ -10,6 +10,7 @@ import Hooks from '@/pages/Hooks';
 import Policies from '@/pages/Policies';
 import Budgets from '@/pages/Budgets';
 import ApiKeys from '@/pages/ApiKeys';
+import AgentIdentities from '@/pages/AgentIdentities';
 
 // Code-split the analytics surface: Recharts is large and only this page needs
 // it, so it must not weigh down the CRUD bundle (app-page JS budget ~300 KB).
@@ -51,6 +52,9 @@ function Layout({ children }: { children: ReactNode }) {
           <Button variant="ghost" size="sm" asChild>
             <Link to="/api-keys">API Keys</Link>
           </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/agent-identities">Agents</Link>
+          </Button>
         </nav>
       </header>
       <main className="flex-1 p-6">{children}</main>
@@ -74,6 +78,7 @@ export default function App() {
               <Route path="/policies" element={<Policies />} />
               <Route path="/budgets" element={<Budgets />} />
               <Route path="/api-keys" element={<ApiKeys />} />
+              <Route path="/agent-identities" element={<AgentIdentities />} />
             </Routes>
             </Suspense>
           </Layout>

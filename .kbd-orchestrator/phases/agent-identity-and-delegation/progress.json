@@ -1,19 +1,59 @@
 {
   "phase": "agent-identity-and-delegation",
-  "status": "assess_pending",
+  "status": "reflected",
   "parentPhase": null,
   "childPhases": [],
   "childPointer": null,
   "started_at": "2026-07-04T14:35:00Z",
-  "updated_at": "2026-07-04T14:35:00Z",
-  "changes_total": 0,
-  "changes_completed": 0,
-  "assessment_complete": false,
-  "analysis_complete": false,
-  "plan_complete": false,
-  "spec_complete": false,
+  "updated_at": "2026-07-04T18:10:00Z",
+  "changes_total": 4,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": true,
+  "plan_complete": true,
+  "spec_complete": true,
   "seed": ".kbd-orchestrator/phases/agent-authz-control-plane/reflection.md",
   "seeded_from_phase": "agent-authz-control-plane",
-  "changes": [],
-  "artifacts": []
+  "changes": [
+    {
+      "id": "add-admin-authn",
+      "goal": "G1",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    },
+    {
+      "id": "add-token-exchange",
+      "goal": "G2",
+      "status": "archived",
+      "tasks_total": 6,
+      "tasks_done": 6
+    },
+    {
+      "id": "add-client-creds-introspection",
+      "goal": "G3",
+      "status": "archived",
+      "tasks_total": 6,
+      "tasks_done": 6
+    },
+    {
+      "id": "add-nhi-cedar-principals",
+      "goal": "G4",
+      "status": "archived",
+      "tasks_total": 6,
+      "tasks_done": 6
+    }
+  ],
+  "artifacts": [
+    "assessment.md",
+    "analysis.md",
+    "library-candidates.json",
+    "decision-log.md",
+    "openspec/changes (4 proposals)",
+    "plan.md",
+    "execution.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply",
+  "reflection_complete": true
 }

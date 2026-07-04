@@ -866,6 +866,8 @@ mod tests {
         let engine = AuthzEngine::from_records(&[record("p", policy)]).expect("compiles");
         ToolAuthzContext {
             engine: Arc::new(engine),
+            principal_kind: crate::authz::PrincipalKind::User,
+            revoked: false,
             principal_id: "alice".to_string(),
             route_id: "route-1".to_string(),
             audit: None,
@@ -898,6 +900,8 @@ mod tests {
     fn deny_all_processor() -> AgUiProcessor {
         AgUiProcessor::new(false, vec![]).with_tool_authz(Some(ToolAuthzContext {
             engine: Arc::new(AuthzEngine::empty()),
+            principal_kind: crate::authz::PrincipalKind::User,
+            revoked: false,
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
             audit: None,

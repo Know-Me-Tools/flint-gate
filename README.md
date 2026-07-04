@@ -590,7 +590,16 @@ When a limit is hit, Flint Gate emits a `RUN_ERROR` SSE event and closes the str
 
 ## Admin API
 
-All endpoints are on the admin port (`:4457`). Never expose this to the internet.
+All endpoints are on the admin port (`:4457`).
+
+**Authentication.** The admin API is unauthenticated by default and, in that
+state, is only permitted on a **loopback** bind — flint-gate **refuses to start**
+if `admin_listen` is non-loopback while `server.admin_auth` is unset (fail-safe
+against exposing an unauthenticated control plane). To expose the admin API (and
+the web UI) beyond loopback, set `server.admin_auth` to an auth provider
+(`type: jwt` — e.g. an Ory Hydra-issued Bearer token — or `type: kratos` session;
+any JWKS-backed JWT provider works). When enabled, every admin request is
+authenticated except the `/health` and `/ready` probes. See `config.example.yaml`.
 
 ### Health & readiness
 
@@ -641,6 +650,42 @@ DELETE :4457/routes/{id}
 ```
 
 Route mutations automatically send `SELECT pg_notify('flintgate_config_changed', 'routes')` so all running instances invalidate their caches within milliseconds.
+
+---
+
+## Non-Human Identities (agents & services)
+
+Flint Gate authorizes **non-human identities** as first-class Cedar principals,
+distinct from human users. A delegated token (from RFC 8693 token exchange,
+carrying an `act` claim) authorizes as an **`Agent`**; a client-credentials
+service token (carrying a `client_id`) authorizes as a **`Service`**; everything
+else is a **`User`**. Because the Cedar entity *type* differs, a policy can grant
+an agent something a user must not have — and vice-versa:
+
+```cedar
+// Agents may call the deploy tool; a human user with the same id may not.
+permit(principal == Agent::"ci-bot", action == Action::"call_tool", resource == Route::"deploy");
+
+// A service identity may read metrics.
+permit(principal == Service::"metrics-scraper", action, resource == Route::"metrics");
+
+// Humans keep their own policies.
+permit(principal == User::"alice", action, resource);
+```
+
+### Lifecycle (Admin API)
+
+```bash
+GET    :4457/agent-identities              # list all NHIs
+POST   :4457/agent-identities              # issue { "id": "...", "kind": "agent"|"service", "label"? }
+POST   :4457/agent-identities/{id}/rotate  # stamp rotated_at
+DELETE :4457/agent-identities/{id}         # revoke
+```
+
+Every issue / rotate / revoke is written to the authz **audit trail**. **Revocation
+is fail-closed**: once revoked, the identity is denied on its **next authorize** —
+the check runs per request and denies on a lookup error rather than letting a
+revoked agent through. Manage identities from the **Agents** tab in the web UI.
 
 ---
 

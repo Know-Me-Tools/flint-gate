@@ -97,6 +97,8 @@ impl Authenticator for KratosAuthenticator {
 
         let identity = Identity {
             id: kratos_id.id,
+            // Kratos authenticates human sessions.
+            kind: crate::auth::identity::IdentityKind::User,
             traits: kratos_id.traits.unwrap_or(Value::Null),
             metadata_public: kratos_id.metadata_public.unwrap_or(Value::Null),
             schema_id: kratos_id.schema_id,

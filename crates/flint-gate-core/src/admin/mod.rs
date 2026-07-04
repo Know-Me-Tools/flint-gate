@@ -14,6 +14,8 @@
 /// - `POST /api-keys` — create a new API key (returns raw key once)
 /// - `DELETE /api-keys/{id}` — revoke an API key
 /// - `POST /approvals/{id}/decision` — resolve a pending human-in-the-loop approval
+pub mod auth;
+
 use crate::approval::{ApprovalDecision, ApprovalError};
 use crate::authz::{policy_warnings, validate_policy, AuthzEngine, PolicyRecord};
 use crate::cache::GateCache;
@@ -52,7 +54,23 @@ pub struct AdminState {
 }
 
 /// Build the admin Axum router.
+/// Build the admin router with **no** authentication (loopback-dev posture).
 pub fn admin_router(state: AdminState) -> Router {
+    admin_router_with_auth(state, None)
+}
+
+/// Build the admin router, optionally protecting every route except the
+/// liveness/readiness probes with the admin-auth middleware.
+///
+/// When `authenticator` is `Some`, the state-changing / data / analytics routes
+/// and the SPA static fallback require authentication; `/health` and `/ready`
+/// stay open so orchestrators can probe an authed deployment. When `None`, the
+/// whole router is unauthenticated — only valid on a loopback bind, which the
+/// startup posture guard enforces.
+pub fn admin_router_with_auth(
+    state: AdminState,
+    authenticator: Option<auth::AdminAuthenticator>,
+) -> Router {
     use utoipa::OpenApi;
     use utoipa_swagger_ui::SwaggerUi;
 
@@ -68,9 +86,14 @@ pub fn admin_router(state: AdminState) -> Router {
     )]
     struct AdminApiDoc;
 
-    Router::new()
+    // Probes stay unauthenticated so liveness/readiness works on an authed
+    // deployment. Everything else is a candidate for the auth layer.
+    let public = Router::new()
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
+        .with_state(state.clone());
+
+    let mut protected = Router::new()
         .route("/cache/stats", get(cache_stats_handler))
         .route("/cache/invalidate", post(cache_invalidate_handler))
         .route(
@@ -113,10 +136,33 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/audit", get(list_audit_handler))
         .route("/analytics/summary", get(usage_summary_handler))
         .route("/analytics/tokens", get(token_analytics_handler))
+        .route(
+            "/agent-identities",
+            get(list_agent_identities_handler).post(issue_agent_identity_handler),
+        )
+        .route(
+            "/agent-identities/{id}/rotate",
+            post(rotate_agent_identity_handler),
+        )
+        .route(
+            "/agent-identities/{id}",
+            axum::routing::delete(revoke_agent_identity_handler),
+        )
         .route("/approvals/{id}/decision", post(decide_approval_handler))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", AdminApiDoc::openapi()))
         .fallback(static_handler)
-        .with_state(state)
+        .with_state(state);
+
+    // Apply the auth layer to the protected sub-router only. The middleware
+    // carries the authenticator as its own state.
+    if let Some(auth) = authenticator {
+        protected = protected.layer(axum::middleware::from_fn_with_state(
+            auth,
+            auth::require_admin_auth,
+        ));
+    }
+
+    public.merge(protected)
 }
 
 /// `GET /health` — always 200.
@@ -913,6 +959,124 @@ async fn decide_approval_handler(
             Json(json!({"error": "approval request expired"})),
         )
             .into_response(),
+    }
+}
+
+// ── NHI lifecycle (agent / service identities) ──────────────────────────────
+
+/// Payload for `POST /agent-identities` — issue a non-human identity.
+#[derive(Debug, Deserialize)]
+struct IssueAgentIdentityRequest {
+    id: String,
+    /// `"agent"` or `"service"`.
+    kind: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// Write an NHI lifecycle event to the authz audit trail (best-effort).
+async fn audit_nhi_event(db: &Database, id: &str, action: &str) {
+    let record = crate::db::AuthzAuditRecord {
+        request_id: None,
+        principal: id.to_string(),
+        action: action.to_string(),
+        resource: "agent_identity".to_string(),
+        // Lifecycle events are administrative; record as `allow` (the action
+        // succeeded) — the decision column tracks authz outcomes, and these rows
+        // are distinguished by their `action` (issue/rotate/revoke).
+        decision: crate::db::AuthzAuditDecision::Allow,
+        reason: Some(format!("nhi {action}")),
+        context: Some(json!({ "agent_id": id })),
+    };
+    if let Err(e) = db.log_authz_decision(&record).await {
+        tracing::warn!(error = %e, id, action, "nhi lifecycle audit write failed (ignored)");
+    }
+}
+
+/// `GET /agent-identities` — list all non-human identities.
+async fn list_agent_identities_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.list_agent_identities().await {
+        Ok(items) => Json(json!({ "agent_identities": items })).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// `POST /agent-identities` — issue (register) a non-human identity.
+async fn issue_agent_identity_handler(
+    State(state): State<AdminState>,
+    Json(payload): Json<IssueAgentIdentityRequest>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    if !matches!(payload.kind.as_str(), "agent" | "service") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "kind must be 'agent' or 'service'"})),
+        )
+            .into_response();
+    }
+    match db
+        .issue_agent_identity(&payload.id, &payload.kind, payload.label.as_deref())
+        .await
+    {
+        Ok(()) => {
+            audit_nhi_event(db, &payload.id, "nhi_issue").await;
+            (
+                StatusCode::CREATED,
+                Json(json!({"status": "issued", "id": payload.id, "kind": payload.kind})),
+            )
+                .into_response()
+        }
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// `POST /agent-identities/{id}/rotate` — stamp an identity rotated.
+async fn rotate_agent_identity_handler(
+    Path(id): Path<String>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.rotate_agent_identity(&id).await {
+        Ok(true) => {
+            audit_nhi_event(db, &id, "nhi_rotate").await;
+            Json(json!({"status": "rotated", "id": id})).into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "not found or not active"})),
+        )
+            .into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// `DELETE /agent-identities/{id}` — revoke a non-human identity. Takes effect
+/// on the identity's next authorize (fail-closed).
+async fn revoke_agent_identity_handler(
+    Path(id): Path<String>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.revoke_agent_identity(&id).await {
+        Ok(true) => {
+            audit_nhi_event(db, &id, "nhi_revoke").await;
+            Json(json!({"status": "revoked", "id": id})).into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "not found or already revoked"})),
+        )
+            .into_response(),
+        Err(e) => internal_error(&e.to_string()),
     }
 }
 

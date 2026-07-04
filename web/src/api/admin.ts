@@ -1,5 +1,6 @@
 import { FlintGateError } from '@know-me/flint-gate';
 import type {
+  AgentIdentityListResponse,
   ApiKeyCreateRequest,
   ApiKeyCreatedResponse,
   ApiKeyListResponse,
@@ -8,6 +9,7 @@ import type {
   ConfigResponse,
   DbRoute,
   HealthResponse,
+  IssueAgentIdentityRequest,
   PolicyListResponse,
   PolicyRow,
   ReadyResponse,
@@ -165,4 +167,27 @@ export async function listAudit(params: AuditQueryParams = {}): Promise<AuditLis
       offset: params.offset,
     })}`,
   );
+}
+
+// ── Non-human identities ──────────────────────────────────────────────────────
+
+export async function listAgentIdentities(): Promise<AgentIdentityListResponse> {
+  return adminRequest('/agent-identities');
+}
+
+export async function issueAgentIdentity(
+  payload: IssueAgentIdentityRequest,
+): Promise<{ status: string; id: string; kind: string }> {
+  return adminRequest('/agent-identities', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rotateAgentIdentity(id: string): Promise<{ status: string; id: string }> {
+  return adminRequest(`/agent-identities/${encodeURIComponent(id)}/rotate`, { method: 'POST' });
+}
+
+export async function revokeAgentIdentity(id: string): Promise<{ status: string; id: string }> {
+  return adminRequest(`/agent-identities/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

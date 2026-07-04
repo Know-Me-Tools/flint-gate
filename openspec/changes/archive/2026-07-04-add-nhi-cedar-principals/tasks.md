@@ -1,0 +1,6 @@
+- [x] Thread principal entity-type through `authz/engine.rs::authorize` (Agent/Service/User); update `tool_authz.rs` call sites
+- [x] Add `Identity.kind` (user|agent|service) + derivation rules (client_id / act-claim / provider ⇒ agent/service)
+- [x] NHI lifecycle store (`agent_identities`): issue / rotate / revoke; revocation enforced on next authorize (fail-closed)
+- [x] Admin API + web UI for agent identities; write every issue/rotate/revoke to the authz audit trail
+- [x] Tests: Agent principal allowed by an agent-scoped policy but User denied (and vice-versa); revoked identity denied on next authorize; `degrades_to_deny`
+- [x] Docs: NHI model + policy examples; `cargo check/clippy/test --workspace` green

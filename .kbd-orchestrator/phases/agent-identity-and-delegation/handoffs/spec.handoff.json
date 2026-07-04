@@ -1,0 +1,15 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-04T15:00:00Z",
+  "outputs": [
+    "openspec/changes/add-admin-authn",
+    "openspec/changes/add-token-exchange",
+    "openspec/changes/add-client-creds-introspection",
+    "openspec/changes/add-nhi-cedar-principals"
+  ],
+  "nextStage": "plan",
+  "summaryForNext": "4 OpenSpec changes (23 tasks) in dependency order: add-admin-authn (G1,5) -> add-token-exchange (G2,6) -> add-client-creds-introspection (G3,6) -> add-nhi-cedar-principals (G4,6). ZeeSpec gate inactive (opt-in, no .zeespec). Operator decisions baked in: G2 gateway-local-first with delegate_to_hydra seam (off); G4 distinct Cedar Agent::/Service:: types; G1 none-on-loopback / refuse-off-loopback-without-auth. Backend openspec, driver kbd-apply. Every change has a fail-closed `degrades_to_deny` test task. Plan: confirm this order + surface remaining open questions (opaque-token store, Redis-L2 carry-over).",
+  "skipped": false,
+  "skipReason": null,
+  "zeespec": "n/a"
+}

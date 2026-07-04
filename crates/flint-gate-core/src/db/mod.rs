@@ -84,7 +84,37 @@ CREATE TABLE IF NOT EXISTS authz_audit (
 
 CREATE INDEX IF NOT EXISTS authz_audit_created_at_idx ON authz_audit (created_at DESC);
 CREATE INDEX IF NOT EXISTS authz_audit_principal_idx ON authz_audit (principal);
+
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id      TEXT NOT NULL UNIQUE,
+    secret_hash    TEXT NOT NULL,
+    scopes         JSONB NOT NULL DEFAULT '[]',
+    audience       TEXT,
+    active         BOOLEAN NOT NULL DEFAULT true,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS agent_identities (
+    id             TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,          -- 'agent' | 'service'
+    status         TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'revoked'
+    label          TEXT,
+    rotated_at     TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS agent_identities_status_idx ON agent_identities (status);
 "#;
+
+/// SHA-256 of `input`, hex-encoded. Used to store API-key / client-secret
+/// hashes so raw secrets are never persisted.
+fn sha256_hex(input: &str) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(input.as_bytes());
+    hex::encode(h.finalize())
+}
 
 /// Database access wrapper.
 #[derive(Clone)]
@@ -460,16 +490,11 @@ impl Database {
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<(Uuid, String)> {
         use rand::Rng;
-        use sha2::Digest;
 
         // Generate a 32-byte random key and encode as hex (64-char string).
         let raw_bytes: [u8; 32] = rand::thread_rng().gen();
         let raw_key = hex::encode(raw_bytes);
-        let key_hash = {
-            let mut h = sha2::Sha256::new();
-            h.update(raw_key.as_bytes());
-            hex::encode(h.finalize())
-        };
+        let key_hash = sha256_hex(&raw_key);
 
         let scopes_json = serde_json::to_value(scopes).context("serializing scopes")?;
 
@@ -533,6 +558,174 @@ impl Database {
                 .await
                 .context("revoking API key")?;
         Ok(result.rows_affected() > 0)
+    }
+
+    // ── OAuth clients (client_credentials grant) ─────────────────────────────
+
+    /// Create an OAuth client. Returns `(id, raw_secret)`; the raw secret is
+    /// shown ONCE and only its SHA-256 hash is stored (mirrors `create_api_key`).
+    pub async fn create_oauth_client(
+        &self,
+        client_id: &str,
+        scopes: &[String],
+        audience: Option<&str>,
+    ) -> Result<(Uuid, String)> {
+        use rand::Rng;
+        let raw_bytes: [u8; 32] = rand::thread_rng().gen();
+        let raw_secret = hex::encode(raw_bytes);
+        let secret_hash = sha256_hex(&raw_secret);
+        let scopes_json = serde_json::to_value(scopes).context("serializing scopes")?;
+
+        let row = sqlx::query(
+            "INSERT INTO oauth_clients (client_id, secret_hash, scopes, audience)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id",
+        )
+        .bind(client_id)
+        .bind(&secret_hash)
+        .bind(&scopes_json)
+        .bind(audience)
+        .fetch_one(&self.pool)
+        .await
+        .context("creating OAuth client")?;
+
+        let id: Uuid = row.try_get("id")?;
+        info!(client_id, %id, "OAuth client created");
+        Ok((id, raw_secret))
+    }
+
+    /// Verify a `client_id` + `client_secret` pair. Returns the client record on
+    /// success, `None` on any mismatch (unknown client, wrong secret, inactive).
+    ///
+    /// The secret is looked up by its SHA-256 hash against the unique-indexed
+    /// column, so the presented secret is never string-compared in the clear.
+    pub async fn verify_client_credentials(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<Option<OAuthClientRecord>> {
+        let secret_hash = sha256_hex(client_secret);
+        let row = sqlx::query(
+            "SELECT id, client_id, scopes, audience FROM oauth_clients
+             WHERE client_id = $1 AND secret_hash = $2 AND active = true",
+        )
+        .bind(client_id)
+        .bind(&secret_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .context("verifying client credentials")?;
+
+        let Some(r) = row else { return Ok(None) };
+        let scopes: serde_json::Value = r.try_get("scopes")?;
+        let scopes: Vec<String> = scopes
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Some(OAuthClientRecord {
+            id: r.try_get("id")?,
+            client_id: r.try_get("client_id")?,
+            scopes,
+            audience: r.try_get("audience")?,
+        }))
+    }
+
+    // ── NHI lifecycle (agent / service identities) ───────────────────────────
+
+    /// Issue (register) a non-human identity. `kind` is `"agent"` or `"service"`.
+    /// Idempotent on the id (upsert keeps it active and updates the label).
+    pub async fn issue_agent_identity(
+        &self,
+        id: &str,
+        kind: &str,
+        label: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO agent_identities (id, kind, status, label)
+             VALUES ($1, $2, 'active', $3)
+             ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, label = EXCLUDED.label, status = 'active'",
+        )
+        .bind(id)
+        .bind(kind)
+        .bind(label)
+        .execute(&self.pool)
+        .await
+        .context("issuing agent identity")?;
+        info!(id, kind, "agent identity issued");
+        Ok(())
+    }
+
+    /// Mark an identity rotated (stamps `rotated_at`). Caller rotates the
+    /// underlying credential separately (client secret / signing key).
+    pub async fn rotate_agent_identity(&self, id: &str) -> Result<bool> {
+        let r = sqlx::query(
+            "UPDATE agent_identities SET rotated_at = NOW() WHERE id = $1 AND status = 'active'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .context("rotating agent identity")?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// Revoke a non-human identity. After this returns, [`Self::is_agent_revoked`]
+    /// reports it revoked, so the next authorize denies it (fail-closed).
+    pub async fn revoke_agent_identity(&self, id: &str) -> Result<bool> {
+        let r = sqlx::query(
+            "UPDATE agent_identities SET status = 'revoked' WHERE id = $1 AND status = 'active'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .context("revoking agent identity")?;
+        if r.rows_affected() > 0 {
+            info!(id, "agent identity revoked");
+        }
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// Whether a non-human identity is revoked. An id that was never issued is
+    /// treated as **not revoked** here (unknown ids are governed by policy, not
+    /// the revocation list); only an explicit `revoked` row denies.
+    pub async fn is_agent_revoked(&self, id: &str) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT status FROM agent_identities WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("checking agent identity revocation")?;
+        Ok(row
+            .map(|r| r.try_get::<String, _>("status").map(|s| s == "revoked"))
+            .transpose()?
+            .unwrap_or(false))
+    }
+
+    /// List all non-human identities (newest first).
+    pub async fn list_agent_identities(&self) -> Result<Vec<AgentIdentityRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, kind, status, label, rotated_at, created_at
+             FROM agent_identities ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing agent identities")?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(AgentIdentityRecord {
+                id: r.try_get("id")?,
+                kind: r.try_get("kind")?,
+                status: r.try_get("status")?,
+                label: r.try_get("label")?,
+                rotated_at: r.try_get("rotated_at")?,
+                created_at: r.try_get("created_at")?,
+            });
+        }
+        Ok(out)
     }
 
     /// Return the lifetime token total for a user (for `usage_budget` lookup).
@@ -1026,6 +1219,26 @@ pub struct ApiKeyRecord {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+/// An OAuth client record from the `oauth_clients` table (no secret hash).
+#[derive(Debug, Clone)]
+pub struct OAuthClientRecord {
+    pub id: Uuid,
+    pub client_id: String,
+    pub scopes: Vec<String>,
+    pub audience: Option<String>,
+}
+
+/// A non-human-identity record from the `agent_identities` table.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentIdentityRecord {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub label: Option<String>,
+    pub rotated_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A usage event to be logged via [`Database::log_usage`].
 #[derive(Debug)]
 pub struct UsageEvent {
@@ -1213,5 +1426,94 @@ mod tests {
             .await
             .unwrap();
         assert!(allow_rows.is_empty());
+    }
+
+    #[test]
+    fn sha256_hex_is_stable_and_hex() {
+        let h = super::sha256_hex("secret");
+        // SHA-256 → 32 bytes → 64 hex chars, deterministic.
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(h, super::sha256_hex("secret"));
+        assert_ne!(h, super::sha256_hex("secre7"));
+    }
+
+    /// Round-trip for the OAuth client store: create → verify good secret →
+    /// verify bad secret denied. Requires a live Postgres via `DATABASE_URL`.
+    ///   DATABASE_URL=postgres://... cargo test -p flint-gate-core --all-features -- --ignored
+    #[tokio::test]
+    #[ignore = "requires a live Postgres via DATABASE_URL"]
+    async fn oauth_client_create_and_verify_round_trip() {
+        use super::Database;
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let db = Database::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+
+        let client_id = format!("svc-{}", uuid::Uuid::new_v4());
+        let (_, raw_secret) = db
+            .create_oauth_client(&client_id, &["svc.read".into()], Some("api"))
+            .await
+            .unwrap();
+
+        // Correct secret verifies and returns the grant.
+        let ok = db
+            .verify_client_credentials(&client_id, &raw_secret)
+            .await
+            .unwrap();
+        let rec = ok.expect("valid credentials verify");
+        assert_eq!(rec.client_id, client_id);
+        assert_eq!(rec.scopes, vec!["svc.read".to_string()]);
+        assert_eq!(rec.audience.as_deref(), Some("api"));
+
+        // Wrong secret is denied (no fail-open).
+        let bad = db
+            .verify_client_credentials(&client_id, "wrong-secret")
+            .await
+            .unwrap();
+        assert!(bad.is_none());
+
+        // Unknown client is denied.
+        let unknown = db
+            .verify_client_credentials("no-such-client", &raw_secret)
+            .await
+            .unwrap();
+        assert!(unknown.is_none());
+    }
+
+    /// Round-trip for the NHI lifecycle: issue → not-revoked → revoke →
+    /// revoked. Requires a live Postgres via `DATABASE_URL`.
+    ///   DATABASE_URL=postgres://... cargo test -p flint-gate-core --all-features -- --ignored
+    #[tokio::test]
+    #[ignore = "requires a live Postgres via DATABASE_URL"]
+    async fn agent_identity_lifecycle_round_trip() {
+        use super::Database;
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let db = Database::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+
+        let id = format!("agent-{}", uuid::Uuid::new_v4());
+
+        // An id that was never issued is not on the revocation list.
+        assert!(!db.is_agent_revoked(&id).await.unwrap());
+
+        db.issue_agent_identity(&id, "agent", Some("test bot"))
+            .await
+            .unwrap();
+        assert!(!db.is_agent_revoked(&id).await.unwrap());
+
+        // Rotate stamps rotated_at, stays active.
+        assert!(db.rotate_agent_identity(&id).await.unwrap());
+        assert!(!db.is_agent_revoked(&id).await.unwrap());
+
+        // Revoke → is_revoked flips true (denied on next authorize).
+        assert!(db.revoke_agent_identity(&id).await.unwrap());
+        assert!(db.is_agent_revoked(&id).await.unwrap());
+
+        // Revoking again is a no-op (already revoked).
+        assert!(!db.revoke_agent_identity(&id).await.unwrap());
+
+        // It appears in the listing.
+        let list = db.list_agent_identities().await.unwrap();
+        assert!(list.iter().any(|r| r.id == id && r.status == "revoked"));
     }
 }

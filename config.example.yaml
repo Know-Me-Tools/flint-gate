@@ -8,10 +8,22 @@
 server:
   # Proxy server — receives all inbound traffic. Expose to the internet.
   listen: "0.0.0.0:4456"
-  # Admin API — internal only, UNAUTHENTICATED. NEVER expose to the public
-  # internet. Defaults to loopback; only widen this bind behind a firewall /
-  # private network.
+  # Admin API bind. Defaults to loopback. When you widen this bind to a
+  # non-loopback address you MUST also set `admin_auth` below — flint-gate
+  # refuses to start on a non-loopback admin bind without authentication
+  # (fail-safe against exposing an unauthenticated control plane).
   admin_listen: "127.0.0.1:4457"
+  # Admin API authentication. Omit for an UNAUTHENTICATED loopback-only admin
+  # API (local development). Set it to require auth on every admin request
+  # (all routes except the /health and /ready probes). Reuses an ordinary auth
+  # provider — `type: jwt` (Bearer, e.g. an Ory Hydra-issued token) or
+  # `type: kratos` (session cookie). Any JWKS-backed JWT provider works.
+  # admin_auth:
+  #   provider:
+  #     type: jwt
+  #     jwks_url: "https://auth.example.com/.well-known/jwks.json"
+  #     issuer: "https://auth.example.com"
+  #     audience: "flint-admin"
   tls:
     enabled: false
     # cert_path: "/etc/flint-gate/tls/cert.pem"
@@ -69,6 +81,37 @@ jwt:
   signing_key_secret: "change-me-in-production-use-a-strong-secret"
   issuer: "https://gate.example.com"
   default_ttl_seconds: 300
+
+# ─── Token Exchange (RFC 8693) ────────────────────────────────────────────────
+# Gateway-local OAuth 2.0 Token Exchange at `POST /oauth/token`. An agent
+# exchanges a user's `subject_token` for a DOWNSCOPED delegated token carrying an
+# `act` claim — the user's raw token is never forwarded upstream. The
+# subject_token is verified against `subject_token_provider`'s JWKS, so ANY IdM
+# that issues a verifiable JWT (Ory Hydra is the reference) is a valid source.
+# Disabled by default.
+token_exchange:
+  enabled: false
+  # An auth_providers entry (must be JWKS-backed: type jwt or mcp).
+  subject_token_provider: bearer_jwt
+  # delegated_ttl_seconds: 300   # falls back to jwt.default_ttl_seconds
+  # Seam (not yet implemented): proxy the exchange to an Ory Hydra token endpoint.
+  # delegate_to_hydra: false
+  # hydra_token_url: "https://hydra.example.com/oauth2/token"
+
+# ─── OAuth 2.0 (client credentials + introspection) ───────────────────────────
+# client_credentials: service-to-service (non-human) identity. Clients live in
+#   the `oauth_clients` table (create via the admin API); a client authenticates
+#   with client_id + client_secret at `POST /oauth/token` and receives a minted
+#   gateway service token. Where Ory Hydra is the AS, prefer Hydra's own grant.
+# introspection: RFC 7662 `POST /oauth/introspect` for gateway-MINTED tokens.
+#   `introspection_delegate` forwards opaque, Hydra-issued tokens to Hydra
+#   (which owns RFC 7662 for its own tokens). Off unless set.
+oauth:
+  client_credentials_enabled: false   # requires a database (client store)
+  introspection_enabled: false
+  # service_token_ttl_seconds: 300
+  # introspection_delegate:
+  #   hydra_admin_url: "https://hydra-admin.example.com"
 
 # ─── Sites ────────────────────────────────────────────────────────────────────
 # A site maps one or more domains to a default auth provider and upstream.

@@ -3,7 +3,7 @@
 //! Configuration priority (highest → lowest):
 //!   CLI flags  >  environment variables  >  config.yaml
 
-use flint_gate_core::admin::{admin_router, AdminState};
+use flint_gate_core::admin::AdminState;
 use flint_gate_core::auth::{build_authenticators, JwtMinter, SharedJwtMinter};
 use flint_gate_core::authz::AuthzEngine;
 use flint_gate_core::cache::{start_cache_invalidation_listener, GateCache};
@@ -14,7 +14,7 @@ use flint_gate_core::proxy::{Router as GateRouter, SharedRouter};
 
 use anyhow::{Context, Result};
 use axum::{
-    routing::{any, get},
+    routing::{any, get, post},
     Json, Router,
 };
 use clap::Parser;
@@ -332,6 +332,94 @@ async fn main() -> Result<()> {
         .with_state(Arc::clone(&app_state))
         .layer(TraceLayer::new_for_http());
 
+    // OAuth 2.0 endpoints (proxy port): unified `/oauth/token` (RFC 8693 token
+    // exchange + RFC 6749 client-credentials, dispatched by grant_type) and
+    // RFC 7662 `/oauth/introspect`. Each capability is independently gated.
+    {
+        use flint_gate_core::auth::introspect::TokenVerifier;
+        use flint_gate_core::auth::oauth::{
+            introspect_endpoint, token_endpoint, IntrospectionState, OAuthState,
+        };
+        use flint_gate_core::auth::token_exchange::validate_subject_provider;
+
+        // Token exchange: only when enabled with a fail-closed subject provider.
+        let tx_cfg = &initial_config.token_exchange;
+        let token_exchange = if tx_cfg.enabled {
+            let provider_name = tx_cfg.subject_token_provider.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("token_exchange.enabled is true but subject_token_provider is not set")
+            })?;
+            let provider_cfg = initial_config
+                .auth_providers
+                .get(provider_name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "token_exchange subject_token_provider {provider_name:?} is not a configured auth provider"
+                    )
+                })?;
+            if let Err(reason) = validate_subject_provider(provider_cfg) {
+                anyhow::bail!("refusing to enable token exchange: {reason}");
+            }
+            let verifier = auth_providers.get(provider_name).cloned().ok_or_else(|| {
+                anyhow::anyhow!("subject_token_provider {provider_name:?} authenticator was not built")
+            })?;
+            info!("RFC 8693 token exchange enabled");
+            Some((verifier, tx_cfg.delegated_ttl_seconds))
+        } else {
+            None
+        };
+
+        let oauth_cfg = &initial_config.oauth;
+
+        // Client credentials: needs the DB-backed client store.
+        let client_credentials = if oauth_cfg.client_credentials_enabled {
+            match db.clone() {
+                Some(database) => {
+                    info!("OAuth client_credentials grant enabled");
+                    Some((database, oauth_cfg.service_token_ttl_seconds))
+                }
+                None => anyhow::bail!(
+                    "oauth.client_credentials_enabled is true but no database is configured (the client store lives in Postgres)"
+                ),
+            }
+        } else {
+            None
+        };
+
+        // Introspection: build a verifier from the gateway signing config.
+        let introspection = if oauth_cfg.introspection_enabled {
+            let verifier = TokenVerifier::from_jwt_config(&initial_config.jwt)
+                .await
+                .context("building introspection verifier from jwt config")?;
+            info!("RFC 7662 introspection enabled");
+            Some(IntrospectionState {
+                verifier,
+                http_client: http_client.clone(),
+                hydra_admin_url: oauth_cfg
+                    .introspection_delegate
+                    .as_ref()
+                    .map(|d| d.hydra_admin_url.clone()),
+            })
+        } else {
+            None
+        };
+
+        // Mount only if at least one capability is on.
+        if token_exchange.is_some() || client_credentials.is_some() || introspection.is_some() {
+            let oauth_state = OAuthState {
+                minter: Arc::clone(&jwt_minter),
+                token_exchange,
+                client_credentials,
+                introspection,
+            };
+            proxy_app = proxy_app.merge(
+                Router::new()
+                    .route("/oauth/token", post(token_endpoint))
+                    .route("/oauth/introspect", post(introspect_endpoint))
+                    .with_state(oauth_state),
+            );
+        }
+    }
+
     // Coarse in-process request-rate shield (per replica), keyed on credential
     // with client-IP fallback. Authoritative cross-replica limiting is the
     // Redis window counters; this only clips bursts.
@@ -439,7 +527,45 @@ async fn main() -> Result<()> {
         authz: Arc::clone(&authz),
         approval_manager: approval_manager.clone(),
     };
-    let admin_app = admin_router(admin_state).layer(TraceLayer::new_for_http());
+
+    // Admin-auth posture: enforce when configured; refuse to start if a
+    // non-loopback admin bind has no auth (fail-safe against exposing an
+    // unauthenticated control plane).
+    use flint_gate_core::config::types::AdminAuthPosture;
+    let admin_authenticator = match initial_config.server.admin_auth_posture() {
+        AdminAuthPosture::Enforce => {
+            let provider = &initial_config
+                .server
+                .admin_auth
+                .as_ref()
+                .expect("Enforce implies admin_auth is Some")
+                .provider;
+            let auth = flint_gate_core::auth::build_authenticator(
+                "admin",
+                provider,
+                &http_client,
+                db.clone(),
+            );
+            info!("admin API authentication enabled");
+            Some(auth)
+        }
+        AdminAuthPosture::AllowLoopback => {
+            info!(
+                addr = %admin_listen,
+                "admin API is UNAUTHENTICATED on a loopback bind (dev). Set server.admin_auth before exposing it."
+            );
+            None
+        }
+        AdminAuthPosture::RefuseStart => {
+            anyhow::bail!(
+                "refusing to start: admin_listen ({admin_listen}) is not loopback and server.admin_auth is not set — \
+                 this would expose an unauthenticated admin API. Set server.admin_auth or bind admin_listen to loopback."
+            );
+        }
+    };
+
+    let admin_app = flint_gate_core::admin::admin_router_with_auth(admin_state, admin_authenticator)
+        .layer(TraceLayer::new_for_http());
     let admin_listener = tokio::net::TcpListener::bind(&admin_listen)
         .await
         .with_context(|| format!("binding admin server to {admin_listen}"))?;
@@ -523,6 +649,7 @@ mod tests {
                 tls: Default::default(),
                 shutdown_timeout_secs: 30,
                 rate_limit: Default::default(),
+                admin_auth: None,
             },
             database: DatabaseConfig {
                 url: "postgres://original".to_string(),

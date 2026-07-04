@@ -195,3 +195,27 @@ export interface AuditQueryParams {
   limit?: number;
   offset?: number;
 }
+
+// ── Non-human identities (agent / service) ────────────────────────────────────
+
+export type AgentIdentityKind = 'agent' | 'service';
+export type AgentIdentityStatus = 'active' | 'revoked';
+
+export interface AgentIdentity {
+  id: string;
+  kind: AgentIdentityKind;
+  status: AgentIdentityStatus;
+  label?: string | null;
+  rotated_at?: string | null;
+  created_at: string;
+}
+
+export interface AgentIdentityListResponse {
+  agent_identities: AgentIdentity[];
+}
+
+export interface IssueAgentIdentityRequest {
+  id: string;
+  kind: AgentIdentityKind;
+  label?: string;
+}

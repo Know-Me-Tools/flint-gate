@@ -1,8 +1,8 @@
 {
   "phase": "agent-identity-and-delegation",
   "change": null,
-  "exactNextCommand": "/kbd-assess",
-  "status": "assess_pending",
+  "exactNextCommand": "/kbd-next-phase",
+  "status": "reflected",
   "seeded_from_phase": "agent-authz-control-plane",
-  "note": "New phase seeded from prior reflection. Build order: admin authn FIRST, then RFC 8693 token-exchange, client-credentials/introspection, NHI lifecycle."
+  "note": "Phase complete + reflected (4/4 goals MET). Next phase seeded from reflection.md: agent-gateway-hardening-and-exposure (OAuth endpoint auth + rate-limiting FIRST)."
 }

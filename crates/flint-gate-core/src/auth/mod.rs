@@ -1,13 +1,17 @@
 /// Authentication module — pluggable authenticator trait and built-in implementations.
 pub mod api_key;
+pub mod client_credentials;
 pub mod identity;
+pub mod introspect;
 pub mod jwks;
 pub mod jwt_mint;
 pub mod jwt_verify;
 pub mod kratos;
 pub mod mcp;
 pub mod mcp_metadata;
+pub mod oauth;
 pub mod pkce;
+pub mod token_exchange;
 
 pub use api_key::ApiKeyAuthenticator;
 pub use identity::Identity;
@@ -109,60 +113,76 @@ pub fn build_authenticators(
 ) -> HashMap<String, Arc<dyn Authenticator>> {
     let mut map: HashMap<String, Arc<dyn Authenticator>> = HashMap::new();
     for (name, config) in providers {
-        let auth: Arc<dyn Authenticator> = match config {
-            AuthProviderConfig::Kratos(cfg) => {
-                Arc::new(KratosAuthenticator::new(cfg.clone(), http_client.clone()))
-            }
-            AuthProviderConfig::Anonymous(cfg) => {
-                Arc::new(AnonymousAuthenticator::new(cfg.default_subject.clone()))
-            }
-            AuthProviderConfig::Jwt(cfg) => Arc::new(JwtVerifyAuthenticator::new(
-                cfg.clone(),
-                http_client.clone(),
-            )),
-            AuthProviderConfig::Mcp(cfg) => {
-                // Fail CLOSED on a misconfigured MCP RS. Without an `audience`
-                // the RFC 8707 confused-deputy check is a no-op (any signed
-                // token would pass — C1); without an `issuer` we cannot pin the
-                // trusted AS (M3). Refuse to build a permissive authenticator;
-                // mirror the api_key-without-db pattern with a FailingAuthenticator.
-                let mut missing: Vec<&str> = Vec::new();
-                if cfg.audience.is_none() {
-                    missing.push("audience");
-                }
-                if cfg.issuer.is_none() {
-                    missing.push("issuer");
-                }
-                if missing.is_empty() {
-                    Arc::new(McpAuthenticator::new(cfg.clone(), http_client.clone()))
-                } else {
-                    let fields = missing.join(", ");
-                    tracing::error!(
-                        provider = %name,
-                        missing = %fields,
-                        "mcp provider missing required security fields ({fields}) — provider will always fail (fail-closed)"
-                    );
-                    Arc::new(FailingAuthenticator::new(format!(
-                        "mcp provider requires {fields} to be configured"
-                    )))
-                }
-            }
-            AuthProviderConfig::ApiKey(cfg) => match db.clone() {
-                Some(database) => Arc::new(ApiKeyAuthenticator::new(cfg.clone(), database)),
-                None => {
-                    tracing::error!(
-                        provider = %name,
-                        "api_key provider requires a database; none configured — provider will always fail"
-                    );
-                    Arc::new(FailingAuthenticator::new(
-                        "api_key provider requires a database connection".to_string(),
-                    ))
-                }
-            },
-        };
-        map.insert(name.clone(), auth);
+        map.insert(
+            name.clone(),
+            build_authenticator(name, config, http_client, db.clone()),
+        );
     }
     map
+}
+
+/// Build a single [`Authenticator`] from one provider config. Shared by
+/// [`build_authenticators`] (proxy auth providers) and the admin-auth wiring so
+/// the fail-closed construction rules (misconfigured MCP → `FailingAuthenticator`,
+/// api_key without db → `FailingAuthenticator`) live in exactly one place.
+///
+/// `name` is used only for diagnostic logging.
+pub fn build_authenticator(
+    name: &str,
+    config: &AuthProviderConfig,
+    http_client: &reqwest::Client,
+    db: Option<Arc<Database>>,
+) -> Arc<dyn Authenticator> {
+    match config {
+        AuthProviderConfig::Kratos(cfg) => {
+            Arc::new(KratosAuthenticator::new(cfg.clone(), http_client.clone()))
+        }
+        AuthProviderConfig::Anonymous(cfg) => {
+            Arc::new(AnonymousAuthenticator::new(cfg.default_subject.clone()))
+        }
+        AuthProviderConfig::Jwt(cfg) => {
+            Arc::new(JwtVerifyAuthenticator::new(cfg.clone(), http_client.clone()))
+        }
+        AuthProviderConfig::Mcp(cfg) => {
+            // Fail CLOSED on a misconfigured MCP RS. Without an `audience`
+            // the RFC 8707 confused-deputy check is a no-op (any signed
+            // token would pass — C1); without an `issuer` we cannot pin the
+            // trusted AS (M3). Refuse to build a permissive authenticator;
+            // mirror the api_key-without-db pattern with a FailingAuthenticator.
+            let mut missing: Vec<&str> = Vec::new();
+            if cfg.audience.is_none() {
+                missing.push("audience");
+            }
+            if cfg.issuer.is_none() {
+                missing.push("issuer");
+            }
+            if missing.is_empty() {
+                Arc::new(McpAuthenticator::new(cfg.clone(), http_client.clone()))
+            } else {
+                let fields = missing.join(", ");
+                tracing::error!(
+                    provider = %name,
+                    missing = %fields,
+                    "mcp provider missing required security fields ({fields}) — provider will always fail (fail-closed)"
+                );
+                Arc::new(FailingAuthenticator::new(format!(
+                    "mcp provider requires {fields} to be configured"
+                )))
+            }
+        }
+        AuthProviderConfig::ApiKey(cfg) => match db {
+            Some(database) => Arc::new(ApiKeyAuthenticator::new(cfg.clone(), database)),
+            None => {
+                tracing::error!(
+                    provider = %name,
+                    "api_key provider requires a database; none configured — provider will always fail"
+                );
+                Arc::new(FailingAuthenticator::new(
+                    "api_key provider requires a database connection".to_string(),
+                ))
+            }
+        },
+    }
 }
 
 /// Authenticator that always returns a provider error — used when a required

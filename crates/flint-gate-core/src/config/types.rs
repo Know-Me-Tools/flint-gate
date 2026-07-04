@@ -24,6 +24,74 @@ pub struct GateConfig {
     pub sites: Vec<SiteConfig>,
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
+    /// OAuth 2.0 Token Exchange (RFC 8693) configuration. Disabled by default.
+    #[serde(default)]
+    pub token_exchange: TokenExchangeConfig,
+    /// OAuth 2.0 features: client-credentials grant + RFC 7662 introspection.
+    #[serde(default)]
+    pub oauth: OAuthConfig,
+}
+
+/// OAuth 2.0 server-side features flint-gate offers on the proxy port.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OAuthConfig {
+    /// Enable the `client_credentials` grant on `POST /oauth/token` (service
+    /// identities issued from the `oauth_clients` store).
+    #[serde(default)]
+    pub client_credentials_enabled: bool,
+    /// Enable RFC 7662 `POST /oauth/introspect` for gateway-minted tokens.
+    #[serde(default)]
+    pub introspection_enabled: bool,
+    /// Default TTL (seconds) for client-credentials service tokens.
+    #[serde(default)]
+    pub service_token_ttl_seconds: Option<u64>,
+    /// **Seam (off by default):** delegate introspection of opaque, Hydra-issued
+    /// tokens to Ory Hydra's admin introspection endpoint. When set, tokens that
+    /// do not verify as gateway-minted are forwarded here (Hydra owns RFC 7662
+    /// for its own tokens).
+    ///
+    /// SECURITY: `/oauth/introspect` is currently unauthenticated. Enabling this
+    /// delegate turns the public endpoint into a proxy to Hydra's *admin* API —
+    /// only enable it when `/oauth/introspect` is network-restricted to trusted
+    /// callers (see README). Endpoint-level auth is roadmapped.
+    #[serde(default)]
+    pub introspection_delegate: Option<IntrospectionDelegateConfig>,
+}
+
+/// Configuration for delegating introspection to an external AS (Ory Hydra).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntrospectionDelegateConfig {
+    /// Hydra admin base URL exposing `POST /admin/oauth2/introspect`.
+    pub hydra_admin_url: String,
+}
+
+/// OAuth 2.0 Token Exchange (RFC 8693) settings.
+///
+/// flint-gate performs *gateway-local* exchange: it verifies an incoming
+/// `subject_token` against a configured auth provider's JWKS (so **any IdM that
+/// issues a verifiable JWT** is a valid subject-token source), downscopes, and
+/// mints a delegated token carrying an `act` claim. `delegate_to_hydra` is a
+/// forward-looking seam for proxying the exchange to an Ory Hydra token endpoint
+/// — **not yet implemented**; when true today the exchange still runs locally.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenExchangeConfig {
+    /// Enable the `POST /oauth/token` token-exchange endpoint.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Name of the `auth_providers` entry used to verify the `subject_token`.
+    /// Must be a JWKS-backed provider (`jwt` or `mcp`). Required when `enabled`.
+    #[serde(default)]
+    pub subject_token_provider: Option<String>,
+    /// TTL (seconds) for minted delegated tokens. Falls back to the JWT default.
+    #[serde(default)]
+    pub delegated_ttl_seconds: Option<u64>,
+    /// **Seam (not yet implemented):** proxy the exchange to an Ory Hydra token
+    /// endpoint instead of minting locally. Kept `false`.
+    #[serde(default)]
+    pub delegate_to_hydra: bool,
+    /// **Seam:** the Hydra token endpoint used when `delegate_to_hydra` is wired.
+    #[serde(default)]
+    pub hydra_token_url: Option<String>,
 }
 
 /// HTTP server bind configuration.
@@ -48,6 +116,81 @@ pub struct ServerConfig {
     /// In-process per-replica request-rate limiter (coarse burst shield).
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// Authentication for the admin API. When `None`, the admin API is
+    /// unauthenticated and only permitted on a loopback `admin_listen` — binding
+    /// a non-loopback address without `admin_auth` is refused at startup.
+    #[serde(default)]
+    pub admin_auth: Option<AdminAuthConfig>,
+}
+
+/// Authentication policy for the admin API.
+///
+/// Reuses an existing [`AuthProviderConfig`] (JWT or Kratos are the intended
+/// choices — the Ory-standard path; any JWKS-backed JWT provider also works) so
+/// there is no separate admin identity model. When set, every admin request
+/// except the liveness/readiness probes MUST authenticate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAuthConfig {
+    /// The provider used to verify admin requests. Inline config; typically
+    /// `type: jwt` (Bearer) or `type: kratos` (session cookie).
+    pub provider: AuthProviderConfig,
+}
+
+impl ServerConfig {
+    /// Decide the admin-API auth posture from whether `admin_auth` is configured
+    /// and whether `admin_listen` binds a loopback address. Pure and
+    /// side-effect free so the fail-closed rule is unit-testable.
+    ///
+    /// - `admin_auth` set                         → [`AdminAuthPosture::Enforce`]
+    /// - unset **and** loopback bind              → [`AdminAuthPosture::AllowLoopback`]
+    /// - unset **and** non-loopback bind          → [`AdminAuthPosture::RefuseStart`]
+    pub fn admin_auth_posture(&self) -> AdminAuthPosture {
+        if self.admin_auth.is_some() {
+            return AdminAuthPosture::Enforce;
+        }
+        if admin_listen_is_loopback(&self.admin_listen) {
+            AdminAuthPosture::AllowLoopback
+        } else {
+            AdminAuthPosture::RefuseStart
+        }
+    }
+}
+
+/// Outcome of [`ServerConfig::admin_auth_posture`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminAuthPosture {
+    /// `admin_auth` is configured — authenticate every admin request.
+    Enforce,
+    /// No auth, but the bind is loopback — permitted for local development.
+    AllowLoopback,
+    /// No auth on a non-loopback bind — refuse to start (fail-safe against
+    /// exposing an unauthenticated control plane).
+    RefuseStart,
+}
+
+/// Whether an `admin_listen` value binds a loopback address. Treats a missing /
+/// unparseable host conservatively as **non-loopback** so an ambiguous bind
+/// fails safe (refuse-start) rather than being silently permitted.
+fn admin_listen_is_loopback(admin_listen: &str) -> bool {
+    // Split host from the trailing `:port`. IPv6 literals are bracketed
+    // (`[::1]:4457`); IPv4/hostname take the substring before the last colon.
+    let host = if let Some(rest) = admin_listen.strip_prefix('[') {
+        // `[::1]:4457` → `::1`
+        match rest.split_once(']') {
+            Some((h, _)) => h,
+            None => return false,
+        }
+    } else {
+        admin_listen.rsplit_once(':').map(|(h, _)| h).unwrap_or(admin_listen)
+    };
+
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => false,
+    }
 }
 
 /// In-process request-rate limiting via `tower_governor`.
@@ -106,6 +249,7 @@ impl Default for ServerConfig {
             tls: TlsConfig::default(),
             shutdown_timeout_secs: default_shutdown_timeout(),
             rate_limit: RateLimitConfig::default(),
+            admin_auth: None,
         }
     }
 }
@@ -957,5 +1101,72 @@ config:
     fn server_config_includes_default_rate_limit() {
         let cfg = ServerConfig::default();
         assert!(!cfg.rate_limit.enabled);
+    }
+
+    // ── Admin-auth posture (fail-closed startup guard) ────────────────────
+
+    fn server_with(admin_listen: &str, auth: Option<AdminAuthConfig>) -> ServerConfig {
+        ServerConfig {
+            admin_listen: admin_listen.to_string(),
+            admin_auth: auth,
+            ..ServerConfig::default()
+        }
+    }
+
+    fn dummy_admin_auth() -> AdminAuthConfig {
+        AdminAuthConfig {
+            provider: AuthProviderConfig::Jwt(JwtAuthConfig {
+                jwks_url: "https://issuer.example/.well-known/jwks.json".into(),
+                issuer: Some("https://issuer.example".into()),
+                audience: Some("flint-admin".into()),
+                leeway_seconds: default_leeway(),
+            }),
+        }
+    }
+
+    #[test]
+    fn posture_enforces_when_admin_auth_set_regardless_of_bind() {
+        // auth set + loopback → enforce; auth set + public → enforce.
+        assert_eq!(
+            server_with("127.0.0.1:4457", Some(dummy_admin_auth())).admin_auth_posture(),
+            AdminAuthPosture::Enforce
+        );
+        assert_eq!(
+            server_with("0.0.0.0:4457", Some(dummy_admin_auth())).admin_auth_posture(),
+            AdminAuthPosture::Enforce
+        );
+    }
+
+    #[test]
+    fn posture_allows_loopback_without_auth() {
+        for addr in ["127.0.0.1:4457", "[::1]:4457", "localhost:4457"] {
+            assert_eq!(
+                server_with(addr, None).admin_auth_posture(),
+                AdminAuthPosture::AllowLoopback,
+                "{addr} should be treated as loopback"
+            );
+        }
+    }
+
+    #[test]
+    fn posture_refuses_start_off_loopback_without_auth() {
+        // The fail-closed rule: a non-loopback bind with no admin_auth must
+        // refuse to start rather than silently expose the control plane.
+        for addr in ["0.0.0.0:4457", "192.168.1.10:4457", "[2001:db8::1]:4457"] {
+            assert_eq!(
+                server_with(addr, None).admin_auth_posture(),
+                AdminAuthPosture::RefuseStart,
+                "{addr} without auth must refuse to start"
+            );
+        }
+    }
+
+    #[test]
+    fn unparseable_bind_fails_safe_to_refuse_start() {
+        // An ambiguous/unparseable host is treated as non-loopback → refuse.
+        assert_eq!(
+            server_with("garbage-no-port", None).admin_auth_posture(),
+            AdminAuthPosture::RefuseStart
+        );
     }
 }

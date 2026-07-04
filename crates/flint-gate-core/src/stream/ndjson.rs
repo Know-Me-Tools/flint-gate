@@ -421,6 +421,8 @@ mod tests {
     fn ctx(engine: AuthzEngine) -> ToolAuthzContext {
         ToolAuthzContext {
             engine: Arc::new(engine),
+            principal_kind: crate::authz::PrincipalKind::User,
+            revoked: false,
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
             audit: None,

@@ -1,0 +1,6 @@
+- [x] Add `token_exchange` config (enabled + `delegate_to_hydra:false` seam + `hydra_token_url?`)
+- [x] `POST /oauth/token` token-exchange handler: parse RFC 8693 form params, verify `subject_token` via jwt_verify (JWKS)
+- [x] Scope downscoping: requested scope ⊆ subject scopes else fail-closed 400 `invalid_scope`
+- [x] Mint delegated token via JwtMinter with `act` claim + RFC 8707 audience binding
+- [x] Tests: valid downscoped exchange, scope-escalation denied, invalid/expired subject_token denied, `degrades_to_deny` on malformed input; unknown-IdM JWT (any JWKS) accepted
+- [x] Docs: config seam + endpoint; `cargo check/clippy/test --workspace` green

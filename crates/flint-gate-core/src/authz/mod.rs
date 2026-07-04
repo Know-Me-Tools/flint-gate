@@ -24,7 +24,8 @@ mod validator;
 
 pub use bundle::{CedarBundle, PolicyRecord};
 pub use engine::{
-    ApprovalContext, AuthzDecision, AuthzEngine, DEFAULT_ACTION, DEFAULT_APPROVAL_TTL_SECONDS,
+    ApprovalContext, AuthzDecision, AuthzEngine, PrincipalKind, DEFAULT_ACTION,
+    DEFAULT_APPROVAL_TTL_SECONDS,
 };
 pub use error::AuthzError;
 pub use tool_authz::{

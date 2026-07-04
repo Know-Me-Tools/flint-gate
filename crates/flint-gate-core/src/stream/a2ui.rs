@@ -509,6 +509,8 @@ mod tests {
     fn ctx(policy: &str) -> ToolAuthzContext {
         ToolAuthzContext {
             engine: Arc::new(AuthzEngine::from_records(&[record("p", policy)]).expect("compiles")),
+            principal_kind: crate::authz::PrincipalKind::User,
+            revoked: false,
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
             audit: None,
@@ -551,6 +553,8 @@ mod tests {
         // Deny-all engine → an intent that embeds a tool call is dropped.
         let proc = A2UiProcessor::new(vec![]).with_tool_authz(Some(ToolAuthzContext {
             engine: Arc::new(AuthzEngine::empty()),
+            principal_kind: crate::authz::PrincipalKind::User,
+            revoked: false,
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
             audit: None,
@@ -578,6 +582,8 @@ mod tests {
         // A deny-all engine must NOT block ordinary UI intents (no tool call).
         let proc = A2UiProcessor::new(vec![]).with_tool_authz(Some(ToolAuthzContext {
             engine: Arc::new(AuthzEngine::empty()),
+            principal_kind: crate::authz::PrincipalKind::User,
+            revoked: false,
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
             audit: None,

@@ -8,11 +8,15 @@ import {
   fetchReady,
   fetchTokenAnalytics,
   fetchUsageSummary,
+  issueAgentIdentity,
+  listAgentIdentities,
   listApiKeys,
   listAudit,
   listPolicies,
   listRoutes,
+  revokeAgentIdentity,
   revokeApiKey,
+  rotateAgentIdentity,
   upsertPolicy,
   upsertRoute,
 } from '@/api/admin';
@@ -110,5 +114,35 @@ export function useAudit(params: AuditQueryParams = {}) {
   return useQuery({
     queryKey: ['audit', params],
     queryFn: () => listAudit(params),
+  });
+}
+
+// ── Non-human identities ──────────────────────────────────────────────────────
+
+export function useAgentIdentities() {
+  return useQuery({ queryKey: ['agent-identities'], queryFn: listAgentIdentities });
+}
+
+export function useIssueAgentIdentity() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: issueAgentIdentity,
+    onSuccess: () => client.invalidateQueries({ queryKey: ['agent-identities'] }),
+  });
+}
+
+export function useRotateAgentIdentity() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: rotateAgentIdentity,
+    onSuccess: () => client.invalidateQueries({ queryKey: ['agent-identities'] }),
+  });
+}
+
+export function useRevokeAgentIdentity() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: revokeAgentIdentity,
+    onSuccess: () => client.invalidateQueries({ queryKey: ['agent-identities'] }),
   });
 }

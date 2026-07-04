@@ -365,10 +365,37 @@ async fn handle_request(
                 // The action is generic (default "invoke"); per-route/per-tool
                 // distinctions live in `context`, not in distinct action ids.
                 let authz_context = build_authz_context(&identity, &route_id, method_str, path);
-                let decision =
-                    state
-                        .authz
-                        .authorize(&identity.id, &config.action, &route_id, &authz_context);
+                // Authorize with the principal's real KIND (User/Agent/Service)
+                // so a policy scoped to a non-human principal matches correctly
+                // and a User-scoped policy never matches an agent with the same id.
+                let principal_kind = crate::auth::identity::principal_kind_for(&identity);
+                // A revoked non-human identity is denied here too (parity with the
+                // per-tool gate) — fail-closed on a DB error.
+                let nhi_revoked = if matches!(
+                    principal_kind,
+                    crate::authz::PrincipalKind::Agent | crate::authz::PrincipalKind::Service
+                ) {
+                    match &state.db {
+                        Some(db) => db.is_agent_revoked(&identity.id).await.unwrap_or_else(|e| {
+                            warn!(error = %e, principal = %identity.id, "revocation check failed — denying (fail-closed)");
+                            true
+                        }),
+                        None => false,
+                    }
+                } else {
+                    false
+                };
+                let decision = if nhi_revoked {
+                    crate::authz::AuthzDecision::Deny
+                } else {
+                    state.authz.authorize_as(
+                        principal_kind,
+                        &identity.id,
+                        &config.action,
+                        &route_id,
+                        &authz_context,
+                    )
+                };
                 if !decision.is_allow() {
                     if config.enforce {
                         warn!(
@@ -635,7 +662,7 @@ async fn handle_request(
         // in-stream tool call and to `list_tools` visibility. Routes without an
         // enforcing Authorize hook get `None` — completely unaffected.
         let tool_authz_ctx =
-            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id);
+            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id).await;
 
         // Human-in-the-loop approvals: each stream gets a private notification
         // channel. The shared ApprovalManager routes Admin API decisions back
@@ -842,7 +869,7 @@ async fn handle_request(
         // untouched. `filter_list_tools_body` returns `None` for any body that
         // is not a tools/list result, so non-listing responses are unaffected.
         let bytes = if let Some(ctx) =
-            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id)
+            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id).await
         {
             match crate::authz::filter_list_tools_body(
                 &bytes,
@@ -1003,7 +1030,7 @@ fn build_authz_context(identity: &Identity, route_id: &str, method: &str, path: 
 /// keeping the enforce semantics consistent between route and tool granularity.
 ///
 /// Returns `None` when no such hook is present, leaving the stream unaffected.
-fn build_tool_authz_context(
+async fn build_tool_authz_context(
     state: &Arc<AppState>,
     matched_route: &crate::proxy::router::CompiledRoute,
     identity: &Identity,
@@ -1025,10 +1052,33 @@ fn build_tool_authz_context(
         .db
         .as_ref()
         .map(|db| crate::authz::ToolAuditSink::new(db.clone(), request_id));
+
+    let principal_kind = crate::auth::identity::principal_kind_for(identity);
+
+    // For a non-human identity, consult the revocation list once per request.
+    // A revoked NHI is denied on the next authorize (fail-closed). On a DB error
+    // we fail CLOSED (treat as revoked) rather than let a revoked agent through.
+    let revoked = if matches!(
+        principal_kind,
+        crate::authz::PrincipalKind::Agent | crate::authz::PrincipalKind::Service
+    ) {
+        match &state.db {
+            Some(db) => db.is_agent_revoked(&identity.id).await.unwrap_or_else(|e| {
+                warn!(error = %e, principal = %identity.id, "revocation check failed — denying (fail-closed)");
+                true
+            }),
+            None => false,
+        }
+    } else {
+        false
+    };
+
     Some(crate::authz::ToolAuthzContext {
         engine: state.authz.clone(),
+        principal_kind,
         principal_id: identity.id.clone(),
         route_id: route_id.to_string(),
+        revoked,
         audit,
     })
 }

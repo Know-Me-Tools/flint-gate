@@ -16,8 +16,34 @@ use uuid::Uuid;
 use super::bundle::{CedarBundle, PolicyRecord};
 use super::error::AuthzError;
 
-/// Cedar entity type used for the request principal.
+/// Default Cedar entity type used for the request principal (human user).
 const PRINCIPAL_TYPE: &str = "User";
+
+/// The Cedar principal **entity type** a request authorizes as. Lets a policy
+/// distinguish human users from non-human identities — e.g.
+/// `permit(principal == Agent::"bot-7", …)` vs `principal == User::"alice"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PrincipalKind {
+    /// A human user → Cedar `User::"<id>"` (the default; backward compatible).
+    #[default]
+    User,
+    /// A delegated agent identity → Cedar `Agent::"<id>"`.
+    Agent,
+    /// A service / workload identity → Cedar `Service::"<id>"`.
+    Service,
+}
+
+impl PrincipalKind {
+    /// The Cedar entity type name for this principal kind.
+    pub fn cedar_type(self) -> &'static str {
+        match self {
+            PrincipalKind::User => PRINCIPAL_TYPE,
+            PrincipalKind::Agent => "Agent",
+            PrincipalKind::Service => "Service",
+        }
+    }
+}
 /// Cedar entity type used for the request action.
 const ACTION_TYPE: &str = "Action";
 /// Cedar entity type used for the request resource (a route).
@@ -255,8 +281,22 @@ impl AuthzEngine {
         resource_id: &str,
         context: &Value,
     ) -> AuthzDecision {
+        self.authorize_as(PrincipalKind::User, principal_id, action, resource_id, context)
+    }
+
+    /// Authorize a request with an explicit principal **kind** (User / Agent /
+    /// Service), so a policy can name a non-human identity as principal. Same
+    /// fail-closed semantics as [`Self::authorize`].
+    pub fn authorize_as(
+        &self,
+        kind: PrincipalKind,
+        principal_id: &str,
+        action: &str,
+        resource_id: &str,
+        context: &Value,
+    ) -> AuthzDecision {
         let snapshot = self.bundle.load();
-        match self.evaluate(&snapshot, principal_id, action, resource_id, context) {
+        match self.evaluate(&snapshot, kind, principal_id, action, resource_id, context) {
             Ok((Decision::Allow, Some(ctx))) => AuthzDecision::RequireApproval(ctx),
             Ok((Decision::Allow, None)) => AuthzDecision::Allow,
             Ok((Decision::Deny, _)) => AuthzDecision::Deny,
@@ -283,12 +323,13 @@ impl AuthzEngine {
     fn evaluate(
         &self,
         bundle: &CedarBundle,
+        kind: PrincipalKind,
         principal_id: &str,
         action: &str,
         resource_id: &str,
         context: &Value,
     ) -> Result<(Decision, Option<ApprovalContext>), AuthzError> {
-        let principal = make_uid(PRINCIPAL_TYPE, principal_id)?;
+        let principal = make_uid(kind.cedar_type(), principal_id)?;
         let action_uid = make_uid(ACTION_TYPE, action)?;
         let resource = make_uid(RESOURCE_TYPE, resource_id)?;
         let cedar_context = build_context(context)?;
@@ -423,6 +464,78 @@ mod tests {
                 .expect("compiles");
         let decision = engine.authorize("alice", DEFAULT_ACTION, "route-1", &json!({}));
         assert_eq!(decision, AuthzDecision::Allow);
+    }
+
+    // ── Distinct principal types (Agent / Service vs User) ────────────────
+
+    #[test]
+    fn agent_scoped_policy_allows_agent_but_denies_user() {
+        // A policy that names an Agent principal must NOT match a User with the
+        // same id — the entity TYPE distinguishes them.
+        let engine = AuthzEngine::from_records(&[record(
+            "agent-only",
+            r#"permit(principal == Agent::"bot-7", action, resource);"#,
+        )])
+        .expect("compiles");
+
+        // Agent "bot-7" → allowed.
+        assert_eq!(
+            engine.authorize_as(PrincipalKind::Agent, "bot-7", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Allow
+        );
+        // User "bot-7" (same id, different type) → denied.
+        assert_eq!(
+            engine.authorize_as(PrincipalKind::User, "bot-7", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Deny
+        );
+        // The back-compat `authorize` (User) is likewise denied.
+        assert_eq!(
+            engine.authorize("bot-7", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Deny
+        );
+    }
+
+    #[test]
+    fn user_scoped_policy_denies_agent() {
+        // The inverse: a User-scoped permit must not match an Agent principal.
+        let engine = AuthzEngine::from_records(&[record(
+            "user-only",
+            r#"permit(principal == User::"alice", action, resource);"#,
+        )])
+        .expect("compiles");
+
+        assert_eq!(
+            engine.authorize_as(PrincipalKind::User, "alice", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Allow
+        );
+        assert_eq!(
+            engine.authorize_as(PrincipalKind::Agent, "alice", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Deny
+        );
+    }
+
+    #[test]
+    fn service_principal_type_is_distinct() {
+        let engine = AuthzEngine::from_records(&[record(
+            "svc-only",
+            r#"permit(principal == Service::"deploy-svc", action, resource);"#,
+        )])
+        .expect("compiles");
+        assert_eq!(
+            engine.authorize_as(PrincipalKind::Service, "deploy-svc", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Allow
+        );
+        assert_eq!(
+            engine.authorize_as(PrincipalKind::Agent, "deploy-svc", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Deny
+        );
+    }
+
+    #[test]
+    fn principal_kind_maps_to_expected_cedar_type() {
+        assert_eq!(PrincipalKind::User.cedar_type(), "User");
+        assert_eq!(PrincipalKind::Agent.cedar_type(), "Agent");
+        assert_eq!(PrincipalKind::Service.cedar_type(), "Service");
     }
 
     #[test]

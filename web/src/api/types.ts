@@ -124,3 +124,74 @@ export interface ReadyResponse {
   status: string;
   db?: string;
 }
+
+// ── Analytics (read-model) ────────────────────────────────────────────────────
+
+export interface UsageSummary {
+  total_tokens: number;
+  total_requests: number;
+  total_duration_ms: number;
+  avg_tokens_per_request: number;
+  avg_duration_ms: number;
+}
+
+export interface UsageSummaryResponse {
+  summary: UsageSummary;
+}
+
+export interface UsageTimeSeriesPoint {
+  /** RFC3339 bucket start. */
+  bucket: string;
+  tokens: number;
+  requests: number;
+}
+
+export interface RouteUsage {
+  route_id: string;
+  tokens: number;
+  requests: number;
+}
+
+export interface UserUsage {
+  user_id: string;
+  tokens: number;
+  requests: number;
+}
+
+export type AnalyticsInterval = 'hour' | 'day';
+
+export interface TokenAnalyticsResponse {
+  interval: AnalyticsInterval;
+  timeseries: UsageTimeSeriesPoint[];
+  by_route: RouteUsage[];
+  by_user: UserUsage[];
+}
+
+// ── Authorization audit trail (read-only) ─────────────────────────────────────
+
+export type AuthzDecision = 'allow' | 'deny' | 'step_up' | 'approval';
+
+export interface AuditRow {
+  id: string;
+  request_id?: string | null;
+  principal?: string | null;
+  action?: string | null;
+  resource?: string | null;
+  decision: AuthzDecision;
+  reason?: string | null;
+  context?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AuditListResponse {
+  audit: AuditRow[];
+}
+
+export interface AuditQueryParams {
+  principal?: string;
+  decision?: AuthzDecision;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}

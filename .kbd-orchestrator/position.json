@@ -1,17 +1,12 @@
 {
   "schemaVersion": "1",
-  "updatedAt": "2026-07-03T22:21:23Z",
-  "cursor": [
-    "agent-authz-control-plane"
-  ],
+  "updatedAt": "2026-07-04T14:20:00Z",
+  "cursor": ["agent-authz-control-plane"],
   "root": {
     "type": "phase",
     "id": "agent-authz-control-plane",
-    "status": "execution_ready",
-    "progress": {
-      "done": 4,
-      "total": 8
-    },
+    "status": "changes_complete",
+    "progress": { "done": 8, "total": 8 },
     "children": [],
     "annotations": []
   }

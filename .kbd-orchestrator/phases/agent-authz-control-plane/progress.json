@@ -1,13 +1,13 @@
 {
   "phase": "agent-authz-control-plane",
-  "status": "execution_ready",
+  "status": "reflected",
   "parentPhase": null,
   "childPhases": [],
   "childPointer": null,
   "started_at": "2026-07-02T00:00:00Z",
-  "updated_at": "2026-07-03T00:00:00Z",
+  "updated_at": "2026-07-04T14:30:00Z",
   "changes_total": 8,
-  "changes_completed": 7,
+  "changes_completed": 8,
   "assessment_complete": true,
   "analysis_complete": true,
   "plan_complete": true,
@@ -65,7 +65,9 @@
     {
       "id": "add-web-config-ui",
       "goal": "G4",
-      "status": "pending"
+      "status": "archived",
+      "tasks_done": 7,
+      "tasks_total": 7
     }
   ],
   "artifacts": [
@@ -79,5 +81,6 @@
   ],
   "spec_complete": true,
   "backend": "openspec",
-  "driver": "kbd-apply"
+  "driver": "kbd-apply",
+  "reflection_complete": true
 }

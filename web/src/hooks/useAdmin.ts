@@ -6,13 +6,17 @@ import {
   fetchConfig,
   fetchHealth,
   fetchReady,
+  fetchTokenAnalytics,
+  fetchUsageSummary,
   listApiKeys,
+  listAudit,
   listPolicies,
   listRoutes,
   revokeApiKey,
   upsertPolicy,
   upsertRoute,
 } from '@/api/admin';
+import type { AnalyticsInterval, AuditQueryParams } from '@/api/types';
 
 export function useConfig() {
   return useQuery({ queryKey: ['config'], queryFn: fetchConfig });
@@ -83,5 +87,28 @@ export function useRevokeApiKey() {
   return useMutation({
     mutationFn: revokeApiKey,
     onSuccess: () => client.invalidateQueries({ queryKey: ['api-keys'] }),
+  });
+}
+
+// ── Analytics + audit ─────────────────────────────────────────────────────────
+
+export function useUsageSummary(params: { since?: string; until?: string } = {}) {
+  return useQuery({
+    queryKey: ['analytics', 'summary', params],
+    queryFn: () => fetchUsageSummary(params),
+  });
+}
+
+export function useTokenAnalytics(interval: AnalyticsInterval = 'day') {
+  return useQuery({
+    queryKey: ['analytics', 'tokens', interval],
+    queryFn: () => fetchTokenAnalytics({ interval }),
+  });
+}
+
+export function useAudit(params: AuditQueryParams = {}) {
+  return useQuery({
+    queryKey: ['audit', params],
+    queryFn: () => listAudit(params),
   });
 }

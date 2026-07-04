@@ -132,22 +132,31 @@ async fn health_handler() -> impl IntoResponse {
 #[folder = "../../web/dist"]
 struct AdminAssets;
 
+/// Resolve a request path to an embedded asset, applying the SPA fallback rule:
+/// serve the exact asset when it exists, otherwise serve `index.html` so
+/// client-side (history-API) routing works on deep links. Returns the resolved
+/// file plus the path to derive its MIME type from. `None` means neither the
+/// asset nor `index.html` is embedded (assets never built).
+///
+/// Pure over the embedded filesystem so the fallback decision is unit-testable
+/// without constructing the full admin router or its heavy state.
+fn resolve_asset(path: &str) -> Option<(rust_embed::EmbeddedFile, String)> {
+    match AdminAssets::get(path) {
+        Some(f) => Some((f, path.to_string())),
+        None => AdminAssets::get("index.html").map(|f| (f, "index.html".to_string())),
+    }
+}
+
 /// Fallback handler for the admin SPA: serves an exact embedded asset when it
 /// exists, otherwise falls back to `index.html` so client-side routing works.
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    let (file, mime_path): (rust_embed::EmbeddedFile, String) = match AdminAssets::get(path) {
-        Some(f) => (f, path.to_string()),
-        None => match AdminAssets::get("index.html") {
-            Some(f) => (f, "index.html".to_string()),
-            None => {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Admin UI assets not built; run `pnpm build` in web/",
-                )
-                    .into_response();
-            }
-        },
+    let Some((file, mime_path)) = resolve_asset(path) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Admin UI assets not built; run `pnpm build` in web/",
+        )
+            .into_response();
     };
 
     let mut response = Response::new(Body::from(file.data));
@@ -808,6 +817,24 @@ fn default_analytics_limit() -> i64 {
     10
 }
 
+/// Hard cap on the analytics top-N `limit`.
+const ANALYTICS_MAX_LIMIT: i64 = 100;
+
+/// Normalize a raw analytics interval to the supported bucketing whitelist.
+/// Anything other than `hour` falls back to `day`. Pure so the whitelist is
+/// unit-testable and cannot drift from the DB `date_trunc` whitelist.
+fn normalize_interval(raw: &str) -> &'static str {
+    match raw {
+        "hour" => "hour",
+        _ => "day",
+    }
+}
+
+/// Clamp a raw analytics `limit` to `[1, ANALYTICS_MAX_LIMIT]`.
+fn clamp_analytics_limit(raw: i64) -> i64 {
+    raw.clamp(1, ANALYTICS_MAX_LIMIT)
+}
+
 /// `GET /analytics/summary` — aggregate token/request/duration statistics.
 async fn usage_summary_handler(
     State(state): State<AdminState>,
@@ -830,11 +857,8 @@ async fn token_analytics_handler(
     let Some(db) = &state.db else {
         return db_not_configured();
     };
-    let interval = match params.interval.as_str() {
-        "hour" | "day" => params.interval.as_str(),
-        _ => "day",
-    };
-    let limit = params.limit.clamp(1, 100);
+    let interval = normalize_interval(&params.interval);
+    let limit = clamp_analytics_limit(params.limit);
 
     match tokio::try_join!(
         db.usage_timeseries(params.since, params.until, interval),
@@ -1000,5 +1024,57 @@ mod tests {
     #[test]
     fn analytics_limit_defaults_to_ten() {
         assert_eq!(default_analytics_limit(), 10);
+    }
+
+    // ── SPA static-asset fallback ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_asset_serves_index_for_unknown_client_route() {
+        // A deep client-side route (history-API path) is never an embedded file;
+        // the SPA fallback must resolve it to index.html so the SPA can boot and
+        // route in the browser, rather than 404.
+        let resolved = super::resolve_asset("routes/my-route-id");
+        let (_, mime_path) = resolved.expect("index.html fallback must resolve");
+        assert_eq!(mime_path, "index.html");
+    }
+
+    #[test]
+    fn resolve_asset_serves_index_itself() {
+        let (_, mime_path) =
+            super::resolve_asset("index.html").expect("index.html must be embedded");
+        assert_eq!(mime_path, "index.html");
+    }
+
+    #[test]
+    fn resolve_asset_root_path_falls_back_to_index() {
+        // The trimmed root path is the empty string, which is not an asset key;
+        // it must still resolve to index.html.
+        let (_, mime_path) = super::resolve_asset("").expect("root must resolve to index.html");
+        assert_eq!(mime_path, "index.html");
+    }
+
+    // ── Analytics interval / limit normalization ─────────────────────────────
+
+    #[test]
+    fn analytics_interval_whitelist_accepts_hour_and_day() {
+        assert_eq!(super::normalize_interval("hour"), "hour");
+        assert_eq!(super::normalize_interval("day"), "day");
+    }
+
+    #[test]
+    fn analytics_interval_rejects_unknown_and_falls_back_to_day() {
+        // A non-whitelisted interval must never reach the SQL date_trunc; it is
+        // coerced to the safe default rather than passed through.
+        assert_eq!(super::normalize_interval("minute"), "day");
+        assert_eq!(super::normalize_interval("'; DROP TABLE"), "day");
+        assert_eq!(super::normalize_interval(""), "day");
+    }
+
+    #[test]
+    fn analytics_limit_clamps_to_cap_and_floor() {
+        assert_eq!(super::clamp_analytics_limit(50), 50);
+        assert_eq!(super::clamp_analytics_limit(10_000), super::ANALYTICS_MAX_LIMIT);
+        assert_eq!(super::clamp_analytics_limit(0), 1);
+        assert_eq!(super::clamp_analytics_limit(-9), 1);
     }
 }

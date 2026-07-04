@@ -1,7 +1,10 @@
+import { FlintGateError } from '@know-me/flint-gate';
 import type {
   ApiKeyCreateRequest,
   ApiKeyCreatedResponse,
   ApiKeyListResponse,
+  AuditListResponse,
+  AuditQueryParams,
   ConfigResponse,
   DbRoute,
   HealthResponse,
@@ -10,17 +13,24 @@ import type {
   ReadyResponse,
   RouteConfig,
   RouteListResponse,
+  TokenAnalyticsResponse,
+  UsageSummaryResponse,
 } from './types';
 
 const BASE = '/api';
 
-export class AdminError extends Error {
+/**
+ * Admin-plane API error. Extends the SDK's {@link FlintGateError} so admin and
+ * data-plane failures share one error hierarchy — `err instanceof FlintGateError`
+ * holds for both, and the workspace stays locked to the SDK's error taxonomy.
+ */
+export class AdminError extends FlintGateError {
   constructor(
     message: string,
-    public status?: number,
+    status?: number,
     public body?: unknown,
   ) {
-    super(message);
+    super(message, { status });
     this.name = 'AdminError';
   }
 }
@@ -115,4 +125,44 @@ export async function createApiKey(payload: ApiKeyCreateRequest): Promise<ApiKey
 
 export async function revokeApiKey(id: string): Promise<{ status: string; id: string }> {
   return adminRequest(`/api-keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ── Analytics + audit (read-only) ─────────────────────────────────────────────
+
+/** Serialize defined, non-empty query params into a `?a=b&…` suffix (or ''). */
+function queryString(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') {
+      search.set(key, String(value));
+    }
+  }
+  const encoded = search.toString();
+  return encoded ? `?${encoded}` : '';
+}
+
+
+export async function fetchUsageSummary(
+  params: { since?: string; until?: string } = {},
+): Promise<UsageSummaryResponse> {
+  return adminRequest(`/analytics/summary${queryString(params)}`);
+}
+
+export async function fetchTokenAnalytics(
+  params: { since?: string; until?: string; interval?: string; limit?: number } = {},
+): Promise<TokenAnalyticsResponse> {
+  return adminRequest(`/analytics/tokens${queryString(params)}`);
+}
+
+export async function listAudit(params: AuditQueryParams = {}): Promise<AuditListResponse> {
+  return adminRequest(
+    `/audit${queryString({
+      principal: params.principal,
+      decision: params.decision,
+      since: params.since,
+      until: params.until,
+      limit: params.limit,
+      offset: params.offset,
+    })}`,
+  );
 }

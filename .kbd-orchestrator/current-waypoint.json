@@ -1,4 +1,7 @@
 {
   "phase": "agent-authz-control-plane",
-  "change": "add-web-config-ui"
+  "change": null,
+  "exactNextCommand": "/kbd-next-phase",
+  "status": "reflected",
+  "note": "Phase complete + reflected. Next phase seeded from reflection.md: agent-identity-and-delegation (admin authn first)."
 }

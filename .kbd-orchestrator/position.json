@@ -1,12 +1,12 @@
 {
   "schemaVersion": "1",
-  "updatedAt": "2026-07-04T14:20:00Z",
-  "cursor": ["agent-authz-control-plane"],
+  "updatedAt": "2026-07-04T14:35:00Z",
+  "cursor": ["agent-identity-and-delegation"],
   "root": {
     "type": "phase",
-    "id": "agent-authz-control-plane",
-    "status": "changes_complete",
-    "progress": { "done": 8, "total": 8 },
+    "id": "agent-identity-and-delegation",
+    "status": "assess_pending",
+    "progress": { "done": 0, "total": 0 },
     "children": [],
     "annotations": []
   }

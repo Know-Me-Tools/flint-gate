@@ -607,6 +607,7 @@ mod tests {
             engine: Arc::new(engine),
             principal_id: "alice".to_string(),
             route_id: "route-1".to_string(),
+            audit: None,
         }
     }
 
@@ -638,6 +639,7 @@ mod tests {
             engine: Arc::new(AuthzEngine::empty()),
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
+            audit: None,
         }))
     }
 

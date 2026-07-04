@@ -26,8 +26,8 @@ pub use bundle::{CedarBundle, PolicyRecord};
 pub use engine::{AuthzDecision, AuthzEngine, DEFAULT_ACTION};
 pub use error::AuthzError;
 pub use tool_authz::{
-    authorize_tool_call, filter_list_tools_body, filter_list_tools_response, ToolAuthzContext,
-    ACTION_CALL_TOOL,
+    authorize_tool_call, filter_list_tools_body, filter_list_tools_response, ToolAuditSink,
+    ToolAuthzContext, ACTION_CALL_TOOL,
 };
 pub use validator::{policy_warnings, validate_policy, ALLOW_ALL_WARNING};
 

@@ -291,6 +291,7 @@ mod tests {
             engine: Arc::new(AuthzEngine::from_records(&[record("p", policy)]).expect("compiles")),
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
+            audit: None,
         }
     }
 
@@ -332,6 +333,7 @@ mod tests {
             engine: Arc::new(AuthzEngine::empty()),
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
+            audit: None,
         }));
         let ev = A2UiEvent {
             intent: "invoke_tool".to_string(),
@@ -358,6 +360,7 @@ mod tests {
             engine: Arc::new(AuthzEngine::empty()),
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
+            audit: None,
         }));
         let ev = A2UiEvent {
             intent: INTENT_NAVIGATE.to_string(),

@@ -15,7 +15,7 @@ use crate::config::{
     types::{BudgetWindow, GateConfig, MaxTokenBudgetConfig, PostResponseHook, PreRequestHook},
     LookupRegistry, TemplateContext, TemplateEngine,
 };
-use crate::db::{Database, UsageEvent};
+use crate::db::{AuthzAuditDecision, AuthzAuditRecord, Database, UsageEvent};
 use crate::proxy::SharedRouter;
 use crate::stream::{NdjsonStreamProcessor, SseStreamProcessor, StreamProcessor};
 use axum::{
@@ -200,6 +200,28 @@ async fn handle_request(
                         }
                         Err(AuthError::InsufficientScope { required }) => {
                             warn!(request_id = %request_id, provider = %provider_name, ?required, "insufficient scope");
+                            // Audit the step-up (403 insufficient_scope). The
+                            // principal is not yet authenticated at this seam, so
+                            // it is recorded as "anonymous"; the required scopes
+                            // are carried in the context for the trail.
+                            record_authz_decision(
+                                &state.db,
+                                AuthzAuditRecord {
+                                    request_id: Some(request_id.to_string()),
+                                    principal: "anonymous".to_string(),
+                                    action: method_str.to_string(),
+                                    resource: route_id.clone(),
+                                    decision: AuthzAuditDecision::StepUp,
+                                    reason: Some(
+                                        "insufficient_scope — step-up required".to_string(),
+                                    ),
+                                    context: Some(serde_json::json!({
+                                        "required_scopes": required,
+                                        "provider": provider_name,
+                                        "path": path,
+                                    })),
+                                },
+                            );
                             // 403 step-up: tell the client which scope to request.
                             return Ok(mcp_insufficient_scope(&required));
                         }
@@ -352,6 +374,19 @@ async fn handle_request(
                             action = %config.action,
                             "authorization denied — blocking request (403)"
                         );
+                        // Audit the enforced deny (best-effort, non-blocking).
+                        record_authz_decision(
+                            &state.db,
+                            AuthzAuditRecord {
+                                request_id: Some(request_id.to_string()),
+                                principal: identity.id.clone(),
+                                action: config.action.clone(),
+                                resource: route_id.clone(),
+                                decision: AuthzAuditDecision::Deny,
+                                reason: Some("authorization denied (enforce=true)".to_string()),
+                                context: Some(authz_context.clone()),
+                            },
+                        );
                         let msg = config
                             .error_message
                             .clone()
@@ -365,6 +400,37 @@ async fn handle_request(
                         route_id = %route_id,
                         action = %config.action,
                         "authorization would deny (enforce=false) — allowing request"
+                    );
+                    // Record the shadow-mode deny so audit reflects what a policy
+                    // WOULD have blocked; the request itself still proceeds.
+                    record_authz_decision(
+                        &state.db,
+                        AuthzAuditRecord {
+                            request_id: Some(request_id.to_string()),
+                            principal: identity.id.clone(),
+                            action: config.action.clone(),
+                            resource: route_id.clone(),
+                            decision: AuthzAuditDecision::Deny,
+                            reason: Some(
+                                "authorization would deny (enforce=false, shadow)".to_string(),
+                            ),
+                            context: Some(authz_context.clone()),
+                        },
+                    );
+                } else {
+                    // Record the allow so the audit trail carries the full
+                    // route-level decision stream, not only denials.
+                    record_authz_decision(
+                        &state.db,
+                        AuthzAuditRecord {
+                            request_id: Some(request_id.to_string()),
+                            principal: identity.id.clone(),
+                            action: config.action.clone(),
+                            resource: route_id.clone(),
+                            decision: AuthzAuditDecision::Allow,
+                            reason: None,
+                            context: Some(authz_context.clone()),
+                        },
                     );
                 }
             }
@@ -514,7 +580,8 @@ async fn handle_request(
         // Cedar authz; per-tool authz extends the same policy bundle to each
         // in-stream tool call and to `list_tools` visibility. Routes without an
         // enforcing Authorize hook get `None` — completely unaffected.
-        let tool_authz_ctx = build_tool_authz_context(&state, &matched_route, &identity, &route_id);
+        let tool_authz_ctx =
+            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id);
 
         // Protocol dispatch: create the appropriate processor
         let processor: Box<dyn StreamProcessor> = match stream_config.protocol.as_str() {
@@ -686,7 +753,7 @@ async fn handle_request(
         // untouched. `filter_list_tools_body` returns `None` for any body that
         // is not a tools/list result, so non-listing responses are unaffected.
         let bytes = if let Some(ctx) =
-            build_tool_authz_context(&state, &matched_route, &identity, &route_id)
+            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id)
         {
             match crate::authz::filter_list_tools_body(
                 &bytes,
@@ -852,6 +919,7 @@ fn build_tool_authz_context(
     matched_route: &crate::proxy::router::CompiledRoute,
     identity: &Identity,
     route_id: &str,
+    request_id: &str,
 ) -> Option<crate::authz::ToolAuthzContext> {
     let enforcing = matched_route
         .config
@@ -862,11 +930,38 @@ fn build_tool_authz_context(
     if !enforcing {
         return None;
     }
+    // Attach a best-effort audit sink when a DB is configured so per-tool
+    // denials are recorded off the streaming hot path.
+    let audit = state
+        .db
+        .as_ref()
+        .map(|db| crate::authz::ToolAuditSink::new(db.clone(), request_id));
     Some(crate::authz::ToolAuthzContext {
         engine: state.authz.clone(),
         principal_id: identity.id.clone(),
         route_id: route_id.to_string(),
+        audit,
     })
+}
+
+/// Record one authorization decision to the audit trail, off the hot path.
+///
+/// Best-effort and NON-BLOCKING: when a DB is configured we clone the
+/// `Arc<Database>` and `tokio::spawn` the insert so a slow or failing write can
+/// never block or fail the request — the authorization decision that produced
+/// this record already stands regardless of whether the row persists. On insert
+/// error we `warn!` and move on. A no-op when no DB is configured. The only cost
+/// added to the request path is the `Arc` clone and the spawn.
+fn record_authz_decision(db: &Option<Arc<Database>>, record: AuthzAuditRecord) {
+    let Some(db) = db else {
+        return;
+    };
+    let db = db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = db.log_authz_decision(&record).await {
+            warn!(error = %e, "authz audit write failed (best-effort, ignored)");
+        }
+    });
 }
 
 /// Build the `403 Forbidden` JSON response used when an `Authorize` hook denies:

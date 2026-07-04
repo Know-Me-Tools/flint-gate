@@ -30,6 +30,35 @@ use super::engine::{AuthzDecision, AuthzEngine};
 /// live `call_tool` in the stream and a tool's visibility in `list_tools`.
 pub const ACTION_CALL_TOOL: &str = "call_tool";
 
+/// Best-effort sink for per-tool-call audit records.
+///
+/// Holds a shared `Arc<Database>` and the request id so a per-tool DENY can be
+/// written to the authz audit trail without threading a `Database` through every
+/// stream processor. Cheap to clone (an `Arc` plus a small owned string).
+#[derive(Clone)]
+pub struct ToolAuditSink {
+    db: Arc<crate::db::Database>,
+    request_id: String,
+}
+
+impl ToolAuditSink {
+    /// Construct a sink from a shared database handle and the request id.
+    pub fn new(db: Arc<crate::db::Database>, request_id: impl Into<String>) -> Self {
+        Self {
+            db,
+            request_id: request_id.into(),
+        }
+    }
+}
+
+impl std::fmt::Debug for ToolAuditSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolAuditSink")
+            .field("request_id", &self.request_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The per-request authorization handle threaded into stream processors.
 ///
 /// Cheap to clone: the engine is shared via `Arc` (lock-free on read), and the
@@ -44,6 +73,10 @@ pub struct ToolAuthzContext {
     pub principal_id: String,
     /// Route id carried into the Cedar context for route-scoped policies.
     pub route_id: String,
+    /// Optional best-effort audit sink. When present, a per-tool DENY is written
+    /// to the authz audit trail (non-blocking); `None` disables per-tool audit
+    /// (e.g. in tests or when no DB is configured).
+    pub audit: Option<ToolAuditSink>,
 }
 
 impl std::fmt::Debug for ToolAuthzContext {
@@ -51,6 +84,7 @@ impl std::fmt::Debug for ToolAuthzContext {
         f.debug_struct("ToolAuthzContext")
             .field("principal_id", &self.principal_id)
             .field("route_id", &self.route_id)
+            .field("audit", &self.audit)
             .finish_non_exhaustive()
     }
 }
@@ -59,15 +93,54 @@ impl ToolAuthzContext {
     /// Authorize a tool call by name + arguments against this context's engine.
     ///
     /// Convenience wrapper over [`authorize_tool_call`] that supplies the
-    /// engine, principal, and route id from `self`.
+    /// engine, principal, and route id from `self`. When a [`ToolAuditSink`] is
+    /// present, a DENY is recorded to the authz audit trail best-effort and
+    /// non-blocking (per-tool denials are the security-relevant events; allows
+    /// are intentionally NOT recorded here to keep the streaming hot path cheap
+    /// and avoid one audit row per streamed tool call).
     pub fn authorize(&self, tool_name: &str, arguments: &Value) -> AuthzDecision {
-        authorize_tool_call(
+        let decision = authorize_tool_call(
             &self.engine,
             &self.principal_id,
             tool_name,
             arguments,
             &self.route_id,
-        )
+        );
+        if !decision.is_allow() {
+            self.record_tool_deny(tool_name);
+        }
+        decision
+    }
+
+    /// Record a per-tool DENY on the audit trail, off the hot path.
+    ///
+    /// No-op when no [`ToolAuditSink`] is configured. Otherwise clones the shared
+    /// `Arc<Database>` and `tokio::spawn`s the insert so a slow or failing write
+    /// never blocks the stream; on error we `warn!` and move on. The tool name
+    /// is the Cedar `resource`; the arguments are deliberately NOT persisted (a
+    /// tool-call payload may carry sensitive parameters).
+    fn record_tool_deny(&self, tool_name: &str) {
+        let Some(sink) = &self.audit else {
+            return;
+        };
+        let db = sink.db.clone();
+        let record = crate::db::AuthzAuditRecord {
+            request_id: Some(sink.request_id.clone()),
+            principal: self.principal_id.clone(),
+            action: ACTION_CALL_TOOL.to_string(),
+            resource: tool_name.to_string(),
+            decision: crate::db::AuthzAuditDecision::Deny,
+            reason: Some("per-tool call denied".to_string()),
+            context: Some(json!({
+                "tool_name": tool_name,
+                "route_id": self.route_id,
+            })),
+        };
+        tokio::spawn(async move {
+            if let Err(e) = db.log_authz_decision(&record).await {
+                tracing::warn!(error = %e, "per-tool authz audit write failed (best-effort, ignored)");
+            }
+        });
     }
 }
 
@@ -337,6 +410,7 @@ mod tests {
             engine: Arc::new(engine_permit_all()),
             principal_id: "alice".to_string(),
             route_id: "r1".to_string(),
+            audit: None,
         };
         assert_eq!(ctx.authorize("read_file", &json!({})), AuthzDecision::Allow);
     }

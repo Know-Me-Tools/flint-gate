@@ -16,10 +16,10 @@
 use crate::authz::{policy_warnings, validate_policy, AuthzEngine, PolicyRecord};
 use crate::cache::GateCache;
 use crate::config::SharedConfig;
-use crate::db::Database;
+use crate::db::{AuditQuery, AuthzAuditDecision, Database};
 use crate::proxy::SharedRouter;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -103,6 +103,7 @@ pub fn admin_router(state: AdminState) -> Router {
                 .put(update_policy_handler)
                 .delete(delete_policy_handler),
         )
+        .route("/audit", get(list_audit_handler))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", AdminApiDoc::openapi()))
         .with_state(state)
 }
@@ -649,6 +650,89 @@ async fn delete_policy_handler(
     }
 }
 
+// ── Authorization audit trail (read-only) ────────────────────────────────────
+
+/// Default page size for `GET /audit` when `limit` is omitted.
+const AUDIT_DEFAULT_LIMIT: i64 = 100;
+/// Hard cap on `GET /audit` page size — a larger `limit` is clamped down.
+const AUDIT_MAX_LIMIT: i64 = 1000;
+
+/// Raw query parameters for `GET /audit`. All optional; parsed/clamped into an
+/// [`AuditQuery`] by [`build_audit_query`].
+#[derive(Debug, Deserialize)]
+struct AuditParams {
+    /// Exact-match principal filter.
+    principal: Option<String>,
+    /// Decision filter (`allow` | `deny` | `step_up` | `approval`).
+    decision: Option<String>,
+    /// Inclusive lower bound on `created_at` (RFC3339).
+    since: Option<DateTime<Utc>>,
+    /// Inclusive upper bound on `created_at` (RFC3339).
+    until: Option<DateTime<Utc>>,
+    /// Page size (default 100, capped at 1000, floored at 1).
+    limit: Option<i64>,
+    /// Row offset (default 0, floored at 0).
+    offset: Option<i64>,
+}
+
+/// Convert raw `/audit` query params into a validated, clamped [`AuditQuery`].
+///
+/// - `limit`: absent → 100; otherwise clamped to `[1, 1000]`.
+/// - `offset`: absent or negative → 0.
+/// - `decision`: an unknown value is rejected (`Err`) so a typo is a 400 rather
+///   than a silent empty result; absence disables the filter.
+///
+/// Pure and side-effect free so the clamping/validation is unit-testable without
+/// a database. Returns `Err(message)` on an invalid `decision`.
+fn build_audit_query(params: AuditParams) -> Result<AuditQuery, String> {
+    let decision = match params.decision.as_deref() {
+        None => None,
+        Some(s) => Some(
+            AuthzAuditDecision::parse(s)
+                .ok_or_else(|| format!("invalid decision filter: {s:?}"))?,
+        ),
+    };
+
+    let limit = params
+        .limit
+        .map(|l| l.clamp(1, AUDIT_MAX_LIMIT))
+        .unwrap_or(AUDIT_DEFAULT_LIMIT);
+    let offset = params.offset.map(|o| o.max(0)).unwrap_or(0);
+
+    Ok(AuditQuery {
+        principal: params.principal,
+        decision,
+        since: params.since,
+        until: params.until,
+        limit,
+        offset,
+    })
+}
+
+/// `GET /audit` — read-only, paged, filterable authorization audit trail.
+///
+/// Query params: `principal`, `decision`, `since`, `until`, `limit`, `offset`.
+/// Returns `{"audit": [ … ]}` ordered newest-first. Lives on the private admin
+/// router only — never the public proxy.
+async fn list_audit_handler(
+    State(state): State<AdminState>,
+    Query(params): Query<AuditParams>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    let query = match build_audit_query(params) {
+        Ok(q) => q,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response();
+        }
+    };
+    match db.list_authz_audit(&query).await {
+        Ok(rows) => Json(json!({"audit": rows})).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 /// Standard 501 response when no database is configured.
 fn db_not_configured() -> axum::response::Response {
     (
@@ -665,4 +749,84 @@ fn internal_error(msg: &str) -> axum::response::Response {
         Json(json!({"error": msg})),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_audit_query, AuditParams, AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT};
+    use crate::db::AuthzAuditDecision;
+
+    fn params() -> AuditParams {
+        AuditParams {
+            principal: None,
+            decision: None,
+            since: None,
+            until: None,
+            limit: None,
+            offset: None,
+        }
+    }
+
+    #[test]
+    fn audit_query_applies_defaults_when_params_absent() {
+        let q = build_audit_query(params()).expect("valid");
+        assert_eq!(q.limit, AUDIT_DEFAULT_LIMIT);
+        assert_eq!(q.offset, 0);
+        assert!(q.principal.is_none());
+        assert!(q.decision.is_none());
+    }
+
+    #[test]
+    fn audit_query_clamps_limit_to_cap_and_floor() {
+        let over = build_audit_query(AuditParams {
+            limit: Some(10_000),
+            ..params()
+        })
+        .expect("valid");
+        assert_eq!(over.limit, AUDIT_MAX_LIMIT);
+
+        let under = build_audit_query(AuditParams {
+            limit: Some(0),
+            ..params()
+        })
+        .expect("valid");
+        assert_eq!(under.limit, 1);
+
+        let negative = build_audit_query(AuditParams {
+            limit: Some(-5),
+            ..params()
+        })
+        .expect("valid");
+        assert_eq!(negative.limit, 1);
+    }
+
+    #[test]
+    fn audit_query_floors_negative_offset_to_zero() {
+        let q = build_audit_query(AuditParams {
+            offset: Some(-1),
+            ..params()
+        })
+        .expect("valid");
+        assert_eq!(q.offset, 0);
+    }
+
+    #[test]
+    fn audit_query_parses_known_decision_filter() {
+        let q = build_audit_query(AuditParams {
+            decision: Some("deny".to_string()),
+            ..params()
+        })
+        .expect("valid");
+        assert_eq!(q.decision, Some(AuthzAuditDecision::Deny));
+    }
+
+    #[test]
+    fn audit_query_rejects_unknown_decision_filter() {
+        let err = build_audit_query(AuditParams {
+            decision: Some("banana".to_string()),
+            ..params()
+        })
+        .expect_err("must reject unknown decision");
+        assert!(err.contains("invalid decision"));
+    }
 }

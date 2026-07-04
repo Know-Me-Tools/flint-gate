@@ -69,6 +69,21 @@ CREATE TABLE IF NOT EXISTS authz_policies (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS authz_audit (
+    id          UUID PRIMARY KEY,
+    request_id  TEXT,
+    principal   TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    resource    TEXT NOT NULL,
+    decision    TEXT NOT NULL,
+    reason      TEXT,
+    context     JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS authz_audit_created_at_idx ON authz_audit (created_at DESC);
+CREATE INDEX IF NOT EXISTS authz_audit_principal_idx ON authz_audit (principal);
 "#;
 
 /// Database access wrapper.
@@ -585,6 +600,76 @@ impl Database {
             Ok(false)
         }
     }
+
+    // ── Authorization audit trail ────────────────────────────────────────────
+
+    /// Insert one authorization-decision audit row (parameterized).
+    ///
+    /// This is a fire-and-forget write on the decision path — callers spawn it on
+    /// the Tokio runtime so a slow or failing insert never blocks or fails the
+    /// request. The authorization decision itself is authoritative regardless of
+    /// whether this row persisted, so an error here is logged and ignored by the
+    /// caller. Mirrors [`Database::log_usage`].
+    pub async fn log_authz_decision(&self, record: &AuthzAuditRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO authz_audit \
+             (id, request_id, principal, action, resource, decision, reason, context) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&record.request_id)
+        .bind(&record.principal)
+        .bind(&record.action)
+        .bind(&record.resource)
+        .bind(record.decision.as_str())
+        .bind(&record.reason)
+        .bind(&record.context)
+        .execute(&self.pool)
+        .await
+        .context("logging authz decision")?;
+
+        debug!(
+            principal = %record.principal,
+            decision = %record.decision.as_str(),
+            "authz decision logged"
+        );
+        Ok(())
+    }
+
+    /// List authorization-audit rows, newest first, with optional filters.
+    ///
+    /// All filters are parameterized. `principal` and `decision` are exact-match
+    /// equality filters (a `None` disables that filter via the `$n IS NULL OR …`
+    /// idiom so a single prepared statement covers every filter combination).
+    /// `since`/`until` bound `created_at`. `limit`/`offset` page the result; the
+    /// caller is expected to have already clamped `limit` to a sane cap.
+    pub async fn list_authz_audit(&self, query: &AuditQuery) -> Result<Vec<AuditRow>> {
+        let rows = sqlx::query(
+            "SELECT id, request_id, principal, action, resource, decision, reason, context, created_at \
+             FROM authz_audit \
+             WHERE ($1::text IS NULL OR principal = $1) \
+               AND ($2::text IS NULL OR decision = $2) \
+               AND ($3::timestamptz IS NULL OR created_at >= $3) \
+               AND ($4::timestamptz IS NULL OR created_at <= $4) \
+             ORDER BY created_at DESC \
+             LIMIT $5 OFFSET $6",
+        )
+        .bind(&query.principal)
+        .bind(query.decision.as_ref().map(AuthzAuditDecision::as_str))
+        .bind(query.since)
+        .bind(query.until)
+        .bind(query.limit)
+        .bind(query.offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("listing authz audit rows")?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(AuditRow::from_row(&r)?);
+        }
+        Ok(out)
+    }
 }
 
 /// A route row from the `gate_routes` table.
@@ -628,6 +713,115 @@ impl PolicyRow {
             schema_json: self.schema_json,
             entities_json: self.entities_json,
         }
+    }
+}
+
+/// The authorization decision recorded in the `authz_audit.decision` column.
+///
+/// Serializes to a stable lowercase string. `Approval` is reserved for the
+/// later HITL-approval change and is a valid value now so the schema/enum need
+/// not change when that decision point is wired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthzAuditDecision {
+    Allow,
+    Deny,
+    StepUp,
+    Approval,
+}
+
+impl AuthzAuditDecision {
+    /// The canonical string persisted in and matched against the `decision`
+    /// TEXT column. Kept explicit (not derived from `Debug`) so the wire value
+    /// is stable independent of the Rust identifier.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuthzAuditDecision::Allow => "allow",
+            AuthzAuditDecision::Deny => "deny",
+            AuthzAuditDecision::StepUp => "step_up",
+            AuthzAuditDecision::Approval => "approval",
+        }
+    }
+
+    /// Parse a `decision` filter value (as accepted by the admin `/audit`
+    /// endpoint) into a decision. Returns `None` for an unrecognized value so
+    /// the caller can reject it rather than silently match nothing.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "allow" => Some(AuthzAuditDecision::Allow),
+            "deny" => Some(AuthzAuditDecision::Deny),
+            "step_up" => Some(AuthzAuditDecision::StepUp),
+            "approval" => Some(AuthzAuditDecision::Approval),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AuthzAuditDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// An authorization-decision audit record to be logged via
+/// [`Database::log_authz_decision`]. Constructed on the decision path and
+/// written best-effort/non-blocking (the `id` and `created_at` are assigned by
+/// the insert, so they are not carried here).
+#[derive(Debug, Clone)]
+pub struct AuthzAuditRecord {
+    pub request_id: Option<String>,
+    pub principal: String,
+    pub action: String,
+    pub resource: String,
+    pub decision: AuthzAuditDecision,
+    pub reason: Option<String>,
+    pub context: Option<serde_json::Value>,
+}
+
+/// Filters + paging for [`Database::list_authz_audit`]. `limit`/`offset` are
+/// `i64` to bind directly into Postgres `LIMIT`/`OFFSET`; the admin handler
+/// clamps them before constructing this.
+#[derive(Debug, Clone)]
+pub struct AuditQuery {
+    pub principal: Option<String>,
+    pub decision: Option<AuthzAuditDecision>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// An authorization-audit row read back from `authz_audit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditRow {
+    pub id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    pub principal: String,
+    pub action: String,
+    pub resource: String,
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl AuditRow {
+    /// Build an `AuditRow` from a sqlx row selecting the standard columns.
+    fn from_row(r: &sqlx::postgres::PgRow) -> Result<Self> {
+        Ok(Self {
+            id: r.try_get("id")?,
+            request_id: r.try_get("request_id")?,
+            principal: r.try_get("principal")?,
+            action: r.try_get("action")?,
+            resource: r.try_get("resource")?,
+            decision: r.try_get("decision")?,
+            reason: r.try_get("reason")?,
+            context: r.try_get("context")?,
+            created_at: r.try_get("created_at")?,
+        })
     }
 }
 
@@ -697,7 +891,36 @@ impl UsageEvent {
 
 #[cfg(test)]
 mod tests {
+    use super::AuthzAuditDecision;
     use crate::config::types::BudgetWindow;
+
+    /// The `decision` column value is stable and lowercase (with `step_up`
+    /// snake-cased). A change to any of these wire strings breaks stored-row
+    /// comparability and the admin `/audit` filter, so pin them explicitly.
+    #[test]
+    fn authz_audit_decision_serializes_to_stable_strings() {
+        assert_eq!(AuthzAuditDecision::Allow.as_str(), "allow");
+        assert_eq!(AuthzAuditDecision::Deny.as_str(), "deny");
+        assert_eq!(AuthzAuditDecision::StepUp.as_str(), "step_up");
+        assert_eq!(AuthzAuditDecision::Approval.as_str(), "approval");
+    }
+
+    /// `parse` round-trips every known decision and rejects anything else so an
+    /// unknown `?decision=` filter is a 400, not a silent empty match.
+    #[test]
+    fn authz_audit_decision_parse_round_trips_and_rejects_unknown() {
+        for d in [
+            AuthzAuditDecision::Allow,
+            AuthzAuditDecision::Deny,
+            AuthzAuditDecision::StepUp,
+            AuthzAuditDecision::Approval,
+        ] {
+            assert_eq!(AuthzAuditDecision::parse(d.as_str()), Some(d));
+        }
+        assert_eq!(AuthzAuditDecision::parse("nope"), None);
+        assert_eq!(AuthzAuditDecision::parse("Allow"), None);
+        assert_eq!(AuthzAuditDecision::parse("stepup"), None);
+    }
 
     /// The windowed fallback binds `window.pg_interval()` into the query's
     /// `$2::interval` placeholder. This asserts the exact literals so a change
@@ -743,5 +966,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(none, 0);
+    }
+
+    /// Round-trip test for the authz audit trail. Requires a live Postgres at
+    /// `DATABASE_URL` and is `#[ignore]`d so the default test run needs no
+    /// database. Run explicitly with:
+    ///   DATABASE_URL=postgres://... cargo test -p flint-gate-core --all-features -- --ignored
+    #[tokio::test]
+    #[ignore = "requires a live Postgres via DATABASE_URL"]
+    async fn authz_audit_write_and_filtered_read_round_trip() {
+        use super::{AuditQuery, AuthzAuditDecision, AuthzAuditRecord, Database};
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let db = Database::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+
+        let principal = format!("audit-{}", uuid::Uuid::new_v4());
+        db.log_authz_decision(&AuthzAuditRecord {
+            request_id: Some("req-1".to_string()),
+            principal: principal.clone(),
+            action: "invoke".to_string(),
+            resource: "route-x".to_string(),
+            decision: AuthzAuditDecision::Deny,
+            reason: Some("policy denied".to_string()),
+            context: Some(serde_json::json!({"method": "GET"})),
+        })
+        .await
+        .unwrap();
+
+        // Filter by principal + decision returns exactly the written row.
+        let rows = db
+            .list_authz_audit(&AuditQuery {
+                principal: Some(principal.clone()),
+                decision: Some(AuthzAuditDecision::Deny),
+                since: None,
+                until: None,
+                limit: 100,
+                offset: 0,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].principal, principal);
+        assert_eq!(rows[0].decision, "deny");
+
+        // A non-matching decision filter yields nothing.
+        let allow_rows = db
+            .list_authz_audit(&AuditQuery {
+                principal: Some(principal),
+                decision: Some(AuthzAuditDecision::Allow),
+                since: None,
+                until: None,
+                limit: 100,
+                offset: 0,
+            })
+            .await
+            .unwrap();
+        assert!(allow_rows.is_empty());
     }
 }

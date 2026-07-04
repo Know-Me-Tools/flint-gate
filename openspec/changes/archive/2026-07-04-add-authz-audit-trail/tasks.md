@@ -1,0 +1,5 @@
+- [x] authz_audit table via migrate()
+- [x] Write allow/deny/step-up/approval from decision path (async, non-blocking)
+- [x] Admin API read endpoint (paged, filter by principal/decision/time)
+- [x] Tests: decision recorded, read/filter (≥80%)
+- [x] cargo check/clippy/test --workspace

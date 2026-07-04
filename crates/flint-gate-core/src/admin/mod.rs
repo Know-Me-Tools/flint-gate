@@ -7,13 +7,13 @@
 /// - `POST /cache/invalidate` — manual cache flush
 /// - `GET  /routes` — list all routes
 /// - `POST /routes` — create/update a route
-/// - `GET  /routes/:id` — get a route
-/// - `PUT  /routes/:id` — update a route
-/// - `DELETE /routes/:id` — delete a route
+/// - `GET  /routes/{id}` — get a route
+/// - `PUT  /routes/{id}` — update a route
+/// - `DELETE /routes/{id}` — delete a route
 /// - `GET  /api-keys` — list active API keys (metadata only)
 /// - `POST /api-keys` — create a new API key (returns raw key once)
-/// - `DELETE /api-keys/:id` — revoke an API key
-/// - `POST /approvals/:id/decision` — resolve a pending human-in-the-loop approval
+/// - `DELETE /api-keys/{id}` — revoke an API key
+/// - `POST /approvals/{id}/decision` — resolve a pending human-in-the-loop approval
 use crate::approval::{ApprovalDecision, ApprovalError};
 use crate::authz::{policy_warnings, validate_policy, AuthzEngine, PolicyRecord};
 use crate::cache::GateCache;
@@ -78,7 +78,7 @@ pub fn admin_router(state: AdminState) -> Router {
             get(list_routes_handler).post(upsert_route_handler),
         )
         .route(
-            "/routes/:id",
+            "/routes/{id}",
             get(get_route_handler)
                 .put(upsert_route_handler_with_id)
                 .delete(delete_route_handler),
@@ -88,7 +88,7 @@ pub fn admin_router(state: AdminState) -> Router {
             get(list_api_keys_handler).post(create_api_key_handler),
         )
         .route(
-            "/api-keys/:id",
+            "/api-keys/{id}",
             axum::routing::delete(revoke_api_key_handler),
         )
         .route("/config", get(config_handler))
@@ -97,7 +97,7 @@ pub fn admin_router(state: AdminState) -> Router {
             get(list_signing_keys_handler).post(create_signing_key_handler),
         )
         .route(
-            "/signing-keys/:id",
+            "/signing-keys/{id}",
             axum::routing::delete(deactivate_signing_key_handler),
         )
         .route(
@@ -105,7 +105,7 @@ pub fn admin_router(state: AdminState) -> Router {
             get(list_policies_handler).post(create_policy_handler),
         )
         .route(
-            "/policies/:id",
+            "/policies/{id}",
             get(get_policy_handler)
                 .put(update_policy_handler)
                 .delete(delete_policy_handler),
@@ -113,7 +113,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/audit", get(list_audit_handler))
         .route("/analytics/summary", get(usage_summary_handler))
         .route("/analytics/tokens", get(token_analytics_handler))
-        .route("/approvals/:id/decision", post(decide_approval_handler))
+        .route("/approvals/{id}/decision", post(decide_approval_handler))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", AdminApiDoc::openapi()))
         .fallback(static_handler)
         .with_state(state)
@@ -214,7 +214,7 @@ async fn upsert_route_handler(
     upsert_route_inner(state, payload).await
 }
 
-/// `PUT /routes/:id` — update route with explicit ID.
+/// `PUT /routes/{id}` — update route with explicit ID.
 async fn upsert_route_handler_with_id(
     Path(id): Path<String>,
     State(state): State<AdminState>,
@@ -261,7 +261,7 @@ async fn upsert_route_inner(state: AdminState, payload: Value) -> axum::response
     }
 }
 
-/// `GET /routes/:id`
+/// `GET /routes/{id}`
 async fn get_route_handler(
     Path(id): Path<String>,
     State(state): State<AdminState>,
@@ -287,7 +287,7 @@ async fn get_route_handler(
     }
 }
 
-/// `DELETE /routes/:id`
+/// `DELETE /routes/{id}`
 async fn delete_route_handler(
     Path(id): Path<String>,
     State(state): State<AdminState>,
@@ -396,7 +396,7 @@ async fn create_api_key_handler(
     }
 }
 
-/// `DELETE /api-keys/:id` — revoke (soft-delete) an API key.
+/// `DELETE /api-keys/{id}` — revoke (soft-delete) an API key.
 async fn revoke_api_key_handler(
     Path(id): Path<Uuid>,
     State(state): State<AdminState>,
@@ -498,7 +498,7 @@ async fn create_signing_key_handler(
     }
 }
 
-/// `DELETE /signing-keys/:id` — deactivate a signing key.
+/// `DELETE /signing-keys/{id}` — deactivate a signing key.
 async fn deactivate_signing_key_handler(
     Path(id): Path<String>,
     State(state): State<AdminState>,
@@ -555,7 +555,7 @@ async fn list_policies_handler(State(state): State<AdminState>) -> impl IntoResp
     }
 }
 
-/// `GET /policies/:id` — fetch one authorization policy.
+/// `GET /policies/{id}` — fetch one authorization policy.
 async fn get_policy_handler(
     Path(id): Path<String>,
     State(state): State<AdminState>,
@@ -588,7 +588,7 @@ async fn create_policy_handler(
     upsert_policy_inner(&state, &id, payload).await
 }
 
-/// `PUT /policies/:id` — update/upsert a policy (id from the path).
+/// `PUT /policies/{id}` — update/upsert a policy (id from the path).
 async fn update_policy_handler(
     Path(id): Path<String>,
     State(state): State<AdminState>,
@@ -671,7 +671,7 @@ async fn upsert_policy_inner(
     }
 }
 
-/// `DELETE /policies/:id` — delete a policy, then reload the engine.
+/// `DELETE /policies/{id}` — delete a policy, then reload the engine.
 async fn delete_policy_handler(
     Path(id): Path<String>,
     State(state): State<AdminState>,
@@ -854,13 +854,13 @@ async fn token_analytics_handler(
 
 // ── Human-in-the-loop approvals ─────────────────────────────────────────────
 
-/// Decision payload for `POST /approvals/:id/decision`.
+/// Decision payload for `POST /approvals/{id}/decision`.
 #[derive(Debug, Deserialize)]
 struct ApprovalDecisionRequest {
     decision: ApprovalDecision,
 }
 
-/// `POST /approvals/:id/decision` — approve or deny a pending approval request.
+/// `POST /approvals/{id}/decision` — approve or deny a pending approval request.
 ///
 /// The decision is routed back to the stream task that owns the paused tool
 /// call. A missing id returns 404; an expired request returns 410.

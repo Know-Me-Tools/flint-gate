@@ -301,7 +301,7 @@ impl Database {
 
     /// Apply the DDL schema (idempotent — uses `CREATE TABLE IF NOT EXISTS`).
     pub async fn migrate(&self) -> Result<()> {
-        sqlx::query(SCHEMA_SQL)
+        sqlx::raw_sql(SCHEMA_SQL)
             .execute(&self.pool)
             .await
             .context("applying schema")?;

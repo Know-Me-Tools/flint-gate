@@ -1,0 +1,73 @@
+version: "3.9"
+
+# Smoke-test environment for the Flint Gate web admin UI.
+# Exposes the admin UI on http://localhost:5173 for Playwright automation.
+# The admin API is reachable from the web container only; port 4457 is also
+# exposed on the host for debugging.
+
+services:
+  # ── Postgres ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flintgate
+      POSTGRES_PASSWORD: flintgate
+      POSTGRES_DB: flintgate
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flintgate -d flintgate"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Flint Gate ──────────────────────────────────────────────────────────────
+  flint-gate:
+    build: .
+    ports:
+      - "4456:4456"
+      - "4457:4457"
+    environment:
+      DATABASE_URL: "postgres://flintgate:flintgate@postgres:5432/flintgate"
+      FLINT_GATE_JWT_SECRET: "smoke-test-secret"
+      FLINT_GATE_CONFIG: "/app/config/config.example.yaml"
+      FLINT_GATE_ADMIN_LISTEN: "0.0.0.0:4457"
+      RUST_LOG: "info,flint_gate=debug"
+    volumes:
+      - ./config.example.yaml:/app/config/config.example.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4457/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Web Admin UI (Vite dev server) ──────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile.smoke
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_ADMIN_API_URL: "http://flint-gate:4457"
+    depends_on:
+      flint-gate:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5173/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:

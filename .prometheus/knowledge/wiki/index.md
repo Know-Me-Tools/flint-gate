@@ -1,0 +1,26 @@
+# Wiki Index
+
+## Reference
+
+* [Agent Authorization Control Plane Executor Session](/agent-authorization-control-plane-executor-session.md)
+* [Agent authorization control plane executor session completion](/agent-authorization-control-plane-executor-session-completion.md)
+* [Agent authz control plane executor completion](/agent-authz-control-plane-executor-completion.md)
+* [Agent authz control plane executor completion record](/agent-authz-control-plane-executor-completion-record.md)
+* [Agent authz control plane executor session complete](/agent-authz-control-plane-executor-session-complete.md)
+* [Agent authz control plane executor session completion](/agent-authz-control-plane-executor-session-completion.md)
+* [Agent authz control plane executor session record](/agent-authz-control-plane-executor-session-record.md)
+* [Agent authz control plane executor session status](/agent-authz-control-plane-executor-session-status.md)
+* [cowork CLI integration phase goals and assessment status](/cowork-cli-integration-phase-goals-and-assessment-status.md)
+* [cowork integration assessment and 12-change implementation plan](/cowork-integration-assessment-and-12-change-implementation-plan.md)
+* [cowork integration research kickoff and open-question coverage](/cowork-integration-research-kickoff-and-open-question-coverage.md)
+* [Flint Forge G4 GraphQL subscription wiring seam](/flint-forge-g4-graphql-subscription-wiring-seam.md)
+* [Flint Forge p3 auth RLS Keto phase status and G4 scope checkpoint](/flint-forge-p3-auth-rls-keto-phase-status-and-g4-scope-checkpoint.md)
+* [Flint Forge p3-c019 parity embedding workflow checkpoint](/flint-forge-p3-c019-parity-embedding-workflow-checkpoint.md)
+* [Flint Forge p3-c019 PostgREST core merge and parity pass status](/flint-forge-p3-c019-postgrest-core-merge-and-parity-pass-status.md)
+* [Flint Forge p3-c020 live Postgres realtime path verification](/flint-forge-p3-c020-live-postgres-realtime-path-verification.md)
+* [Flint Forge p3.5 c002 gateway env-flake fix](/flint-forge-p3-5-c002-gateway-env-flake-fix.md)
+* [Flint Forge p3.5 CI Postgres hardening plan](/flint-forge-p3-5-ci-postgres-hardening-plan.md)
+* [Flint Forge PR #5 PostgREST resource embedding wiring](/flint-forge-pr-5-postgrest-resource-embedding-wiring.md)
+* [Flint Gate agent authz control plane checkpoint](/flint-gate-agent-authz-control-plane-checkpoint.md)
+* [PR 27 constant-time bearer auth hardening](/pr-27-constant-time-bearer-auth-hardening.md)
+* [surreal-memory-server b2ed891 rebuild and launchd restart plan](/surreal-memory-server-b2ed891-rebuild-and-launchd-restart-plan.md)

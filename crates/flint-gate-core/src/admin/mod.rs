@@ -13,19 +13,23 @@
 /// - `GET  /api-keys` — list active API keys (metadata only)
 /// - `POST /api-keys` — create a new API key (returns raw key once)
 /// - `DELETE /api-keys/:id` — revoke an API key
+/// - `POST /approvals/:id/decision` — resolve a pending human-in-the-loop approval
+use crate::approval::{ApprovalDecision, ApprovalError};
 use crate::authz::{policy_warnings, validate_policy, AuthzEngine, PolicyRecord};
 use crate::cache::GateCache;
 use crate::config::SharedConfig;
 use crate::db::{AuditQuery, AuthzAuditDecision, Database};
 use crate::proxy::SharedRouter;
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Json},
+    http::{header::CONTENT_TYPE, HeaderValue, StatusCode, Uri},
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
 use chrono::{DateTime, Utc};
+use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -43,6 +47,8 @@ pub struct AdminState {
     pub config: SharedConfig,
     /// Shared Cedar authorization engine. Policy writes validate then reload it.
     pub authz: Arc<AuthzEngine>,
+    /// Shared human-in-the-loop approval routing table.
+    pub approval_manager: crate::approval::ApprovalManager,
 }
 
 /// Build the admin Axum router.
@@ -85,6 +91,7 @@ pub fn admin_router(state: AdminState) -> Router {
             "/api-keys/:id",
             axum::routing::delete(revoke_api_key_handler),
         )
+        .route("/config", get(config_handler))
         .route(
             "/signing-keys",
             get(list_signing_keys_handler).post(create_signing_key_handler),
@@ -104,7 +111,11 @@ pub fn admin_router(state: AdminState) -> Router {
                 .delete(delete_policy_handler),
         )
         .route("/audit", get(list_audit_handler))
+        .route("/analytics/summary", get(usage_summary_handler))
+        .route("/analytics/tokens", get(token_analytics_handler))
+        .route("/approvals/:id/decision", post(decide_approval_handler))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", AdminApiDoc::openapi()))
+        .fallback(static_handler)
         .with_state(state)
 }
 
@@ -112,6 +123,39 @@ pub fn admin_router(state: AdminState) -> Router {
 #[utoipa::path(get, path = "/health", responses((status = 200, description = "Service healthy")))]
 async fn health_handler() -> impl IntoResponse {
     Json(json!({"status": "ok", "service": "flint-gate"}))
+}
+
+/// Embedded admin web UI assets. In release builds they are compiled in; in
+/// debug builds `debug-embed` reads from `../../web/dist` on each request so
+/// `cargo run` sees the latest `pnpm build` without recompiling Rust.
+#[derive(RustEmbed)]
+#[folder = "../../web/dist"]
+struct AdminAssets;
+
+/// Fallback handler for the admin SPA: serves an exact embedded asset when it
+/// exists, otherwise falls back to `index.html` so client-side routing works.
+async fn static_handler(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let (file, mime_path): (rust_embed::EmbeddedFile, String) = match AdminAssets::get(path) {
+        Some(f) => (f, path.to_string()),
+        None => match AdminAssets::get("index.html") {
+            Some(f) => (f, "index.html".to_string()),
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Admin UI assets not built; run `pnpm build` in web/",
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    let mut response = Response::new(Body::from(file.data));
+    let mime = mime_guess::from_path(&mime_path).first_or_octet_stream();
+    if let Ok(value) = HeaderValue::from_str(mime.as_ref()) {
+        response.headers_mut().insert(CONTENT_TYPE, value);
+    }
+    response
 }
 
 /// `GET /ready` — checks DB connectivity if configured.
@@ -386,6 +430,12 @@ struct CreateSigningKeyRequest {
     algorithm: String,
     public_key: String,
     private_key: String,
+}
+
+/// `GET /config` — return the current loaded configuration (read-only).
+async fn config_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    let cfg = state.config.read().await;
+    Json(cfg.clone())
 }
 
 /// `GET /signing-keys` — list all signing keys (public keys only).
@@ -733,6 +783,115 @@ async fn list_audit_handler(
     }
 }
 
+// ── Analytics (read-only) ───────────────────────────────────────────────────
+
+/// Query parameters shared by the analytics endpoints.
+#[derive(Debug, Deserialize)]
+struct AnalyticsParams {
+    /// Inclusive lower bound on `created_at` (RFC3339).
+    since: Option<DateTime<Utc>>,
+    /// Inclusive upper bound on `created_at` (RFC3339).
+    until: Option<DateTime<Utc>>,
+    /// Bucketing interval for the time series (`hour` or `day`).
+    #[serde(default = "default_analytics_interval")]
+    interval: String,
+    /// Maximum number of top routes/users to return (default 10, cap 100).
+    #[serde(default = "default_analytics_limit")]
+    limit: i64,
+}
+
+fn default_analytics_interval() -> String {
+    "day".to_string()
+}
+
+fn default_analytics_limit() -> i64 {
+    10
+}
+
+/// `GET /analytics/summary` — aggregate token/request/duration statistics.
+async fn usage_summary_handler(
+    State(state): State<AdminState>,
+    Query(params): Query<AnalyticsParams>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.usage_summary(params.since, params.until).await {
+        Ok(summary) => Json(json!({"summary": summary})).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// `GET /analytics/tokens` — time series + top routes + top users.
+async fn token_analytics_handler(
+    State(state): State<AdminState>,
+    Query(params): Query<AnalyticsParams>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    let interval = match params.interval.as_str() {
+        "hour" | "day" => params.interval.as_str(),
+        _ => "day",
+    };
+    let limit = params.limit.clamp(1, 100);
+
+    match tokio::try_join!(
+        db.usage_timeseries(params.since, params.until, interval),
+        db.usage_by_route(params.since, params.until, limit),
+        db.usage_by_user(params.since, params.until, limit),
+    ) {
+        Ok((timeseries, by_route, by_user)) => Json(json!({
+            "interval": interval,
+            "timeseries": timeseries,
+            "by_route": by_route,
+            "by_user": by_user,
+        }))
+        .into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ── Human-in-the-loop approvals ─────────────────────────────────────────────
+
+/// Decision payload for `POST /approvals/:id/decision`.
+#[derive(Debug, Deserialize)]
+struct ApprovalDecisionRequest {
+    decision: ApprovalDecision,
+}
+
+/// `POST /approvals/:id/decision` — approve or deny a pending approval request.
+///
+/// The decision is routed back to the stream task that owns the paused tool
+/// call. A missing id returns 404; an expired request returns 410.
+async fn decide_approval_handler(
+    Path(id): Path<String>,
+    State(state): State<AdminState>,
+    Json(payload): Json<ApprovalDecisionRequest>,
+) -> impl IntoResponse {
+    match state.approval_manager.decide(&id, payload.decision) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "ok",
+                "approval_id": id,
+                "decision": payload.decision,
+            })),
+        )
+            .into_response(),
+        Err(ApprovalError::NotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "approval request not found"})),
+        )
+            .into_response(),
+        Err(ApprovalError::Expired) => (
+            StatusCode::GONE,
+            Json(json!({"error": "approval request expired"})),
+        )
+            .into_response(),
+    }
+}
+
 /// Standard 501 response when no database is configured.
 fn db_not_configured() -> axum::response::Response {
     (
@@ -753,7 +912,10 @@ fn internal_error(msg: &str) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_audit_query, AuditParams, AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT};
+    use super::{
+        build_audit_query, default_analytics_interval, default_analytics_limit, AuditParams,
+        AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT,
+    };
     use crate::db::AuthzAuditDecision;
 
     fn params() -> AuditParams {
@@ -828,5 +990,15 @@ mod tests {
         })
         .expect_err("must reject unknown decision");
         assert!(err.contains("invalid decision"));
+    }
+
+    #[test]
+    fn analytics_interval_defaults_to_day() {
+        assert_eq!(default_analytics_interval(), "day");
+    }
+
+    #[test]
+    fn analytics_limit_defaults_to_ten() {
+        assert_eq!(default_analytics_limit(), 10);
     }
 }

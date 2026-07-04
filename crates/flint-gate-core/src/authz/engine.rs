@@ -4,9 +4,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use cedar_policy::{Authorizer, Context, Decision, EntityId, EntityTypeName, EntityUid, Request};
+use cedar_policy::{
+    Authorizer, Context, Decision, Effect, EntityId, EntityTypeName, EntityUid, PolicyId, Request,
+};
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{error, warn};
+use uuid::Uuid;
 
 use super::bundle::{CedarBundle, PolicyRecord};
 use super::error::AuthzError;
@@ -19,23 +24,110 @@ const ACTION_TYPE: &str = "Action";
 const RESOURCE_TYPE: &str = "Route";
 /// Default generic action id when a hook does not specify one.
 pub const DEFAULT_ACTION: &str = "invoke";
+/// Default time-to-live for a pending approval request (5 minutes).
+pub const DEFAULT_APPROVAL_TTL_SECONDS: i64 = 300;
+
+/// Context carried when an authorization decision requires human approval.
+///
+/// The engine produces this for a Cedar `Allow` matched by a policy bearing the
+/// `@require_approval` annotation. Higher layers (e.g. the streaming tool-authz
+/// path) may augment the context with request-specific details such as the
+/// tool-call id before emitting it to a frontend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalContext {
+    /// Stable, unique identifier for this approval request.
+    pub approval_id: String,
+    /// Principal that initiated the request.
+    pub principal_id: String,
+    /// Action being authorized.
+    pub action: String,
+    /// Resource being accessed.
+    pub resource_id: String,
+    /// Human-readable reason from the policy annotation, if any.
+    pub reason: Option<String>,
+    /// UTC timestamp after which the approval request expires.
+    pub expires_at: DateTime<Utc>,
+}
+
+impl ApprovalContext {
+    /// Build an approval context with a freshly generated id and default TTL.
+    pub fn new(
+        principal_id: impl Into<String>,
+        action: impl Into<String>,
+        resource_id: impl Into<String>,
+        reason: Option<String>,
+    ) -> Self {
+        Self {
+            approval_id: Uuid::new_v4().to_string(),
+            principal_id: principal_id.into(),
+            action: action.into(),
+            resource_id: resource_id.into(),
+            reason,
+            expires_at: Utc::now() + Duration::seconds(DEFAULT_APPROVAL_TTL_SECONDS),
+        }
+    }
+
+    /// Build an approval context with an explicit id and expiry.
+    pub fn with_id_and_expiry(
+        approval_id: impl Into<String>,
+        principal_id: impl Into<String>,
+        action: impl Into<String>,
+        resource_id: impl Into<String>,
+        reason: Option<String>,
+        expires_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            approval_id: approval_id.into(),
+            principal_id: principal_id.into(),
+            action: action.into(),
+            resource_id: resource_id.into(),
+            reason,
+            expires_at,
+        }
+    }
+
+    /// Has this approval request expired?
+    pub fn is_expired(&self) -> bool {
+        Utc::now() > self.expires_at
+    }
+}
 
 /// The outcome of an authorization check.
 ///
-/// This is a deliberately tiny surface: the pipeline only needs allow-vs-deny.
-/// Every error, ambiguity, or construction failure collapses to [`Self::Deny`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Three outcomes are possible: allow, deny, or require human approval. Every
+/// error, ambiguity, or construction failure collapses to [`Self::Deny`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthzDecision {
     /// The request is permitted.
     Allow,
     /// The request is denied (explicitly, or fail-closed on any error).
     Deny,
+    /// The request requires human approval before proceeding.
+    RequireApproval(ApprovalContext),
 }
 
 impl AuthzDecision {
-    /// Is this an allow?
-    pub fn is_allow(self) -> bool {
+    /// Is this an unconditional allow?
+    pub fn is_allow(&self) -> bool {
         matches!(self, AuthzDecision::Allow)
+    }
+
+    /// Is this a denial?
+    pub fn is_deny(&self) -> bool {
+        matches!(self, AuthzDecision::Deny)
+    }
+
+    /// Is this a require-approval decision?
+    pub fn is_require_approval(&self) -> bool {
+        matches!(self, AuthzDecision::RequireApproval(_))
+    }
+
+    /// If this is a require-approval decision, return the approval context.
+    pub fn approval_context(&self) -> Option<&ApprovalContext> {
+        match self {
+            AuthzDecision::RequireApproval(ctx) => Some(ctx),
+            _ => None,
+        }
     }
 }
 
@@ -152,6 +244,10 @@ impl AuthzEngine {
     /// - `action` → `Action::"<action>"` (generic, e.g. `invoke`)
     /// - `resource_id` → `Route::"<id>"`
     /// - `context` → a JSON object mapped into the Cedar request context
+    ///
+    /// When a matching `permit` policy carries the `@require_approval`
+    /// annotation, an otherwise-allowing decision is promoted to
+    /// [`AuthzDecision::RequireApproval`].
     pub fn authorize(
         &self,
         principal_id: &str,
@@ -161,10 +257,9 @@ impl AuthzEngine {
     ) -> AuthzDecision {
         let snapshot = self.bundle.load();
         match self.evaluate(&snapshot, principal_id, action, resource_id, context) {
-            Ok(decision) => match decision {
-                Decision::Allow => AuthzDecision::Allow,
-                Decision::Deny => AuthzDecision::Deny,
-            },
+            Ok((Decision::Allow, Some(ctx))) => AuthzDecision::RequireApproval(ctx),
+            Ok((Decision::Allow, None)) => AuthzDecision::Allow,
+            Ok((Decision::Deny, _)) => AuthzDecision::Deny,
             Err(e) => {
                 // Fail closed. A malformed principal id, un-mappable context, or
                 // schema-mismatched request must never fall through to allow.
@@ -182,6 +277,9 @@ impl AuthzEngine {
 
     /// The fallible core of [`Self::authorize`], separated so the error → deny
     /// mapping lives in exactly one place.
+    ///
+    /// Returns the Cedar decision plus an optional [`ApprovalContext`] when a
+    /// matched permit policy is annotated with `@require_approval`.
     fn evaluate(
         &self,
         bundle: &CedarBundle,
@@ -189,7 +287,7 @@ impl AuthzEngine {
         action: &str,
         resource_id: &str,
         context: &Value,
-    ) -> Result<Decision, AuthzError> {
+    ) -> Result<(Decision, Option<ApprovalContext>), AuthzError> {
         let principal = make_uid(PRINCIPAL_TYPE, principal_id)?;
         let action_uid = make_uid(ACTION_TYPE, action)?;
         let resource = make_uid(RESOURCE_TYPE, resource_id)?;
@@ -207,8 +305,71 @@ impl AuthzEngine {
         let response =
             self.authorizer
                 .is_authorized(&request, bundle.policies(), bundle.entities());
-        Ok(response.decision())
+        let approval =
+            extract_approval_context(&response, bundle, principal_id, action, resource_id);
+        Ok((response.decision(), approval))
     }
+}
+
+/// If the Cedar response is `Allow` and any matched permit policy carries the
+/// `@require_approval` annotation, build an [`ApprovalContext`].
+///
+/// Only `permit` policies that actually contributed to the allow decision (i.e.
+/// appear in the response diagnostics) are considered. `forbid` policies and
+/// policies that did not match are ignored. When multiple matched policies are
+/// annotated, their reason values are concatenated with `"; "`.
+fn extract_approval_context(
+    response: &cedar_policy::Response,
+    bundle: &CedarBundle,
+    principal_id: &str,
+    action: &str,
+    resource_id: &str,
+) -> Option<ApprovalContext> {
+    if response.decision() != Decision::Allow {
+        return None;
+    }
+
+    let mut requires_approval = false;
+    let mut reasons: Vec<String> = Vec::new();
+    for policy_id in response.diagnostics().reason() {
+        let Some(policy) = bundle.policies().policies().find(|p| {
+            <PolicyId as AsRef<str>>::as_ref(p.id()) == <PolicyId as AsRef<str>>::as_ref(policy_id)
+        }) else {
+            continue;
+        };
+        // Forbid policies annotated with @require_approval must NOT promote to
+        // RequireApproval; they remain Deny (already filtered by Allow above,
+        // but guard explicitly for clarity and defense in depth).
+        if !matches!(policy.effect(), Effect::Permit) {
+            continue;
+        }
+        for (key, value) in policy.annotations() {
+            if key == "require_approval" {
+                requires_approval = true;
+                if !value.is_empty() {
+                    reasons.push(value.to_string());
+                }
+                break;
+            }
+        }
+    }
+
+    if !requires_approval {
+        return None;
+    }
+
+    let reason = if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join("; "))
+    };
+
+    Some(ApprovalContext::new(
+        principal_id,
+        action,
+        resource_id,
+        reason,
+    ))
 }
 
 /// Construct a Cedar `EntityUid` of `Type::"id"` from an untrusted string id.
@@ -360,6 +521,85 @@ mod tests {
         assert_eq!(
             engine.authorize("alice", DEFAULT_ACTION, "r1", &json!({})),
             AuthzDecision::Allow
+        );
+    }
+
+    // ── add-hitl-approval: RequireApproval via @require_approval annotation ─
+
+    #[test]
+    fn require_approval_when_permit_policy_is_annotated() {
+        let engine = AuthzEngine::from_records(&[record(
+            "approval",
+            r#"@require_approval("Sensitive operation requires human review")
+            permit(principal, action, resource);"#,
+        )])
+        .expect("compiles");
+        let decision = engine.authorize("alice", DEFAULT_ACTION, "r1", &json!({}));
+        assert!(
+            decision.is_require_approval(),
+            "annotated permit policy must yield RequireApproval"
+        );
+        let ctx = decision.approval_context().expect("context present");
+        assert_eq!(ctx.principal_id, "alice");
+        assert_eq!(ctx.action, DEFAULT_ACTION);
+        assert_eq!(ctx.resource_id, "r1");
+        assert_eq!(
+            ctx.reason.as_deref(),
+            Some("Sensitive operation requires human review")
+        );
+        assert!(!ctx.is_expired());
+    }
+
+    #[test]
+    fn require_approval_without_reason_omits_reason() {
+        // Cedar annotation syntax requires parentheses; an empty string value
+        // represents "reason omitted" and maps to `None`.
+        let engine = AuthzEngine::from_records(&[record(
+            "approval",
+            r#"@require_approval("")
+            permit(principal, action, resource);"#,
+        )])
+        .expect("compiles");
+        let decision = engine.authorize("alice", DEFAULT_ACTION, "r1", &json!({}));
+        assert!(decision.is_require_approval());
+        let ctx = decision.approval_context().unwrap();
+        assert!(ctx.reason.is_none());
+    }
+
+    #[test]
+    fn annotated_forbid_does_not_require_approval() {
+        // A forbid policy annotated with @require_approval must still deny and
+        // must NOT promote to RequireApproval.
+        let engine = AuthzEngine::from_records(&[record(
+            "blocked",
+            r#"@require_approval("should be ignored")
+                forbid(principal, action, resource);"#,
+        )])
+        .expect("compiles");
+        assert_eq!(
+            engine.authorize("alice", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Deny
+        );
+    }
+
+    #[test]
+    fn unannotated_permit_still_allows() {
+        let engine =
+            AuthzEngine::from_records(&[record("p", r#"permit(principal, action, resource);"#)])
+                .expect("compiles");
+        let decision = engine.authorize("alice", DEFAULT_ACTION, "r1", &json!({}));
+        assert_eq!(decision, AuthzDecision::Allow);
+        assert!(!decision.is_require_approval());
+    }
+
+    #[test]
+    fn require_approval_fails_closed_on_error() {
+        // The engine itself cannot fail here, but the contract is that any
+        // evaluation error maps to Deny, not RequireApproval.
+        let engine = AuthzEngine::empty();
+        assert_eq!(
+            engine.authorize("alice", DEFAULT_ACTION, "r1", &json!({})),
+            AuthzDecision::Deny
         );
     }
 

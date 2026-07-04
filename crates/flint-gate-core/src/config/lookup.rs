@@ -156,6 +156,9 @@ pub fn collect_hook_templates(hooks: &[crate::config::types::PreRequestHook]) ->
             // The authorize hook builds its Cedar context inline from the
             // identity, route, and request — it has no templated lookups.
             crate::config::types::PreRequestHook::Authorize { .. } => {}
+            // Guardrails inspect body content directly and do not use template
+            // lookups. Any future guard that needs lookups will add them here.
+            crate::config::types::PreRequestHook::Guardrail { .. } => {}
         }
     }
     out

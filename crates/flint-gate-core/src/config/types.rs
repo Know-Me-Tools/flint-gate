@@ -2,6 +2,7 @@
 ///
 /// All YAML config fields map to these Rust types via serde.
 /// Use `#[serde(default)]` liberally for optional fields.
+use crate::guardrail::GuardrailHookConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -417,6 +418,8 @@ pub enum PreRequestHook {
     MaxTokenBudget { config: MaxTokenBudgetConfig },
     /// Evaluate an embedded Cedar authorization policy for this route.
     Authorize { config: AuthorizeConfig },
+    /// Inspect the request with a guardrail and optionally block it.
+    Guardrail { config: GuardrailHookConfig },
 }
 
 /// A single post-response hook step.

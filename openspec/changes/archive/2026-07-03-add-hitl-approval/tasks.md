@@ -1,0 +1,7 @@
+- [x] Design spike: in-band resume over AG-UI/A2UI (document decision)
+- [x] Extend authz result with RequireApproval
+- [x] Emit approval-request event over AG-UI/A2UI; pause tool call
+- [x] Decision channel (approve/deny) + short-lived approval state store
+- [x] Resume or abort paused tool call on decision
+- [x] End-to-end example: approve→resume and deny→abort
+- [x] Tests (≥80%); cargo check/clippy/test --workspace

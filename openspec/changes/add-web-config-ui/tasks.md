@@ -1,0 +1,7 @@
+- [ ] Scaffold React + Vite SPA under web/, importing existing TS SDK
+- [ ] Add rust-embed (axum, debug-embed); serve dist/ with SPA index fallback
+- [ ] Read-model Admin endpoints: token/cost analytics + authz_audit view
+- [ ] UI CRUD: routes / auth providers / hooks / policies / budgets
+- [ ] UI token/cost dashboard (Recharts; uPlot dense series), code-split analytics
+- [ ] Tests: backend endpoints + SPA build + typescript-review (≥80% backend)
+- [ ] cargo check/clippy/test --workspace; SPA builds

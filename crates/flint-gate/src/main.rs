@@ -288,6 +288,9 @@ async fn main() -> Result<()> {
         info!("shared Redis window counters enabled (budgets + request-rate)");
     }
 
+    // 10c. Human-in-the-loop approval routing table (in-process default).
+    let approval_manager = flint_gate_core::approval::ApprovalManager::new();
+
     // 11. Assemble AppState
     let app_state = Arc::new(AppState {
         config: Arc::clone(&shared_config),
@@ -299,6 +302,7 @@ async fn main() -> Result<()> {
         http_client: http_client.clone(),
         lookup_registry: Arc::clone(&lookup_registry),
         authz: Arc::clone(&authz),
+        approval_manager: approval_manager.clone(),
         #[cfg(feature = "redis-l2")]
         rate_limiter,
     });
@@ -433,6 +437,7 @@ async fn main() -> Result<()> {
         router: Arc::clone(&shared_router),
         config: Arc::clone(&shared_config),
         authz: Arc::clone(&authz),
+        approval_manager: approval_manager.clone(),
     };
     let admin_app = admin_router(admin_state).layer(TraceLayer::new_for_http());
     let admin_listener = tokio::net::TcpListener::bind(&admin_listen)

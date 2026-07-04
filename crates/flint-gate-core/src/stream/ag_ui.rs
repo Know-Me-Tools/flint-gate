@@ -2,11 +2,13 @@
 ///
 /// AG-UI events are delivered as SSE frames. Each frame's `data:` field
 /// contains a JSON object with a `type` field identifying the event.
-use crate::authz::ToolAuthzContext;
+use crate::approval::{ApprovalDecision, ApprovalManager};
+use crate::authz::{ApprovalContext, AuthzDecision, ToolAuthzContext};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::mpsc::UnboundedSender;
 
 /// All known AG-UI event type strings.
 pub const EVENT_TEXT_MESSAGE_START: &str = "TEXT_MESSAGE_START";
@@ -24,6 +26,7 @@ pub const EVENT_RUN_ERROR: &str = "RUN_ERROR";
 pub const EVENT_STEP_STARTED: &str = "STEP_STARTED";
 pub const EVENT_STEP_FINISHED: &str = "STEP_FINISHED";
 pub const EVENT_RAW: &str = "RAW";
+pub const EVENT_APPROVAL_REQUEST: &str = "GATE_APPROVAL_REQUEST";
 
 /// A parsed AG-UI event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +182,48 @@ struct ToolCallState {
     args_buffer: String,
 }
 
+/// A tool call that is awaiting human approval. The stream is paused, so no
+/// new events for this call can arrive while it is pending.
+#[derive(Clone)]
+struct PendingToolCall {
+    tool_name: String,
+    held_start: Option<AgUiEvent>,
+    held_end: Option<AgUiEvent>,
+    args_buffer: String,
+    stage: PendingStage,
+}
+
+/// Whether approval was requested at START or at END.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingStage {
+    Start,
+    End,
+}
+
+/// Handle used by the processor to register approvals and emit decision
+/// notifications back to the stream task.
+#[derive(Clone)]
+struct ApprovalHandle {
+    manager: ApprovalManager,
+    decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+}
+
+impl ApprovalHandle {
+    /// Register a new approval request. Returns the approval id on success.
+    fn request(&self, context: ApprovalContext) -> Result<String, crate::approval::ApprovalError> {
+        let id = context.approval_id.clone();
+        let ttl = context
+            .expires_at
+            .signed_duration_since(chrono::Utc::now())
+            .to_std()
+            .unwrap_or(crate::approval::DEFAULT_APPROVAL_TTL);
+        let expires_at = std::time::Instant::now() + ttl;
+        self.manager
+            .register(id.clone(), expires_at, self.decision_tx.clone())?;
+        Ok(id)
+    }
+}
+
 /// Processes AG-UI events: validates against the allowed list, injects
 /// metadata, and (when a [`ToolAuthzContext`] is present) authorizes tool calls
 /// by buffering each call until END, then releasing or blocking it.
@@ -196,6 +241,11 @@ pub struct AgUiProcessor {
     /// `process_multi(&self, …)` runs single-threaded inside one stream's
     /// processor task, so a `RefCell` is sufficient and lock-free.
     tool_calls: RefCell<HashMap<String, ToolCallState>>,
+    /// Optional handle to request human approvals. When absent, any
+    /// `RequireApproval` decision is treated as a deny (fail-closed).
+    approval_handle: Option<ApprovalHandle>,
+    /// Tool calls awaiting human approval, keyed by approval id.
+    pending_approvals: RefCell<HashMap<String, PendingToolCall>>,
 }
 
 impl AgUiProcessor {
@@ -211,6 +261,8 @@ impl AgUiProcessor {
             tool_authz: None,
             max_tool_args_bytes: crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES,
             tool_calls: RefCell::new(HashMap::new()),
+            approval_handle: None,
+            pending_approvals: RefCell::new(HashMap::new()),
         }
     }
 
@@ -227,6 +279,20 @@ impl AgUiProcessor {
         if cap > 0 {
             self.max_tool_args_bytes = cap;
         }
+        self
+    }
+
+    /// Attach an approval handle so the processor can request human-in-the-loop
+    /// decisions. Builder-style.
+    pub fn with_approval_handle(
+        mut self,
+        manager: ApprovalManager,
+        decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+    ) -> Self {
+        self.approval_handle = Some(ApprovalHandle {
+            manager,
+            decision_tx,
+        });
         self
     }
 
@@ -274,6 +340,92 @@ impl AgUiProcessor {
         metadata: serde_json::Map<String, Value>,
     ) -> Option<AgUiEvent> {
         self.process_multi(event, metadata).into_iter().next()
+    }
+
+    /// Ids of approval requests currently pending for this stream.
+    pub fn pending_approval_ids(&self) -> Vec<String> {
+        self.pending_approvals.borrow().keys().cloned().collect()
+    }
+
+    /// Resolve a pending approval. Returns the events that should be forwarded
+    /// to the client, or an empty vec if resolving produced no output.
+    pub fn resolve_approval(
+        &mut self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Vec<AgUiEvent> {
+        let Some(pending) = self.pending_approvals.borrow_mut().remove(approval_id) else {
+            tracing::warn!(approval_id, "resolve_approval called for unknown approval");
+            return Vec::new();
+        };
+
+        match decision {
+            ApprovalDecision::Approve => self.on_approval_approved(approval_id, pending),
+            ApprovalDecision::Deny => {
+                let tool_call_id = pending.held_start.as_ref().and_then(|e| e.tool_call_id());
+                tracing::info!(
+                    approval_id,
+                    tool_call_id = ?tool_call_id,
+                    "human approval denied — blocking tool call"
+                );
+                vec![run_error_event(
+                    tool_call_id,
+                    &format!("tool call `{}` denied by human approval", pending.tool_name),
+                )]
+            }
+        }
+    }
+
+    fn on_approval_approved(
+        &mut self,
+        _approval_id: &str,
+        pending: PendingToolCall,
+    ) -> Vec<AgUiEvent> {
+        match pending.stage {
+            PendingStage::Start => {
+                // Restore the call to the active set so ARGS/END can resume.
+                let tool_call_id = pending
+                    .held_start
+                    .as_ref()
+                    .and_then(|e| e.tool_call_id())
+                    .map(str::to_string);
+                let Some(id) = tool_call_id else {
+                    return Vec::new();
+                };
+                self.tool_calls.borrow_mut().insert(
+                    id,
+                    ToolCallState {
+                        tool_name: pending.tool_name,
+                        held_start: pending.held_start,
+                        start_allowed: true,
+                        args_buffer: pending.args_buffer,
+                    },
+                );
+                Vec::new()
+            }
+            PendingStage::End => {
+                // Flush the held call now.
+                let mut out = Vec::with_capacity(3);
+                let tool_call_id = pending
+                    .held_start
+                    .as_ref()
+                    .and_then(|e| e.tool_call_id())
+                    .map(str::to_string);
+                if let Some(start) = pending.held_start {
+                    out.push(start);
+                }
+                if !pending.args_buffer.trim().is_empty() {
+                    out.push(coalesced_args_event(
+                        tool_call_id.as_deref().unwrap_or(""),
+                        &pending.args_buffer,
+                    ));
+                }
+                if let Some(end) = pending.held_end {
+                    out.push(end);
+                }
+                out
+            }
+        }
     }
 
     /// Route a tool-call event through the buffer-until-authorized state
@@ -331,38 +483,104 @@ impl AgUiProcessor {
         let (id, name) = (id.to_string(), name.to_string());
 
         // Coarse by-name check (no args yet) — an early-reject optimization.
-        let allowed = authz.authorize(&name, &Value::Null).is_allow();
-
-        if allowed {
-            // HOLD the START; emit nothing until END authorizes the full call.
-            self.tool_calls.borrow_mut().insert(
-                id,
-                ToolCallState {
-                    tool_name: name,
-                    held_start: Some(event),
-                    start_allowed: true,
-                    args_buffer: String::new(),
-                },
-            );
-            Vec::new()
-        } else {
-            // Blocked at START: record the block so later ARGS/END drop, and
-            // replace the START with a single RUN_ERROR.
-            self.tool_calls.borrow_mut().insert(
-                id.clone(),
-                ToolCallState {
-                    tool_name: name.clone(),
-                    held_start: None,
-                    start_allowed: false,
-                    args_buffer: String::new(),
-                },
-            );
-            tracing::info!(tool = %name, tool_call_id = %id, "tool call denied at START — blocking");
-            vec![run_error_event(
+        match authz.authorize(&name, &Value::Null) {
+            AuthzDecision::Allow => {
+                // HOLD the START; emit nothing until END authorizes the full call.
+                self.tool_calls.borrow_mut().insert(
+                    id,
+                    ToolCallState {
+                        tool_name: name,
+                        held_start: Some(event),
+                        start_allowed: true,
+                        args_buffer: String::new(),
+                    },
+                );
+                Vec::new()
+            }
+            AuthzDecision::RequireApproval(ctx) => self.request_approval(
+                ctx,
                 Some(&id),
-                &format!("tool call `{name}` denied by policy"),
-            )]
+                name,
+                Some(event),
+                None,
+                String::new(),
+                PendingStage::Start,
+            ),
+            AuthzDecision::Deny => {
+                // Blocked at START: record the block so later ARGS/END drop, and
+                // replace the START with a single RUN_ERROR.
+                self.tool_calls.borrow_mut().insert(
+                    id.clone(),
+                    ToolCallState {
+                        tool_name: name.clone(),
+                        held_start: None,
+                        start_allowed: false,
+                        args_buffer: String::new(),
+                    },
+                );
+                tracing::info!(tool = %name, tool_call_id = %id, "tool call denied at START — blocking");
+                vec![run_error_event(
+                    Some(&id),
+                    &format!("tool call `{name}` denied by policy"),
+                )]
+            }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn request_approval(
+        &self,
+        context: ApprovalContext,
+        tool_call_id: Option<&str>,
+        tool_name: String,
+        held_start: Option<AgUiEvent>,
+        held_end: Option<AgUiEvent>,
+        args_buffer: String,
+        stage: PendingStage,
+    ) -> Vec<AgUiEvent> {
+        let Some(handle) = &self.approval_handle else {
+            tracing::warn!(
+                tool = %tool_name,
+                tool_call_id = ?tool_call_id,
+                "approval required but no approval manager configured — denying (fail-closed)"
+            );
+            return vec![run_error_event(
+                tool_call_id,
+                &format!("tool call `{tool_name}` denied: approval required but not configured"),
+            )];
+        };
+
+        let id = context.approval_id.clone();
+        if let Err(e) = handle.request(context.clone()) {
+            tracing::error!(
+                approval_id = %id,
+                error = %e,
+                "failed to register approval request — denying (fail-closed)"
+            );
+            return vec![run_error_event(
+                tool_call_id,
+                &format!("tool call `{tool_name}` denied: approval registration failed"),
+            )];
+        }
+
+        self.pending_approvals.borrow_mut().insert(
+            id.clone(),
+            PendingToolCall {
+                tool_name,
+                held_start,
+                held_end,
+                args_buffer,
+                stage,
+            },
+        );
+
+        tracing::info!(
+            approval_id = %id,
+            tool_call_id = ?tool_call_id,
+            stage = ?stage,
+            "tool call requires human approval — pausing stream"
+        );
+        vec![approval_request_event(&context, tool_call_id)]
     }
 
     fn on_tool_call_args(&self, event: AgUiEvent) -> Vec<AgUiEvent> {
@@ -443,29 +661,41 @@ impl AgUiProcessor {
             }
         };
 
-        if authz.authorize(&state.tool_name, &args).is_allow() {
-            // FLUSH the whole call in order: held START, one coalesced ARGS with
-            // the full arguments, then END. The coalesced ARGS replaces the
-            // stream of deltas the client never saw.
-            let mut out = Vec::with_capacity(3);
-            if let Some(start) = state.held_start {
-                out.push(start);
+        match authz.authorize(&state.tool_name, &args) {
+            AuthzDecision::Allow => {
+                // FLUSH the whole call in order: held START, one coalesced ARGS with
+                // the full arguments, then END. The coalesced ARGS replaces the
+                // stream of deltas the client never saw.
+                let mut out = Vec::with_capacity(3);
+                if let Some(start) = state.held_start {
+                    out.push(start);
+                }
+                if !state.args_buffer.trim().is_empty() {
+                    out.push(coalesced_args_event(&id, &state.args_buffer));
+                }
+                out.push(event);
+                out
             }
-            if !state.args_buffer.trim().is_empty() {
-                out.push(coalesced_args_event(&id, &state.args_buffer));
-            }
-            out.push(event);
-            out
-        } else {
-            tracing::info!(
-                tool = %state.tool_name,
-                tool_call_id = %id,
-                "tool call denied at END on full arguments — blocking"
-            );
-            vec![run_error_event(
+            AuthzDecision::RequireApproval(ctx) => self.request_approval(
+                ctx,
                 Some(&id),
-                &format!("tool call `{}` denied by policy", state.tool_name),
-            )]
+                state.tool_name,
+                state.held_start,
+                Some(event),
+                state.args_buffer,
+                PendingStage::End,
+            ),
+            AuthzDecision::Deny => {
+                tracing::info!(
+                    tool = %state.tool_name,
+                    tool_call_id = %id,
+                    "tool call denied at END on full arguments — blocking"
+                );
+                vec![run_error_event(
+                    Some(&id),
+                    &format!("tool call `{}` denied by policy", state.tool_name),
+                )]
+            }
         }
     }
 }
@@ -509,7 +739,38 @@ fn coalesced_args_event(tool_call_id: &str, full_args: &str) -> AgUiEvent {
     }
 }
 
-/// Build a synthetic AG-UI `RUN_ERROR` event announcing a blocked tool call.
+/// Build a synthetic AG-UI `GATE_APPROVAL_REQUEST` event asking a human
+/// operator to approve a tool call.
+fn approval_request_event(context: &ApprovalContext, tool_call_id: Option<&str>) -> AgUiEvent {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "approvalId".to_string(),
+        Value::String(context.approval_id.clone()),
+    );
+    payload.insert(
+        "principalId".to_string(),
+        Value::String(context.principal_id.clone()),
+    );
+    payload.insert("action".to_string(), Value::String(context.action.clone()));
+    payload.insert(
+        "resourceId".to_string(),
+        Value::String(context.resource_id.clone()),
+    );
+    payload.insert(
+        "expiresAt".to_string(),
+        Value::String(context.expires_at.to_rfc3339()),
+    );
+    if let Some(reason) = &context.reason {
+        payload.insert("reason".to_string(), Value::String(reason.clone()));
+    }
+    if let Some(id) = tool_call_id {
+        payload.insert("toolCallId".to_string(), Value::String(id.to_string()));
+    }
+    AgUiEvent {
+        event_type: EVENT_APPROVAL_REQUEST.to_string(),
+        payload: Value::Object(payload),
+    }
+}
 ///
 /// Carries the tool-call id (when known) so a client can correlate the error
 /// with the call it started. This is the "benign replacement" the client sees

@@ -1,0 +1,11 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-03T12:25:41Z",
+  "outputs": [
+    "plan.md"
+  ],
+  "nextStage": "execute",
+  "summaryForNext": "8 changes ordered by effort+dependency: budget/rate-limit → MCP RS → policy engine → per-tool authz → audit → HITL → guardrail-hook → web UI. Each annotated with its library-candidate decision. First to apply: add-budget-rate-limiting (lowest risk, extends existing code). Backend: OpenSpec.",
+  "skipped": false,
+  "skipReason": null
+}

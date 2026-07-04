@@ -2,12 +2,14 @@
 ///
 /// Splits the upstream response on `\n`, parses each line as a JSON object,
 /// runs it through the AG-UI/A2UI event chain, and re-emits filtered events.
+use crate::approval::{ApprovalDecision, ApprovalManager};
 use crate::config::types::StreamConfig;
 use crate::stream::a2ui::{A2UiEvent, A2UiProcessor};
 use crate::stream::ag_ui::{AgUiEvent, AgUiProcessor, AgUiTokenCounter};
 use crate::stream::StreamMetrics;
 use bytes::Bytes;
 use std::time::Instant;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// NDJSON stream processor — newline-delimited JSON variant.
 pub struct NdjsonStreamProcessor {
@@ -21,8 +23,19 @@ pub struct NdjsonStreamProcessor {
     user_scopes: Vec<String>,
     metadata: serde_json::Map<String, serde_json::Value>,
     theme: Option<serde_json::Value>,
+    // Optional handle for requesting human-in-the-loop approvals. Kept so the
+    // processor can be reconstructed with the same configuration; the active
+    // sender is already wired into the AG-UI processor at construction time.
+    #[allow(dead_code)]
+    approval_handle: Option<ApprovalHandle>,
     // C1: cap (bytes) on a single NDJSON line buffered without a newline.
     max_event_bytes: usize,
+}
+
+#[derive(Clone)]
+struct ApprovalHandle {
+    manager: ApprovalManager,
+    decision_tx: UnboundedSender<(String, ApprovalDecision)>,
 }
 
 impl NdjsonStreamProcessor {
@@ -45,30 +58,52 @@ impl NdjsonStreamProcessor {
         theme: Option<serde_json::Value>,
         tool_authz: Option<crate::authz::ToolAuthzContext>,
     ) -> Self {
+        Self::with_tool_authz_and_approval(config, user_scopes, metadata, theme, tool_authz, None)
+    }
+
+    /// Create a new processor with optional tool authz and optional human
+    /// approval support.
+    pub fn with_tool_authz_and_approval(
+        config: StreamConfig,
+        user_scopes: Vec<String>,
+        metadata: serde_json::Map<String, serde_json::Value>,
+        theme: Option<serde_json::Value>,
+        tool_authz: Option<crate::authz::ToolAuthzContext>,
+        approval_handle: Option<(ApprovalManager, UnboundedSender<(String, ApprovalDecision)>)>,
+    ) -> Self {
         let max_tool_args_bytes = config
             .ai
             .backpressure
             .max_tool_args_bytes
             .unwrap_or(crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES);
 
+        let approval_handle = approval_handle.map(|(manager, decision_tx)| ApprovalHandle {
+            manager,
+            decision_tx,
+        });
+
         let ag_ui_processor = if config.ai.ag_ui.enabled {
-            Some(
-                AgUiProcessor::new(
-                    config.ai.ag_ui.validate_events,
-                    config.ai.ag_ui.allowed_events.clone(),
-                )
-                .with_tool_authz(tool_authz.clone())
-                .with_max_tool_args_bytes(max_tool_args_bytes),
+            let mut proc = AgUiProcessor::new(
+                config.ai.ag_ui.validate_events,
+                config.ai.ag_ui.allowed_events.clone(),
             )
+            .with_tool_authz(tool_authz.clone())
+            .with_max_tool_args_bytes(max_tool_args_bytes);
+            if let Some(handle) = approval_handle.clone() {
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+            }
+            Some(proc)
         } else {
             None
         };
 
         let a2ui_processor = if config.ai.a2ui.enabled {
-            Some(
-                A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
-                    .with_tool_authz(tool_authz.clone()),
-            )
+            let mut proc = A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
+                .with_tool_authz(tool_authz.clone());
+            if let Some(handle) = approval_handle.clone() {
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+            }
+            Some(proc)
         } else {
             None
         };
@@ -91,7 +126,57 @@ impl NdjsonStreamProcessor {
             user_scopes,
             metadata,
             theme,
+            approval_handle,
         }
+    }
+
+    /// Ids of approvals currently pending in the AG-UI or A2UI processor.
+    pub fn pending_approvals(&self) -> Vec<String> {
+        let mut ids = self
+            .ag_ui_processor
+            .as_ref()
+            .map(|p| p.pending_approval_ids())
+            .unwrap_or_default();
+        ids.extend(
+            self.a2ui_processor
+                .as_ref()
+                .map(|p| p.pending_approval_ids())
+                .unwrap_or_default(),
+        );
+        ids
+    }
+
+    /// Resolve a pending approval, returning the NDJSON bytes to forward.
+    pub fn resolve_approval(
+        &mut self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Option<Bytes> {
+        // Prefer AG-UI; if it owns the id, it releases held tool-call frames.
+        if let Some(ag_ui) = self.ag_ui_processor.as_mut() {
+            if ag_ui
+                .pending_approval_ids()
+                .contains(&approval_id.to_string())
+            {
+                let released = ag_ui.resolve_approval(approval_id, decision);
+                if released.is_empty() {
+                    return None;
+                }
+                self.metrics.passed_events += released.len() as u64;
+                let joined = released
+                    .iter()
+                    .map(AgUiEvent::to_json)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Some(Bytes::from(joined + "\n"));
+            }
+        }
+
+        // Otherwise resolve against the A2UI processor.
+        let a2ui = self.a2ui_processor.as_mut()?;
+        let event = a2ui.resolve_approval(approval_id, decision)?;
+        self.metrics.passed_events += 1;
+        Some(Bytes::from(event.to_json() + "\n"))
     }
 
     /// Process a complete NDJSON line.
@@ -130,6 +215,13 @@ impl NdjsonStreamProcessor {
             if let Some(event) = A2UiEvent::from_json(line) {
                 match a2ui_proc.process(event, &self.user_scopes, self.theme.clone()) {
                     None => {
+                        // Dropped, OR held pending human approval.
+                        if !a2ui_proc.pending_approval_ids().is_empty() {
+                            if let Some(req_event) = a2ui_proc.approval_request_event() {
+                                self.metrics.passed_events += 1;
+                                return Some(req_event.to_json());
+                            }
+                        }
                         self.metrics.dropped_events += 1;
                         return None;
                     }
@@ -229,13 +321,28 @@ impl crate::stream::StreamProcessor for NdjsonStreamProcessor {
     fn termination_payload(&self) -> Vec<u8> {
         b"{\"error\":\"stream limit exceeded\"}\n".to_vec()
     }
+
+    fn pending_approvals(&self) -> Vec<String> {
+        self.pending_approvals()
+    }
+
+    fn resolve_approval(
+        &mut self,
+        approval_id: &str,
+        decision: crate::approval::ApprovalDecision,
+    ) -> Option<Bytes> {
+        self.resolve_approval(approval_id, decision)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::types::{AiStreamConfig, StreamConfig};
+    use crate::approval::{ApprovalDecision, ApprovalManager};
+    use crate::authz::{AuthzEngine, PolicyRecord, ToolAuthzContext};
+    use crate::config::types::{A2UiConfig, AgUiConfig, AiStreamConfig, StreamConfig};
     use crate::stream::StreamProcessor;
+    use std::sync::Arc;
 
     fn passthrough_config() -> StreamConfig {
         StreamConfig {
@@ -276,5 +383,226 @@ mod tests {
         let output2 = proc.process_chunk(b"true}\n").unwrap();
         let s = std::str::from_utf8(&output2).unwrap();
         assert!(s.contains("partial"));
+    }
+
+    // ── add-hitl-approval: NDJSON A2UI/AG-UI pause → approve/deny ───────────
+
+    fn ndjson_ag_ui_enabled_config() -> StreamConfig {
+        StreamConfig {
+            enabled: true,
+            protocol: "ndjson".to_string(),
+            ai: AiStreamConfig {
+                ag_ui: AgUiConfig {
+                    enabled: true,
+                    validate_events: false,
+                    allowed_events: vec![],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        }
+    }
+
+    fn ndjson_a2ui_enabled_config() -> StreamConfig {
+        StreamConfig {
+            enabled: true,
+            protocol: "ndjson".to_string(),
+            ai: AiStreamConfig {
+                a2ui: A2UiConfig {
+                    enabled: true,
+                    allowed_intents: vec![],
+                    theme: None,
+                },
+                ..Default::default()
+            },
+        }
+    }
+
+    fn ctx(engine: AuthzEngine) -> ToolAuthzContext {
+        ToolAuthzContext {
+            engine: Arc::new(engine),
+            principal_id: "alice".to_string(),
+            route_id: "r1".to_string(),
+            audit: None,
+        }
+    }
+
+    fn require_approval_at_end_engine() -> AuthzEngine {
+        AuthzEngine::from_records(&[
+            PolicyRecord {
+                id: "allow_empty".to_string(),
+                policy_text:
+                    r#"permit(principal, action, resource) when { context.arguments == {} };"#
+                        .to_string(),
+                schema_json: None,
+                entities_json: None,
+            },
+            PolicyRecord {
+                id: "require_args".to_string(),
+                policy_text: r#"@require_approval("non-empty arguments")
+                    permit(principal, action, resource) when { context.arguments != {} };"#
+                    .to_string(),
+                schema_json: None,
+                entities_json: None,
+            },
+        ])
+        .expect("compiles")
+    }
+
+    #[test]
+    fn ndjson_a2ui_require_approval_emits_gate_approval_request() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = NdjsonStreamProcessor::with_tool_authz_and_approval(
+            ndjson_a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        let out = proc
+            .process_chunk(
+                br#"{"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+"#,
+            )
+            .unwrap();
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(
+            s.contains("gate:approval_request"),
+            "A2UI tool call must emit approval request: {s}"
+        );
+        assert!(
+            !s.contains(r#""tool_name":"danger""#),
+            "original event must be held: {s}"
+        );
+        assert_eq!(proc.pending_approvals().len(), 1);
+    }
+
+    #[test]
+    fn ndjson_a2ui_approve_releases_held_event() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = NdjsonStreamProcessor::with_tool_authz_and_approval(
+            ndjson_a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            br#"{"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+"#,
+        )
+        .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        let released = proc
+            .resolve_approval(&id, ApprovalDecision::Approve)
+            .unwrap();
+        let s = std::str::from_utf8(&released).unwrap();
+        assert!(
+            s.contains("invoke_tool"),
+            "approved A2UI event must be released: {s}"
+        );
+        assert!(proc.pending_approvals().is_empty());
+    }
+
+    #[test]
+    fn ndjson_a2ui_deny_drops_held_event() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = NdjsonStreamProcessor::with_tool_authz_and_approval(
+            ndjson_a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            br#"{"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+"#,
+        )
+        .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        assert!(
+            proc.resolve_approval(&id, ApprovalDecision::Deny).is_none(),
+            "denied A2UI event must be dropped"
+        );
+        assert!(proc.pending_approvals().is_empty());
+    }
+
+    #[test]
+    fn ndjson_ag_ui_approve_at_end_releases_full_call() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = NdjsonStreamProcessor::with_tool_authz_and_approval(
+            ndjson_ag_ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            b"{\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"c1\",\"toolCallName\":\"x\"}\n",
+        )
+        .unwrap();
+        proc.process_chunk(
+            b"{\"type\":\"TOOL_CALL_ARGS\",\"toolCallId\":\"c1\",\"delta\":\"{\\\"x\\\":1}\"}\n",
+        )
+        .unwrap();
+        proc.process_chunk(b"{\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"c1\"}\n")
+            .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        let released = proc
+            .resolve_approval(&id, ApprovalDecision::Approve)
+            .unwrap();
+        let s = std::str::from_utf8(&released).unwrap();
+        assert!(s.contains("TOOL_CALL_START"), "START released: {s}");
+        assert!(s.contains("TOOL_CALL_END"), "END released: {s}");
+        assert!(proc.pending_approvals().is_empty());
+    }
+
+    #[test]
+    fn ndjson_ag_ui_deny_at_end_emits_run_error() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = NdjsonStreamProcessor::with_tool_authz_and_approval(
+            ndjson_ag_ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            b"{\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"c1\",\"toolCallName\":\"x\"}\n",
+        )
+        .unwrap();
+        proc.process_chunk(
+            b"{\"type\":\"TOOL_CALL_ARGS\",\"toolCallId\":\"c1\",\"delta\":\"{\\\"x\\\":1}\"}\n",
+        )
+        .unwrap();
+        proc.process_chunk(b"{\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"c1\"}\n")
+            .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        let released = proc.resolve_approval(&id, ApprovalDecision::Deny).unwrap();
+        let s = std::str::from_utf8(&released).unwrap();
+        assert!(
+            s.contains("RUN_ERROR"),
+            "denied AG-UI call must emit RUN_ERROR: {s}"
+        );
+        assert!(proc.pending_approvals().is_empty());
     }
 }

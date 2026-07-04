@@ -16,6 +16,7 @@ use crate::config::{
     LookupRegistry, TemplateContext, TemplateEngine,
 };
 use crate::db::{AuthzAuditDecision, AuthzAuditRecord, Database, UsageEvent};
+use crate::guardrail::{build_guardrail, GuardrailInput, GuardrailOutcome};
 use crate::proxy::SharedRouter;
 use crate::stream::{NdjsonStreamProcessor, SseStreamProcessor, StreamProcessor};
 use axum::{
@@ -62,6 +63,9 @@ pub struct AppState {
     /// The `Authorize` pre-request hook evaluates route-level decisions against
     /// the live policy bundle held here.
     pub authz: Arc<crate::authz::AuthzEngine>,
+    /// Shared human-in-the-loop approval routing table. Each stream task
+    /// registers its pending approvals here; the Admin API resolves them.
+    pub approval_manager: crate::approval::ApprovalManager,
     /// Shared Redis-backed window counters for authoritative token budgets and
     /// request-rate limits. `None` when the `redis-l2` feature is disabled or
     /// Redis is not configured — callers then use the Postgres windowed sum.
@@ -279,7 +283,7 @@ async fn handle_request(
 
     let mut template_ctx = TemplateContext::new(
         identity.to_value(),
-        body_value,
+        body_value.clone(),
         request_id.to_string(),
         api_key_ctx,
     );
@@ -434,6 +438,56 @@ async fn handle_request(
                     );
                 }
             }
+            PreRequestHook::Guardrail { config } => {
+                let guard = build_guardrail(&config.guard);
+                let input = GuardrailInput {
+                    request_id: request_id.to_string(),
+                    route_id: route_id.clone(),
+                    principal_id: identity.id.clone(),
+                    method: method_str.to_string(),
+                    path: path.to_string(),
+                    headers: headers
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            v.to_str()
+                                .ok()
+                                .map(|s| (k.as_str().to_string(), s.to_string()))
+                        })
+                        .collect(),
+                    body: body_value.clone(),
+                };
+                let outcome = guard.inspect(&input).await;
+                match outcome {
+                    GuardrailOutcome::Allow => {}
+                    GuardrailOutcome::Block { reason } => {
+                        if config.enforce {
+                            warn!(
+                                request_id = %request_id,
+                                user_id = %identity.id,
+                                route_id = %route_id,
+                                "guardrail blocked request"
+                            );
+                            let msg = config.error_message.clone().unwrap_or(reason);
+                            return Ok(guardrail_blocked_response(&msg));
+                        }
+                        warn!(
+                            request_id = %request_id,
+                            user_id = %identity.id,
+                            route_id = %route_id,
+                            "guardrail would block (enforce=false) — allowing request"
+                        );
+                    }
+                    GuardrailOutcome::Annotate { labels } => {
+                        info!(
+                            request_id = %request_id,
+                            user_id = %identity.id,
+                            route_id = %route_id,
+                            labels = ?labels,
+                            "guardrail annotation"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -583,21 +637,31 @@ async fn handle_request(
         let tool_authz_ctx =
             build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id);
 
+        // Human-in-the-loop approvals: each stream gets a private notification
+        // channel. The shared ApprovalManager routes Admin API decisions back
+        // to this task using the channel; the task then asks the processor to
+        // release the buffered call.
+        let (approval_tx, mut approval_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, crate::approval::ApprovalDecision)>();
+        let approval_handle = Some((state.approval_manager.clone(), approval_tx));
+
         // Protocol dispatch: create the appropriate processor
         let processor: Box<dyn StreamProcessor> = match stream_config.protocol.as_str() {
-            "ndjson" => Box::new(NdjsonStreamProcessor::with_tool_authz(
+            "ndjson" => Box::new(NdjsonStreamProcessor::with_tool_authz_and_approval(
                 stream_config.clone(),
                 user_scopes.clone(),
                 ag_ui_metadata.clone(),
                 a2ui_theme.clone(),
                 tool_authz_ctx.clone(),
+                approval_handle.clone(),
             )),
-            _ => Box::new(SseStreamProcessor::with_tool_authz(
+            _ => Box::new(SseStreamProcessor::with_tool_authz_and_approval(
                 stream_config.clone(),
                 user_scopes.clone(),
                 ag_ui_metadata.clone(),
                 a2ui_theme.clone(),
                 tool_authz_ctx.clone(),
+                approval_handle.clone(),
             )),
         };
 
@@ -648,33 +712,58 @@ async fn handle_request(
         tokio::spawn(async move {
             let mut byte_stream = upstream_response.bytes_stream();
             loop {
-                tokio::select! {
-                    biased;
-                    _ = stream_cancel.cancelled() => {
-                        let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
-                        break;
+                // When approvals are pending we pause upstream reads and wait
+                // for decisions. This keeps the buffered tool call from
+                // receiving further events until the human/frontend resolves it.
+                if processor.pending_approvals().is_empty() {
+                    tokio::select! {
+                        biased;
+                        _ = stream_cancel.cancelled() => {
+                            let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                            break;
+                        }
+                        chunk = byte_stream.next() => {
+                            match chunk {
+                                Some(Ok(bytes)) => {
+                                    match processor.process_chunk(&bytes) {
+                                        Some(processed) if !processed.is_empty() => {
+                                            if tx.send(Ok(processed)).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        None => {
+                                            let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                                            break;
+                                        }
+                                        Some(_) => {}
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    let _ = tx.send(Err(std::io::Error::other(e))).await;
+                                    break;
+                                }
+                                None => break,
+                            }
+                        }
                     }
-                    chunk = byte_stream.next() => {
-                        match chunk {
-                            Some(Ok(bytes)) => {
-                                match processor.process_chunk(&bytes) {
-                                    Some(processed) if !processed.is_empty() => {
-                                        if tx.send(Ok(processed)).await.is_err() {
+                } else {
+                    tokio::select! {
+                        biased;
+                        _ = stream_cancel.cancelled() => {
+                            let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                            break;
+                        }
+                        decision = approval_rx.recv() => {
+                            match decision {
+                                Some((approval_id, dec)) => {
+                                    if let Some(bytes) = processor.resolve_approval(&approval_id, dec) {
+                                        if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
                                             break;
                                         }
                                     }
-                                    None => {
-                                        let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
-                                        break;
-                                    }
-                                    Some(_) => {}
                                 }
+                                None => break,
                             }
-                            Some(Err(e)) => {
-                                let _ = tx.send(Err(std::io::Error::other(e))).await;
-                                break;
-                            }
-                            None => break,
                         }
                     }
                 }
@@ -977,6 +1066,20 @@ fn forbidden_response(msg: &str) -> Response {
         .unwrap_or_else(|_| StatusCode::FORBIDDEN.into_response())
 }
 
+/// Build the `400 Bad Request` JSON response used when a `Guardrail` hook blocks:
+/// `{"error":"guardrail_blocked","message":<msg>}`. The guardrail is a
+/// content-level rejection, so 400 is the closest semantic match (the request
+/// itself is unacceptable) while staying distinct from 403 authorization denials.
+fn guardrail_blocked_response(msg: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"error": "guardrail_blocked", "message": msg}).to_string(),
+        ))
+        .unwrap_or_else(|_| StatusCode::BAD_REQUEST.into_response())
+}
+
 /// Read the lifetime (all-time) usage a lookup registry pre-resolved for
 /// `user_id`. The key is `usage_budget(<user_id>)`; a missing or unparseable
 /// value yields `0` (fail-open). This mirrors the original inline lifetime read
@@ -1162,6 +1265,24 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "forbidden");
         assert_eq!(json["message"], "nope");
+    }
+
+    // -- Guardrail hook: 400 response shape --
+
+    #[tokio::test]
+    async fn guardrail_blocked_response_is_400_json_with_guardrail_blocked_error() {
+        let resp = guardrail_blocked_response("sensitive content detected");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "guardrail_blocked");
+        assert_eq!(json["message"], "sensitive content detected");
     }
 
     #[test]

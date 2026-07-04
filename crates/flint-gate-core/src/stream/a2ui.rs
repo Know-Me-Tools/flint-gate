@@ -2,10 +2,14 @@
 ///
 /// A2UI events are SSE frames with an `intent` field that commands the
 /// frontend to perform actions (render components, navigate, show modals, etc.)
-use crate::authz::ToolAuthzContext;
+use crate::approval::{ApprovalDecision, ApprovalError, ApprovalManager};
+use crate::authz::{ApprovalContext, AuthzDecision, ToolAuthzContext};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::time::Instant;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Known A2UI intent type strings.
 pub const INTENT_RENDER_COMPONENT: &str = "render_component";
@@ -15,6 +19,11 @@ pub const INTENT_SHOW_MODAL: &str = "show_modal";
 pub const INTENT_SHOW_TOAST: &str = "show_toast";
 pub const INTENT_REQUEST_INPUT: &str = "request_input";
 pub const INTENT_STREAM_CONTENT: &str = "stream_content";
+
+/// Synthetic A2UI intent emitted by the gate when a tool call requires human
+/// approval. Frontends that understand A2UI can render an approval prompt for
+/// this intent.
+pub const INTENT_GATE_APPROVAL_REQUEST: &str = "gate:approval_request";
 
 /// A parsed A2UI event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +96,37 @@ pub fn required_scope(intent: &str) -> &'static str {
     }
 }
 
+/// Handle used by the A2UI processor to register approvals and emit decision
+/// notifications back to the stream task.
+#[derive(Clone)]
+struct ApprovalHandle {
+    manager: ApprovalManager,
+    decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+}
+
+impl ApprovalHandle {
+    /// Register a new approval request. Returns the approval id on success.
+    fn request(&self, context: ApprovalContext) -> Result<String, ApprovalError> {
+        let id = context.approval_id.clone();
+        let ttl = context
+            .expires_at
+            .signed_duration_since(chrono::Utc::now())
+            .to_std()
+            .unwrap_or(crate::approval::DEFAULT_APPROVAL_TTL);
+        let expires_at = Instant::now() + ttl;
+        self.manager
+            .register(id.clone(), expires_at, self.decision_tx.clone())?;
+        Ok(id)
+    }
+}
+
+/// An A2UI event that is being held pending human approval.
+#[derive(Clone)]
+struct PendingA2UiApproval {
+    held_event: A2UiEvent,
+    context: ApprovalContext,
+}
+
 /// Processes A2UI events: filters by intent and scope.
 #[derive(Clone)]
 pub struct A2UiProcessor {
@@ -96,6 +136,13 @@ pub struct A2UiProcessor {
     /// for routes without authz — the common path, where A2UI intents are
     /// UI-directive and carry no tool call.
     tool_authz: Option<ToolAuthzContext>,
+    /// Optional handle to request human approvals. When absent, any
+    /// `RequireApproval` decision is treated as a deny (fail-closed).
+    approval_handle: Option<ApprovalHandle>,
+    /// A single A2UI event awaiting human approval. A2UI events are stateless
+    /// and one-at-a-time within the stream, so at most one approval is pending
+    /// per processor.
+    pending_approval: RefCell<Option<PendingA2UiApproval>>,
 }
 
 impl A2UiProcessor {
@@ -108,6 +155,8 @@ impl A2UiProcessor {
         Self {
             allowed_intents: allowed,
             tool_authz: None,
+            approval_handle: None,
+            pending_approval: RefCell::new(None),
         }
     }
 
@@ -117,9 +166,23 @@ impl A2UiProcessor {
         self
     }
 
+    /// Attach an approval handle so the processor can request human-in-the-loop
+    /// decisions. Builder-style.
+    pub fn with_approval_handle(
+        mut self,
+        manager: ApprovalManager,
+        decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+    ) -> Self {
+        self.approval_handle = Some(ApprovalHandle {
+            manager,
+            decision_tx,
+        });
+        self
+    }
+
     /// Process an A2UI event, applying intent filtering and optional scope check.
     ///
-    /// Returns `None` if the event should be dropped.
+    /// Returns `None` if the event should be dropped or held for approval.
     pub fn process(
         &self,
         mut event: A2UiEvent,
@@ -143,29 +206,152 @@ impl A2UiProcessor {
             return None;
         }
 
-        // Task 4: per-tool authorization for A2UI intents that embed a tool
-        // invocation. The canonical intent set embeds none (this is a no-op for
-        // them), but a tool-bearing intent is authorized like an AG-UI tool
-        // call and dropped on Deny (fail-closed).
-        if let Some(authz) = &self.tool_authz {
-            if let Some((tool_name, args)) = event.embedded_tool_call() {
-                if !authz.authorize(tool_name, args).is_allow() {
-                    tracing::info!(
-                        intent = %event.intent,
-                        tool = %tool_name,
-                        "A2UI embedded tool call denied by policy — dropping"
-                    );
-                    return None;
-                }
-            }
-        }
-
-        // Inject theme for render_component
+        // Inject theme for render_component before any hold, so the buffered
+        // event is ready to forward as-is on approval.
         if let Some(theme_value) = theme {
             event.inject_theme(theme_value);
         }
 
+        // Task 4: per-tool authorization for A2UI intents that embed a tool
+        // invocation. The canonical intent set embeds none (this is a no-op for
+        // them), but a tool-bearing intent is authorized like an AG-UI tool
+        // call and dropped on Deny (fail-closed). RequireApproval pauses the
+        // stream and emits an approval request.
+        if let Some(authz) = &self.tool_authz {
+            if let Some((tool_name, args)) = event.clone().embedded_tool_call() {
+                match authz.authorize(tool_name, args) {
+                    AuthzDecision::Allow => {}
+                    AuthzDecision::RequireApproval(ctx) => {
+                        return self.request_approval(event, ctx, tool_name);
+                    }
+                    AuthzDecision::Deny => {
+                        tracing::info!(
+                            intent = %event.intent,
+                            tool = %tool_name,
+                            "A2UI embedded tool call denied by policy — dropping"
+                        );
+                        return None;
+                    }
+                }
+            }
+        }
+
         Some(event)
+    }
+
+    /// Ids of approval requests currently pending for this stream.
+    pub fn pending_approval_ids(&self) -> Vec<String> {
+        self.pending_approval
+            .borrow()
+            .as_ref()
+            .map(|p| vec![p.context.approval_id.clone()])
+            .unwrap_or_default()
+    }
+
+    /// Metadata for any approval request currently pending.
+    pub fn approval_contexts(&self) -> Vec<ApprovalContext> {
+        self.pending_approval
+            .borrow()
+            .as_ref()
+            .map(|p| p.context.clone())
+            .into_iter()
+            .collect()
+    }
+
+    /// Build the synthetic approval-request event for the current pending
+    /// approval, if any. The caller uses this to emit the request over the
+    /// stream while upstream reads are paused.
+    pub fn approval_request_event(&self) -> Option<A2UiEvent> {
+        let pending = self.pending_approval.borrow();
+        pending
+            .as_ref()
+            .map(|p| build_approval_request_event(&p.context, &p.held_event.intent))
+    }
+
+    /// Resolve a pending approval. Returns the held A2UI event on approve, or
+    /// `None` on deny (or if the id does not match the pending approval).
+    pub fn resolve_approval(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Option<A2UiEvent> {
+        let pending = self.pending_approval.borrow_mut().take()?;
+        if pending.context.approval_id != approval_id {
+            // Not the approval we are holding; restore it.
+            self.pending_approval.borrow_mut().replace(pending);
+            return None;
+        }
+
+        match decision {
+            ApprovalDecision::Approve => {
+                tracing::info!(
+                    approval_id,
+                    intent = %pending.held_event.intent,
+                    "human approval granted — resuming A2UI event"
+                );
+                Some(pending.held_event)
+            }
+            ApprovalDecision::Deny => {
+                tracing::info!(
+                    approval_id,
+                    intent = %pending.held_event.intent,
+                    "human approval denied — dropping A2UI event"
+                );
+                None
+            }
+        }
+    }
+
+    fn request_approval(
+        &self,
+        event: A2UiEvent,
+        context: ApprovalContext,
+        tool_name: &str,
+    ) -> Option<A2UiEvent> {
+        // A2UI approvals are single-event; if one is already pending, the new
+        // event is dropped. This is consistent with fail-closed pause behavior.
+        if self.pending_approval.borrow().is_some() {
+            tracing::warn!(
+                intent = %event.intent,
+                tool = %tool_name,
+                "A2UI approval already pending — dropping new tool call"
+            );
+            return None;
+        }
+
+        let Some(handle) = &self.approval_handle else {
+            tracing::warn!(
+                intent = %event.intent,
+                tool = %tool_name,
+                "approval required but no approval manager configured — denying (fail-closed)"
+            );
+            return None;
+        };
+
+        let id = context.approval_id.clone();
+        if let Err(e) = handle.request(context.clone()) {
+            tracing::error!(
+                approval_id = %id,
+                error = %e,
+                "failed to register A2UI approval request — denying (fail-closed)"
+            );
+            return None;
+        }
+
+        self.pending_approval
+            .borrow_mut()
+            .replace(PendingA2UiApproval {
+                held_event: event,
+                context,
+            });
+
+        tracing::info!(
+            approval_id = %id,
+            intent = %self.pending_approval.borrow().as_ref().unwrap().held_event.intent,
+            tool = %tool_name,
+            "A2UI tool call requires human approval — pausing stream"
+        );
+        None
     }
 
     /// Check whether any of the user's scopes permit the given intent.
@@ -192,6 +378,40 @@ impl A2UiProcessor {
             .filter(|s| !s.is_empty())
             .collect();
         self.process(event, &scopes, theme)
+    }
+}
+
+/// Build a synthetic A2UI `gate:approval_request` event asking a human operator
+/// to approve an A2UI-embedded tool call.
+fn build_approval_request_event(context: &ApprovalContext, original_intent: &str) -> A2UiEvent {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "approvalId".to_string(),
+        Value::String(context.approval_id.clone()),
+    );
+    payload.insert(
+        "principalId".to_string(),
+        Value::String(context.principal_id.clone()),
+    );
+    payload.insert("action".to_string(), Value::String(context.action.clone()));
+    payload.insert(
+        "resourceId".to_string(),
+        Value::String(context.resource_id.clone()),
+    );
+    payload.insert(
+        "expiresAt".to_string(),
+        Value::String(context.expires_at.to_rfc3339()),
+    );
+    payload.insert(
+        "intent".to_string(),
+        Value::String(original_intent.to_string()),
+    );
+    if let Some(reason) = &context.reason {
+        payload.insert("reason".to_string(), Value::String(reason.clone()));
+    }
+    A2UiEvent {
+        intent: INTENT_GATE_APPROVAL_REQUEST.to_string(),
+        payload: Value::Object(payload),
     }
 }
 
@@ -370,5 +590,122 @@ mod tests {
             proc.process(ev, &[], None).is_some(),
             "UI-directive intents are not tool calls and must pass"
         );
+    }
+
+    // ── add-hitl-approval: A2UI embedded tool-call approval ───────────────
+
+    #[test]
+    fn a2ui_require_approval_holds_event_and_emits_request() {
+        let policy = r#"@require_approval("Sensitive A2UI tool")
+            permit(principal, action, resource);"#;
+        let proc = A2UiProcessor::new(vec![])
+            .with_tool_authz(Some(ctx(policy)))
+            .with_approval_handle(
+                ApprovalManager::new(),
+                tokio::sync::mpsc::unbounded_channel().0,
+            );
+        let ev = A2UiEvent {
+            intent: "invoke_tool".to_string(),
+            payload: json!({"tool_name": "danger", "arguments": {"x": 1}}),
+        };
+
+        // Event is held pending approval.
+        assert!(proc.process(ev.clone(), &[], None).is_none());
+
+        let ids = proc.pending_approval_ids();
+        assert_eq!(ids.len(), 1);
+
+        let req = proc
+            .approval_request_event()
+            .expect("approval request emitted");
+        assert_eq!(req.intent, INTENT_GATE_APPROVAL_REQUEST);
+        assert_eq!(req.payload["intent"], "invoke_tool");
+        assert_eq!(req.payload["action"], "call_tool");
+        assert_eq!(req.payload["resourceId"], "danger");
+        assert_eq!(req.payload["approvalId"], ids[0]);
+    }
+
+    #[test]
+    fn a2ui_approve_releases_held_event() {
+        let policy = r#"@require_approval("")
+            permit(principal, action, resource);"#;
+        let proc = A2UiProcessor::new(vec![])
+            .with_tool_authz(Some(ctx(policy)))
+            .with_approval_handle(
+                ApprovalManager::new(),
+                tokio::sync::mpsc::unbounded_channel().0,
+            );
+        let ev = A2UiEvent {
+            intent: "invoke_tool".to_string(),
+            payload: json!({"tool_name": "ok"}),
+        };
+
+        assert!(proc.process(ev.clone(), &[], None).is_none());
+        let id = proc.pending_approval_ids()[0].clone();
+
+        let released = proc.resolve_approval(&id, ApprovalDecision::Approve);
+        let released = released.expect("event released on approve");
+        assert_eq!(released.intent, "invoke_tool");
+        assert!(proc.pending_approval_ids().is_empty());
+    }
+
+    #[test]
+    fn a2ui_deny_drops_held_event() {
+        let policy = r#"@require_approval("no")
+            permit(principal, action, resource);"#;
+        let proc = A2UiProcessor::new(vec![])
+            .with_tool_authz(Some(ctx(policy)))
+            .with_approval_handle(
+                ApprovalManager::new(),
+                tokio::sync::mpsc::unbounded_channel().0,
+            );
+        let ev = A2UiEvent {
+            intent: "invoke_tool".to_string(),
+            payload: json!({"tool_name": "nope"}),
+        };
+
+        assert!(proc.process(ev, &[], None).is_none());
+        let id = proc.pending_approval_ids()[0].clone();
+
+        assert!(proc.resolve_approval(&id, ApprovalDecision::Deny).is_none());
+        assert!(proc.pending_approval_ids().is_empty());
+    }
+
+    #[test]
+    fn a2ui_require_approval_without_handle_fails_closed() {
+        let policy = r#"@require_approval("")
+            permit(principal, action, resource);"#;
+        let proc = A2UiProcessor::new(vec![]).with_tool_authz(Some(ctx(policy)));
+        let ev = A2UiEvent {
+            intent: "invoke_tool".to_string(),
+            payload: json!({"tool_name": "ok"}),
+        };
+
+        assert!(proc.process(ev, &[], None).is_none());
+        assert!(proc.pending_approval_ids().is_empty());
+    }
+
+    #[test]
+    fn a2ui_resolve_wrong_id_leaves_pending_intact() {
+        let policy = r#"@require_approval("")
+            permit(principal, action, resource);"#;
+        let proc = A2UiProcessor::new(vec![])
+            .with_tool_authz(Some(ctx(policy)))
+            .with_approval_handle(
+                ApprovalManager::new(),
+                tokio::sync::mpsc::unbounded_channel().0,
+            );
+        let ev = A2UiEvent {
+            intent: "invoke_tool".to_string(),
+            payload: json!({"tool_name": "ok"}),
+        };
+
+        assert!(proc.process(ev, &[], None).is_none());
+        assert_eq!(proc.pending_approval_ids().len(), 1);
+
+        assert!(proc
+            .resolve_approval("wrong-id", ApprovalDecision::Approve)
+            .is_none());
+        assert_eq!(proc.pending_approval_ids().len(), 1);
     }
 }

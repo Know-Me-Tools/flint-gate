@@ -2,11 +2,13 @@
 ///
 /// Buffers partial SSE lines, assembles complete events, dispatches through
 /// AG-UI/A2UI processors, tracks metrics, and enforces backpressure limits.
+use crate::approval::{ApprovalDecision, ApprovalManager};
 use crate::config::types::StreamConfig;
 use crate::stream::a2ui::{A2UiEvent, A2UiProcessor};
 use crate::stream::ag_ui::{AgUiEvent, AgUiProcessor, AgUiTokenCounter};
 use bytes::Bytes;
 use std::time::Instant;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Metrics collected during SSE stream processing.
 #[derive(Debug, Clone, Default)]
@@ -67,11 +69,23 @@ pub struct SseStreamProcessor {
     // Per-tool-call authorization context (also used to filter tools/list
     // responses that arrive wrapped in an SSE data frame). `None` → unaffected.
     tool_authz: Option<crate::authz::ToolAuthzContext>,
+    // Optional handle for requesting human-in-the-loop approvals. Kept so the
+    // processor can be reconstructed with the same configuration; the active
+    // sender is already wired into the AG-UI processor at construction time.
+    #[allow(dead_code)]
+    approval_handle: Option<ApprovalHandle>,
     // C1: cap (bytes) on a single assembled event's `data:` payload and on the
     // raw line buffer. Exceeding it terminates the stream (fail-closed).
     max_event_bytes: usize,
     // Running byte total of the current event's buffered `data:` lines.
     current_event_bytes: usize,
+}
+
+/// Bundle of approval manager + decision channel for a stream processor.
+#[derive(Clone)]
+struct ApprovalHandle {
+    manager: ApprovalManager,
+    decision_tx: UnboundedSender<(String, ApprovalDecision)>,
 }
 
 impl SseStreamProcessor {
@@ -95,6 +109,19 @@ impl SseStreamProcessor {
         theme: Option<serde_json::Value>,
         tool_authz: Option<crate::authz::ToolAuthzContext>,
     ) -> Self {
+        Self::with_tool_authz_and_approval(config, user_scopes, metadata, theme, tool_authz, None)
+    }
+
+    /// Create a new processor with optional tool authz and optional human
+    /// approval support.
+    pub fn with_tool_authz_and_approval(
+        config: StreamConfig,
+        user_scopes: Vec<String>,
+        metadata: serde_json::Map<String, serde_json::Value>,
+        theme: Option<serde_json::Value>,
+        tool_authz: Option<crate::authz::ToolAuthzContext>,
+        approval_handle: Option<(ApprovalManager, UnboundedSender<(String, ApprovalDecision)>)>,
+    ) -> Self {
         let max_event_bytes = config
             .ai
             .backpressure
@@ -106,24 +133,33 @@ impl SseStreamProcessor {
             .max_tool_args_bytes
             .unwrap_or(crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES);
 
+        let approval_handle = approval_handle.map(|(manager, decision_tx)| ApprovalHandle {
+            manager,
+            decision_tx,
+        });
+
         let ag_ui_processor = if config.ai.ag_ui.enabled {
-            Some(
-                AgUiProcessor::new(
-                    config.ai.ag_ui.validate_events,
-                    config.ai.ag_ui.allowed_events.clone(),
-                )
-                .with_tool_authz(tool_authz.clone())
-                .with_max_tool_args_bytes(max_tool_args_bytes),
+            let mut proc = AgUiProcessor::new(
+                config.ai.ag_ui.validate_events,
+                config.ai.ag_ui.allowed_events.clone(),
             )
+            .with_tool_authz(tool_authz.clone())
+            .with_max_tool_args_bytes(max_tool_args_bytes);
+            if let Some(handle) = approval_handle.clone() {
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+            }
+            Some(proc)
         } else {
             None
         };
 
         let a2ui_processor = if config.ai.a2ui.enabled {
-            Some(
-                A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
-                    .with_tool_authz(tool_authz.clone()),
-            )
+            let mut proc = A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
+                .with_tool_authz(tool_authz.clone());
+            if let Some(handle) = approval_handle.clone() {
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+            }
+            Some(proc)
         } else {
             None
         };
@@ -139,6 +175,7 @@ impl SseStreamProcessor {
             token_counter: AgUiTokenCounter::default(),
             started_at: Instant::now(),
             tool_authz,
+            approval_handle,
             user_scopes,
             metadata,
             theme,
@@ -357,6 +394,14 @@ impl SseStreamProcessor {
             if let Some(event) = A2UiEvent::from_json(&data_str) {
                 match a2ui_proc.process(event, &self.user_scopes, self.theme.clone()) {
                     None => {
+                        // Dropped, OR held pending human approval.
+                        if !a2ui_proc.pending_approval_ids().is_empty() {
+                            if let Some(req_event) = a2ui_proc.approval_request_event() {
+                                self.metrics.passed_events += 1;
+                                let json = req_event.to_json();
+                                return Some(prefix(json));
+                            }
+                        }
                         self.metrics.dropped_events += 1;
                         return None;
                     }
@@ -404,6 +449,55 @@ impl SseStreamProcessor {
         self.metrics.duration_ms = self.started_at.elapsed().as_millis() as u64;
         self.metrics.estimated_tokens = self.token_counter.estimated_tokens();
         self.metrics
+    }
+
+    /// Ids of approvals currently pending in the AG-UI or A2UI processor.
+    pub fn pending_approvals(&self) -> Vec<String> {
+        let mut ids = self
+            .ag_ui_processor
+            .as_ref()
+            .map(|p| p.pending_approval_ids())
+            .unwrap_or_default();
+        ids.extend(
+            self.a2ui_processor
+                .as_ref()
+                .map(|p| p.pending_approval_ids())
+                .unwrap_or_default(),
+        );
+        ids
+    }
+
+    /// Resolve a pending approval, returning the SSE bytes to forward.
+    pub fn resolve_approval(
+        &mut self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Option<Bytes> {
+        // Prefer AG-UI; if it owns the id, it releases held tool-call frames.
+        if let Some(ag_ui) = self.ag_ui_processor.as_mut() {
+            if ag_ui
+                .pending_approval_ids()
+                .contains(&approval_id.to_string())
+            {
+                let released = ag_ui.resolve_approval(approval_id, decision);
+                if released.is_empty() {
+                    return None;
+                }
+                self.metrics.passed_events += released.len() as u64;
+                let framed: Vec<String> = released
+                    .iter()
+                    .map(|ev| format!("data: {}", ev.to_json()))
+                    .collect();
+                return Some(Bytes::from(framed.join("\n\n")));
+            }
+        }
+
+        // Otherwise resolve against the A2UI processor.
+        let a2ui = self.a2ui_processor.as_mut()?;
+        let event = a2ui.resolve_approval(approval_id, decision)?;
+        self.metrics.passed_events += 1;
+        let json = event.to_json();
+        Some(Bytes::from(format!("data: {}\n\n", json)))
     }
 }
 
@@ -658,5 +752,240 @@ mod tests {
             s.contains("TOOL_CALL_START"),
             "unaffected without authz: {s}"
         );
+    }
+
+    // ── add-hitl-approval: SSE A2UI/AG-UI pause → approve/deny ─────────────
+
+    use crate::approval::{ApprovalDecision, ApprovalManager};
+
+    fn a2ui_enabled_config() -> StreamConfig {
+        StreamConfig {
+            enabled: true,
+            protocol: "sse".to_string(),
+            ai: AiStreamConfig {
+                a2ui: crate::config::types::A2UiConfig {
+                    enabled: true,
+                    allowed_intents: vec![],
+                    theme: None,
+                },
+                ..Default::default()
+            },
+        }
+    }
+
+    fn require_approval_at_end_engine() -> AuthzEngine {
+        AuthzEngine::from_records(&[
+            PolicyRecord {
+                id: "allow_empty".to_string(),
+                policy_text:
+                    r#"permit(principal, action, resource) when { context.arguments == {} };"#
+                        .to_string(),
+                schema_json: None,
+                entities_json: None,
+            },
+            PolicyRecord {
+                id: "require_args".to_string(),
+                policy_text: r#"@require_approval("non-empty arguments")
+                    permit(principal, action, resource) when { context.arguments != {} };"#
+                    .to_string(),
+                schema_json: None,
+                entities_json: None,
+            },
+        ])
+        .expect("compiles")
+    }
+
+    #[test]
+    fn sse_a2ui_require_approval_emits_gate_approval_request() {
+        let manager = ApprovalManager::new();
+        let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, _tx)),
+        );
+
+        let input = br#"data: {"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+
+"#;
+        let out = proc.process_chunk(input).unwrap();
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(
+            s.contains("gate:approval_request"),
+            "A2UI tool call must emit approval request: {s}"
+        );
+        assert!(
+            !s.contains(r#""tool_name":"danger""#),
+            "original event must be held: {s}"
+        );
+
+        let ids = proc.pending_approvals();
+        assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn sse_a2ui_approve_releases_held_event() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            br#"data: {"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+
+"#,
+        )
+        .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        let released = proc
+            .resolve_approval(&id, ApprovalDecision::Approve)
+            .unwrap();
+        let s = std::str::from_utf8(&released).unwrap();
+        assert!(
+            s.contains("invoke_tool"),
+            "approved A2UI event must be released: {s}"
+        );
+        assert!(proc.pending_approvals().is_empty());
+    }
+
+    #[test]
+    fn sse_a2ui_deny_drops_held_event() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            br#"data: {"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+
+"#,
+        )
+        .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        assert!(
+            proc.resolve_approval(&id, ApprovalDecision::Deny).is_none(),
+            "denied A2UI event must be dropped"
+        );
+        assert!(proc.pending_approvals().is_empty());
+    }
+
+    #[test]
+    fn sse_ag_ui_require_approval_at_end_emits_gate_approval_request() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            ag_ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"c1\",\"toolCallName\":\"x\"}\n\n",
+        )
+        .unwrap();
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_ARGS\",\"toolCallId\":\"c1\",\"delta\":\"{\\\"x\\\":1}\"}\n\n",
+        )
+        .unwrap();
+        let out = proc
+            .process_chunk(b"data: {\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"c1\"}\n\n")
+            .unwrap();
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(
+            s.contains("GATE_APPROVAL_REQUEST"),
+            "AG-UI tool call at END must emit approval request: {s}"
+        );
+        assert!(!s.contains("TOOL_CALL_START"), "START must be held: {s}");
+
+        let ids = proc.pending_approvals();
+        assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn sse_ag_ui_approve_at_end_releases_full_call() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            ag_ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"c1\",\"toolCallName\":\"x\"}\n\n",
+        )
+        .unwrap();
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_ARGS\",\"toolCallId\":\"c1\",\"delta\":\"{\\\"x\\\":1}\"}\n\n",
+        )
+        .unwrap();
+        proc.process_chunk(b"data: {\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"c1\"}\n\n")
+            .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        let released = proc
+            .resolve_approval(&id, ApprovalDecision::Approve)
+            .unwrap();
+        let s = std::str::from_utf8(&released).unwrap();
+        assert!(s.contains("TOOL_CALL_START"), "START released: {s}");
+        assert!(s.contains("TOOL_CALL_END"), "END released: {s}");
+        assert!(proc.pending_approvals().is_empty());
+    }
+
+    #[test]
+    fn sse_ag_ui_deny_at_end_emits_run_error() {
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            ag_ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx)),
+        );
+
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"c1\",\"toolCallName\":\"x\"}\n\n",
+        )
+        .unwrap();
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_ARGS\",\"toolCallId\":\"c1\",\"delta\":\"{\\\"x\\\":1}\"}\n\n",
+        )
+        .unwrap();
+        proc.process_chunk(b"data: {\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"c1\"}\n\n")
+            .unwrap();
+        let id = proc.pending_approvals()[0].clone();
+
+        let released = proc.resolve_approval(&id, ApprovalDecision::Deny).unwrap();
+        let s = std::str::from_utf8(&released).unwrap();
+        assert!(
+            s.contains("RUN_ERROR"),
+            "denied AG-UI call must emit RUN_ERROR: {s}"
+        );
+        assert!(proc.pending_approvals().is_empty());
     }
 }

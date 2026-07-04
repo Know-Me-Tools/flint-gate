@@ -1,0 +1,6 @@
+- [x] guardrail/ module: guardrail trait (inspect → allow/block/annotate)
+- [x] PreRequestHook::Guardrail config variant + plumbing
+- [x] One trivial reference guard (regex/allowlist)
+- [x] Wire into middleware/pipeline.rs
+- [x] Tests: guard blocks/passes (≥80%)
+- [x] cargo check/clippy/test --workspace

@@ -42,6 +42,24 @@ pub trait StreamProcessor: Send {
 
     /// Protocol-specific error message emitted on termination.
     fn termination_payload(&self) -> Vec<u8>;
+
+    /// Ids of approvals currently pending in this processor. The stream task
+    /// pauses upstream reads and waits for these decisions to arrive.
+    #[allow(dead_code)]
+    fn pending_approvals(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Resolve a pending approval. Returns the bytes to forward to the client,
+    /// or `None` if resolving this approval produced no output.
+    #[allow(dead_code)]
+    fn resolve_approval(
+        &mut self,
+        _approval_id: &str,
+        _decision: crate::approval::ApprovalDecision,
+    ) -> Option<bytes::Bytes> {
+        None
+    }
 }
 
 impl StreamProcessor for SseStreamProcessor {
@@ -59,5 +77,17 @@ impl StreamProcessor for SseStreamProcessor {
 
     fn termination_payload(&self) -> Vec<u8> {
         b"data: {\"type\":\"RUN_ERROR\",\"message\":\"stream limit exceeded\"}\n\n".to_vec()
+    }
+
+    fn pending_approvals(&self) -> Vec<String> {
+        self.pending_approvals()
+    }
+
+    fn resolve_approval(
+        &mut self,
+        approval_id: &str,
+        decision: crate::approval::ApprovalDecision,
+    ) -> Option<bytes::Bytes> {
+        self.resolve_approval(approval_id, decision)
     }
 }

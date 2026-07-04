@@ -1,9 +1,4 @@
 {
-  "previous_phase": "production-readiness",
-  "phase": "sdk-ecosystem-and-docs",
-  "status": "completed",
-  "changes_completed": 12,
-  "changes_total": 12,
-  "next_change": null,
-  "updated_at": "2026-06-27T00:00:00Z"
+  "phase": "agent-authz-control-plane",
+  "change": "add-web-config-ui"
 }

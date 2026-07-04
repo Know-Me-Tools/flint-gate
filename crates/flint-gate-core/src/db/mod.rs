@@ -92,7 +92,198 @@ pub struct Database {
     pool: PgPool,
 }
 
+/// Usage summary for a time window.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSummary {
+    pub total_tokens: i64,
+    pub total_requests: i64,
+    pub total_duration_ms: i64,
+    pub avg_tokens_per_request: f64,
+    pub avg_duration_ms: f64,
+}
+
+/// One point in a token/time usage time series.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageTimeSeriesPoint {
+    pub bucket: String,
+    pub tokens: i64,
+    pub requests: i64,
+}
+
+/// Token usage grouped by route.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteUsage {
+    pub route_id: String,
+    pub tokens: i64,
+    pub requests: i64,
+}
+
+/// Token usage grouped by user.
+#[derive(Debug, Clone, Serialize)]
+pub struct UserUsage {
+    pub user_id: String,
+    pub tokens: i64,
+    pub requests: i64,
+}
+
 impl Database {
+    /// Return aggregate token/request/duration statistics for a time window.
+    /// Both bounds are optional; absence means "all time".
+    pub async fn usage_summary(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<UsageSummary> {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(tokens), 0) AS total_tokens, \
+             COUNT(*) AS total_requests, \
+             COALESCE(SUM(duration_ms), 0) AS total_duration_ms \
+             FROM usage_events \
+             WHERE ($1::timestamptz IS NULL OR created_at >= $1) \
+               AND ($2::timestamptz IS NULL OR created_at <= $2)",
+        )
+        .bind(since)
+        .bind(until)
+        .fetch_one(&self.pool)
+        .await
+        .context("summarizing usage events")?;
+
+        let total_tokens: i64 = row.try_get("total_tokens")?;
+        let total_requests: i64 = row.try_get("total_requests")?;
+        let total_duration_ms: i64 = row.try_get("total_duration_ms")?;
+
+        let avg_tokens_per_request = if total_requests > 0 {
+            total_tokens as f64 / total_requests as f64
+        } else {
+            0.0
+        };
+        let avg_duration_ms = if total_requests > 0 {
+            total_duration_ms as f64 / total_requests as f64
+        } else {
+            0.0
+        };
+
+        Ok(UsageSummary {
+            total_tokens,
+            total_requests,
+            total_duration_ms,
+            avg_tokens_per_request,
+            avg_duration_ms,
+        })
+    }
+
+    /// Return a token/time time series bucketed by the requested interval
+    /// (`hour` or `day`). Empty buckets are not emitted — clients can fill gaps
+    /// if they need a regular grid.
+    pub async fn usage_timeseries(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+        interval: &str,
+    ) -> Result<Vec<UsageTimeSeriesPoint>> {
+        let trunc = match interval {
+            "hour" => "hour",
+            "day" => "day",
+            _ => "day",
+        };
+        let sql = format!(
+            "SELECT date_trunc('{}', created_at) AS bucket, \
+             COALESCE(SUM(tokens), 0) AS tokens, \
+             COUNT(*) AS requests \
+             FROM usage_events \
+             WHERE ($1::timestamptz IS NULL OR created_at >= $1) \
+               AND ($2::timestamptz IS NULL OR created_at <= $2) \
+             GROUP BY bucket \
+             ORDER BY bucket ASC",
+            trunc
+        );
+        let rows = sqlx::query(&sql)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&self.pool)
+            .await
+            .context("querying usage timeseries")?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let bucket: DateTime<Utc> = r.try_get("bucket")?;
+            out.push(UsageTimeSeriesPoint {
+                bucket: bucket.to_rfc3339(),
+                tokens: r.try_get("tokens")?,
+                requests: r.try_get("requests")?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Top routes by token usage for a time window.
+    pub async fn usage_by_route(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<RouteUsage>> {
+        let rows = sqlx::query(
+            "SELECT route_id, COALESCE(SUM(tokens), 0) AS tokens, COUNT(*) AS requests \
+             FROM usage_events \
+             WHERE ($1::timestamptz IS NULL OR created_at >= $1) \
+               AND ($2::timestamptz IS NULL OR created_at <= $2) \
+             GROUP BY route_id \
+             ORDER BY tokens DESC \
+             LIMIT $3",
+        )
+        .bind(since)
+        .bind(until)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("querying usage by route")?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(RouteUsage {
+                route_id: r.try_get("route_id")?,
+                tokens: r.try_get("tokens")?,
+                requests: r.try_get("requests")?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Top users by token usage for a time window.
+    pub async fn usage_by_user(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<UserUsage>> {
+        let rows = sqlx::query(
+            "SELECT user_id, COALESCE(SUM(tokens), 0) AS tokens, COUNT(*) AS requests \
+             FROM usage_events \
+             WHERE ($1::timestamptz IS NULL OR created_at >= $1) \
+               AND ($2::timestamptz IS NULL OR created_at <= $2) \
+             GROUP BY user_id \
+             ORDER BY tokens DESC \
+             LIMIT $3",
+        )
+        .bind(since)
+        .bind(until)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("querying usage by user")?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(UserUsage {
+                user_id: r.try_get("user_id")?,
+                tokens: r.try_get("tokens")?,
+                requests: r.try_get("requests")?,
+            });
+        }
+        Ok(out)
+    }
+
     /// Connect to Postgres and return a `Database`.
     pub async fn connect(url: &str, max_connections: u32) -> Result<Self> {
         let pool = sqlx::postgres::PgPoolOptions::new()

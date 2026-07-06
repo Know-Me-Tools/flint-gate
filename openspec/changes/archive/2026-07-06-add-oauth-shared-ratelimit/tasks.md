@@ -1,0 +1,5 @@
+- [x] Add `oauth.rate_limit.on_backend_unavailable: deny | degrade` config field (serde default: deny) + `RateLimitConfig` plumbing; docs in config.example.yaml
+- [x] Build a Redis-backed `/oauth/*` rate-limit axum layer that calls `RedisRateLimiter::incr_request` keyed by client_id (peer-IP fallback for the pre-auth token surface); de-`#[allow(dead_code)]` incr_request; return 429 past the window
+- [x] Wire the layer in main.rs on the OAuth sub-router: shared limiter when the Redis limiter is present; on Redis-unavailable apply the posture (deny for introspect, degrade→in-process governor + WARN for token)
+- [x] Tests: over-window → 429 (client_id-keyed, cross-call); Redis-unavailable under `deny` → deny (introspect); under `degrade` → in-process governor still enforces + WARN; empty/degenerate config falls back safely
+- [x] Docs: README + config.example.yaml (shared cross-replica limiter, outage posture); `cargo check/clippy/test --workspace` green

@@ -1,6 +1,7 @@
 /// Authentication module — pluggable authenticator trait and built-in implementations.
 pub mod api_key;
 pub mod client_credentials;
+pub mod http_body;
 pub mod identity;
 pub mod introspect;
 pub mod jwks;

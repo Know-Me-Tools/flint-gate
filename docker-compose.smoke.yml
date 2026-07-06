@@ -33,14 +33,16 @@ services:
     environment:
       DATABASE_URL: "postgres://flintgate:flintgate@postgres:5432/flintgate"
       FLINT_GATE_JWT_SECRET: "smoke-test-secret"
-      FLINT_GATE_CONFIG: "/app/config/config.example.yaml"
+      FLINT_GATE_CONFIG: "/app/config/config.smoke.yaml"
       FLINT_GATE_ADMIN_LISTEN: "0.0.0.0:4457"
       RUST_LOG: "info,flint_gate=debug"
     volumes:
-      - ./config.example.yaml:/app/config/config.example.yaml:ro
+      - ./config.smoke.yaml:/app/config/config.smoke.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy
+      hydra-seed:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4457/health >/dev/null"]
@@ -48,6 +50,62 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # ── Ory Hydra (OAuth2 / RFC 8693 reference AS) ───────────────────────────────
+  # Postgres-backed so tokens survive the seed step. `hydra-migrate` runs the
+  # schema once; `hydra` serves the public (4444) + admin (4445) APIs; the
+  # `hydra-seed` init creates the client-credentials test client the E2E uses.
+  hydra-migrate:
+    image: oryd/hydra:v2.2.0
+    command: migrate sql -e --yes
+    environment:
+      DSN: "postgres://flintgate:flintgate@postgres:5432/flintgate?sslmode=disable&max_conns=20&max_idle_conns=4&search_path=hydra"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  hydra:
+    image: oryd/hydra:v2.2.0
+    command: serve all --dev
+    ports:
+      - "4444:4444" # public
+      - "4445:4445" # admin
+    environment:
+      DSN: "postgres://flintgate:flintgate@postgres:5432/flintgate?sslmode=disable&max_conns=20&max_idle_conns=4&search_path=hydra"
+      URLS_SELF_ISSUER: "http://hydra:4444"
+      SECRETS_SYSTEM: "smoke-hydra-system-secret-min-16-chars"
+      STRATEGIES_ACCESS_TOKEN: "jwt" # JWT access tokens so the gateway can verify via JWKS
+    depends_on:
+      hydra-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4445/health/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # One-shot: create the E2E client-credentials client via Hydra's admin API.
+  hydra-seed:
+    image: oryd/hydra:v2.2.0
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        hydra create oauth2-client
+        --endpoint http://hydra:4445
+        --name flint-e2e
+        --grant-type client_credentials
+        --token-endpoint-auth-method client_secret_post
+        --format json
+        --id flint-e2e-client
+        --secret flint-e2e-secret
+        || echo "client may already exist"
+    depends_on:
+      hydra:
+        condition: service_healthy
+    restart: on-failure
 
   # ── Web Admin UI (Vite dev server) ──────────────────────────────────────────
   web:

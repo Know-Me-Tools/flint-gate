@@ -24,6 +24,12 @@ server:
   #     jwks_url: "https://auth.example.com/.well-known/jwks.json"
   #     issuer: "https://auth.example.com"
   #     audience: "flint-admin"
+  # Allow plaintext http:// upstream URLs (Hydra token/admin endpoints). OFF by
+  # default: flint-gate refuses to start with an http:// hydra_token_url or
+  # hydra_admin_url, because those calls forward a subject_token / client
+  # credentials and must not travel in cleartext. Set true ONLY for local dev
+  # against an http:// Hydra (a loud WARN is logged when enabled).
+  allow_insecure_upstream: false
   tls:
     enabled: false
     # cert_path: "/etc/flint-gate/tls/cert.pem"
@@ -103,6 +109,11 @@ token_exchange:
   # hydra_token_url: "https://hydra.example.com/oauth2/token"
   # NOTE: an `actor_token` (multi-hop delegation) is rejected (400 invalid_request)
   # — single-hop `act` only this release.
+  # NOTE: in delegate mode the RELAYED Hydra token carries Hydra's claims, NOT the
+  # gateway's signed flint_kind=agent marker — so delegate-issued tokens are NOT
+  # gateway-classified as Agent and escape the gateway-side agent budget/rate limit
+  # (by design: federate, never an IdP). Watch the share of traffic taking this path
+  # via `flint_delegate_total{result=...}` on the admin metrics endpoint (:4457/metrics).
 
 # ─── OAuth 2.0 (client credentials + introspection) ───────────────────────────
 # client_credentials: service-to-service (non-human) identity. Clients live in
@@ -122,11 +133,20 @@ oauth:
   introspect_auth: true
   # Per-endpoint rate limiting for /oauth/token + /oauth/introspect (independent of
   # server.rate_limit). Throttles the client-credentials guessing surface + the
-  # introspection oracle.
+  # introspection oracle. When a shared Redis limiter is configured (cache.l2) the
+  # counters are authoritative ACROSS REPLICAS; otherwise an in-process governor
+  # applies (per-replica).
   rate_limit:
     enabled: false
     per_second: 5
     burst: 10
+  # What to do if the shared Redis limiter is unreachable mid-request:
+  #   deny    — fail closed (default; REQUIRED posture for the introspection oracle)
+  #   degrade — fall back to the in-process governor + WARN (token endpoint only;
+  #             avoids an availability cliff on a Redis blip)
+  # The introspection endpoint always denies; this setting governs the token
+  # endpoint's fallback and lets an operator force uniform `deny`.
+  on_backend_unavailable: deny
   # service_token_ttl_seconds: 300
   # introspection_delegate:  # only reachable AFTER introspect client-auth
   #   hydra_admin_url: "https://hydra-admin.example.com"

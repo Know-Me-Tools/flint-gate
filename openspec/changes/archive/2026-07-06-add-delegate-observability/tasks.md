@@ -1,0 +1,5 @@
+- [x] Add deps metrics@0.24 + metrics-exporter-prometheus@0.18; install a PrometheusRecorder at startup, expose the render handle
+- [x] Serve GET /metrics on the ADMIN router (private port) returning handle.render(); assert it is NOT mounted on the proxy port
+- [x] Instrument token_exchange.rs delegate paths: flint_delegate_total{result,reason} counter + delegate-latency histogram (success, deny-transport, deny-non2xx, deny-badjson, deny-redirect, deny-actor-token)
+- [x] Document (README + config.example.yaml) that delegate-mode tokens carry Hydra's claims and are NOT flint_kind=agent-classified (no re-stamp — federate, never an IdP); point operators at the delegate metric to observe the bypass volume
+- [x] Tests: /metrics renders the delegate counters after a delegate call; endpoint is admin-port only; counter increments on success and on each deny reason; `cargo check/clippy/test --workspace` green

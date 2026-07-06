@@ -18,8 +18,12 @@
 //! Postgres time-bounded sum (see `Database::get_user_token_total_windowed`).
 
 pub mod governor_layer;
+#[cfg(feature = "redis-l2")]
+pub mod oauth_limit;
 
 pub use governor_layer::{build_governor_layer, CredentialKeyExtractor, RateLimitKey};
+#[cfg(feature = "redis-l2")]
+pub use oauth_limit::{LimitOutcome, OAuthLimiter};
 
 /// Errors raised by the Redis-backed window counters.
 #[derive(Debug, thiserror::Error)]
@@ -123,8 +127,8 @@ return current
         }
 
         /// Increment a request-rate counter by one and return the new window
-        /// total. Key: `flint:ratelimit:{scope}:{id}:{window}`.
-        #[allow(dead_code)]
+        /// total. Key: `flint:ratelimit:{scope}:{id}:{window}`. Used by the
+        /// shared `/oauth/*` limiter (see [`oauth_limit`](super::oauth_limit)).
         pub async fn incr_request(
             &self,
             scope: BudgetScope,

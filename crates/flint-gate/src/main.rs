@@ -139,6 +139,11 @@ async fn main() -> Result<()> {
         .init();
 
     info!("⚡ Flint Gate starting — Strike an idea. Watch it build.");
+
+    // Install the Prometheus recorder (idempotent) so control-plane metrics
+    // (e.g. delegate outcomes) are collected and renderable on /metrics.
+    let _metrics_handle = flint_gate_core::metrics::install_recorder();
+
     info!(config = %cli.config, "loading config");
 
     // 3. Load YAML config
@@ -287,6 +292,10 @@ async fn main() -> Result<()> {
     if rate_limiter.is_some() {
         info!("shared Redis window counters enabled (budgets + request-rate)");
     }
+    // Clone the shared limiter for the OAuth sub-router (built below, after the
+    // limiter is moved into AppState). `RedisRateLimiter` is cheap to clone.
+    #[cfg(feature = "redis-l2")]
+    let oauth_rate_limiter = rate_limiter.clone();
 
     // 10c. Human-in-the-loop approval routing table (in-process default).
     let approval_manager = flint_gate_core::approval::ApprovalManager::new();
@@ -337,10 +346,28 @@ async fn main() -> Result<()> {
     // RFC 7662 `/oauth/introspect`. Each capability is independently gated.
     {
         use flint_gate_core::auth::introspect::TokenVerifier;
-        use flint_gate_core::auth::oauth::{
-            introspect_endpoint, token_endpoint, IntrospectionState, OAuthState,
-        };
+        use flint_gate_core::auth::oauth::{IntrospectionState, OAuthState};
         use flint_gate_core::auth::token_exchange::validate_subject_provider;
+        use flint_gate_core::config::types::OAuthExposurePosture;
+
+        // Exposure gate: refuse to start with an under-guarded /oauth/* surface
+        // on a non-loopback proxy bind (fail-safe — the endpoints are then
+        // internet-reachable and MUST have introspect-auth + rate-limiting).
+        match initial_config.oauth_exposure_posture() {
+            OAuthExposurePosture::RefuseStart => anyhow::bail!(
+                "refusing to start: /oauth/* is mounted on a non-loopback bind \
+                 ({}) without both oauth.introspect_auth and oauth.rate_limit.enabled. \
+                 Enable both, or bind server.listen to loopback for local development.",
+                initial_config.server.listen
+            ),
+            OAuthExposurePosture::AllowLoopback => {
+                info!("OAuth surface on a loopback bind — exposure guardrails not enforced (dev)")
+            }
+            OAuthExposurePosture::Enforce => {
+                info!("OAuth surface exposed with introspect-auth + rate-limiting (guardrails enforced)")
+            }
+            OAuthExposurePosture::NotMounted => {}
+        }
 
         // Token exchange: only when enabled with a fail-closed subject provider.
         let tx_cfg = &initial_config.token_exchange;
@@ -370,6 +397,18 @@ async fn main() -> Result<()> {
                         "token_exchange.delegate_to_hydra is true but hydra_token_url is not set"
                     )
                 })?;
+                // https-only unless explicitly overridden — the delegate forwards
+                // the subject_token, so a plaintext URL leaks it on the wire.
+                flint_gate_core::config::types::validate_upstream_url_scheme(
+                    "token_exchange.hydra_token_url",
+                    &url,
+                    initial_config.server.allow_insecure_upstream,
+                )
+                .map_err(|e| anyhow::anyhow!(e))?;
+                if initial_config.server.allow_insecure_upstream && url.starts_with("http://") {
+                    warn!(token_url = %url,
+                        "INSECURE: forwarding subject_token to a plaintext http:// Hydra token endpoint (allow_insecure_upstream)");
+                }
                 // Dedicated client that does NOT follow redirects: the delegate
                 // forwards the subject_token to a FIXED operator-configured URL,
                 // so a Hydra 3xx must never be followed to another host (that
@@ -394,6 +433,17 @@ async fn main() -> Result<()> {
         };
 
         let oauth_cfg = &initial_config.oauth;
+
+        // Reject a degenerate rate-limit config that would near-totally lock out
+        // the OAuth surface: enabled with per_second == 0 yields a ceiling of 1
+        // (2nd request/min denied). Fail fast at startup rather than silently.
+        if oauth_cfg.rate_limit.enabled && oauth_cfg.rate_limit.per_second == 0 {
+            anyhow::bail!(
+                "oauth.rate_limit.enabled is true but per_second is 0 — this would \
+                 deny after a single request per window. Set per_second >= 1 or \
+                 disable oauth.rate_limit."
+            );
+        }
 
         // Client credentials: needs the DB-backed client store.
         let client_credentials = if oauth_cfg.client_credentials_enabled {
@@ -434,9 +484,34 @@ async fn main() -> Result<()> {
                      ensure /oauth/introspect is network-restricted"
                 );
             }
+            // https-only unless overridden — the introspection delegate proxies
+            // to Hydra's ADMIN API, so a plaintext URL exposes that surface.
+            if let Some(d) = oauth_cfg.introspection_delegate.as_ref() {
+                flint_gate_core::config::types::validate_upstream_url_scheme(
+                    "oauth.introspection_delegate.hydra_admin_url",
+                    &d.hydra_admin_url,
+                    initial_config.server.allow_insecure_upstream,
+                )
+                .map_err(|e| anyhow::anyhow!(e))?;
+                if initial_config.server.allow_insecure_upstream
+                    && d.hydra_admin_url.starts_with("http://")
+                {
+                    warn!(hydra_admin_url = %d.hydra_admin_url,
+                        "INSECURE: introspection delegate targets a plaintext http:// Hydra admin endpoint (allow_insecure_upstream)");
+                }
+            }
+            // Dedicated no-redirect client for the introspection delegate: it
+            // POSTs the caller's token to Hydra's admin endpoint, so a Hydra 3xx
+            // must NOT be followed to another host (token-exfiltration guard —
+            // parity with the token-exchange delegate).
+            let introspect_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .context("building introspection-delegate HTTP client")?;
             Some(IntrospectionState {
                 verifier,
-                http_client: http_client.clone(),
+                http_client: introspect_client,
                 hydra_admin_url: oauth_cfg
                     .introspection_delegate
                     .as_ref()
@@ -455,16 +530,30 @@ async fn main() -> Result<()> {
                 token_exchange,
                 client_credentials,
                 introspection,
+                // Populated by build_oauth_routes when a shared limiter exists.
+                #[cfg(feature = "redis-l2")]
+                token_limiter: None,
+                #[cfg(feature = "redis-l2")]
+                introspect_limiter: None,
             };
-            let mut oauth_router = Router::new()
-                .route("/oauth/token", post(token_endpoint))
-                .route("/oauth/introspect", post(introspect_endpoint))
-                .with_state(oauth_state);
-
-            // Per-endpoint rate limiting on /oauth/* (independent of the proxy
-            // server.rate_limit), keyed on credential/IP — throttles the
-            // client-credentials guessing surface and the introspection oracle.
+            // Build the two OAuth routes separately so each can carry its own
+            // shared-limiter posture (the introspection oracle always denies on a
+            // Redis outage; the token endpoint may degrade). `build_oauth_routes`
+            // attaches the shared Redis limiter (authoritative cross-replica) when
+            // present, keyed by credential/IP.
             let orl = &oauth_cfg.rate_limit;
+            let mut oauth_router = build_oauth_routes(
+                oauth_state,
+                orl,
+                #[cfg(feature = "redis-l2")]
+                oauth_rate_limiter.clone(),
+                #[cfg(feature = "redis-l2")]
+                oauth_cfg.on_backend_unavailable,
+            );
+
+            // In-process governor across BOTH routes: the coarse per-replica
+            // burst shield AND the degrade target when a token-endpoint request
+            // finds the shared backend unavailable under the `degrade` posture.
             if orl.enabled {
                 match flint_gate_core::ratelimit::build_governor_layer(orl.per_second, orl.burst) {
                     Some(layer) => {
@@ -472,7 +561,7 @@ async fn main() -> Result<()> {
                         info!(
                             per_second = orl.per_second,
                             burst = orl.burst,
-                            "OAuth endpoint rate limiter enabled"
+                            "OAuth endpoint rate limiter enabled (in-process governor)"
                         );
                     }
                     None => warn!("oauth.rate_limit enabled but config degenerate — not applied"),
@@ -699,6 +788,81 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Assemble the `/oauth/token` + `/oauth/introspect` routes, attaching the
+/// shared cross-replica limiter per-endpoint when a Redis limiter is present.
+///
+/// The introspection oracle (RFC 7662 §2.1) always uses the `Deny` posture on a
+/// backend outage; the token endpoint uses the operator-configured posture
+/// (`deny` or `degrade`). The in-process governor is layered by the caller over
+/// both routes (burst shield + the `degrade` fallback).
+#[cfg(feature = "redis-l2")]
+fn build_oauth_routes(
+    oauth_state: flint_gate_core::auth::oauth::OAuthState,
+    orl: &flint_gate_core::config::types::RateLimitConfig,
+    shared: Option<flint_gate_core::ratelimit::RedisRateLimiter>,
+    token_posture: flint_gate_core::config::types::BackendUnavailablePosture,
+) -> Router {
+    use flint_gate_core::config::types::BackendUnavailablePosture;
+    use flint_gate_core::ratelimit::OAuthLimiter;
+
+    // Attach the shared cross-replica limiter to the OAuthState per endpoint:
+    // the token endpoint uses the operator-configured posture; the introspection
+    // oracle always denies on a backend outage. The handlers consult the limiter
+    // before doing any work (429 over-window; 503/degrade on Redis outage).
+    let mut state = oauth_state;
+    if orl.enabled {
+        if let Some(limiter) = shared {
+            state.token_limiter = Some(Arc::new(OAuthLimiter::new(
+                limiter.clone(),
+                orl.per_second,
+                token_posture,
+                "token",
+            )));
+            state.introspect_limiter = Some(Arc::new(OAuthLimiter::new(
+                limiter,
+                orl.per_second,
+                BackendUnavailablePosture::Deny,
+                "introspect",
+            )));
+            info!(
+                per_second = orl.per_second,
+                token_posture = ?token_posture,
+                "OAuth shared cross-replica rate limiter enabled"
+            );
+        }
+    }
+
+    Router::new()
+        .route(
+            "/oauth/token",
+            post(flint_gate_core::auth::oauth::token_endpoint),
+        )
+        .route(
+            "/oauth/introspect",
+            post(flint_gate_core::auth::oauth::introspect_endpoint),
+        )
+        .with_state(state)
+}
+
+/// No-`redis-l2` build: routes only, no shared limiter (the in-process governor
+/// is still layered by the caller).
+#[cfg(not(feature = "redis-l2"))]
+fn build_oauth_routes(
+    oauth_state: flint_gate_core::auth::oauth::OAuthState,
+    _orl: &flint_gate_core::config::types::RateLimitConfig,
+) -> Router {
+    Router::new()
+        .route(
+            "/oauth/token",
+            post(flint_gate_core::auth::oauth::token_endpoint),
+        )
+        .route(
+            "/oauth/introspect",
+            post(flint_gate_core::auth::oauth::introspect_endpoint),
+        )
+        .with_state(oauth_state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,6 +877,7 @@ mod tests {
                 shutdown_timeout_secs: 30,
                 rate_limit: Default::default(),
                 admin_auth: None,
+                allow_insecure_upstream: false,
             },
             database: DatabaseConfig {
                 url: "postgres://original".to_string(),

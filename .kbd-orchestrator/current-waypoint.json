@@ -1,5 +1,5 @@
 {
-  "phase": "agent-gateway-hardening-and-exposure",
+  "phase": "agent-gateway-exposure-operability",
   "change": "add-actor-token-and-hydra-delegate",
   "exactNextCommand": "/kbd-next-phase",
   "status": "executing",

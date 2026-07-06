@@ -671,6 +671,40 @@ Enabled per capability under `oauth:` / `token_exchange:` (see `config.example.y
 Both OAuth endpoints support per-endpoint rate limiting (`oauth.rate_limit`)
 independent of the proxy `server.rate_limit`.
 
+**Cross-replica rate limiting.** When a shared Redis limiter is configured
+(`cache.l2`), the `/oauth/*` counters are **authoritative across all replicas** —
+a horizontally-scaled deployment enforces one shared limit rather than N
+per-replica limits. Without Redis, an in-process governor applies (per-replica
+burst shield only). The window ceiling is `oauth.rate_limit.per_second × 60`,
+keyed by a hash of the caller credential (Authorization / API-key / cookie).
+
+If the shared Redis limiter is unreachable mid-request, the behavior is governed
+by **`oauth.rate_limit.on_backend_unavailable`** (fail-closed by default):
+
+| Value | `/oauth/introspect` | `/oauth/token` |
+| --- | --- | --- |
+| `deny` (default) | `503` — the introspection oracle (RFC 7662 §2.1) must never lose its limit | `503` |
+| `degrade` | `503` — the oracle **always** denies on outage, regardless of this setting | falls back to the in-process governor + a `WARN` (availability-first) |
+
+The introspection endpoint is always fail-closed on a backend outage; the setting
+only relaxes the token endpoint, and an operator can force uniform `deny`.
+
+**Exposure guardrails.** Because `/oauth/*` mounts on the **proxy** bind, the
+gateway enforces three fail-safe invariants so the surface cannot be
+misconfigured into an unsafe exposure:
+
+- **Exposure posture** — flint-gate **refuses to start** when `/oauth/*` is
+  mounted on a non-loopback `server.listen` without **both** `oauth.introspect_auth`
+  and `oauth.rate_limit.enabled` (mirrors the admin-bind fail-safe). Bind loopback
+  for local dev, or enable both guards to expose it.
+- **https-only upstreams** — an `http://` `hydra_token_url` / `hydra_admin_url` is
+  refused at startup (those calls forward a `subject_token` / client credentials).
+  Set `server.allow_insecure_upstream: true` (off by default, loud `WARN`) only for
+  local dev.
+- **Upstream body cap** — relayed Hydra responses (token-exchange delegate +
+  introspection) are read with a 64 KiB ceiling; an oversized body fails closed
+  (deny) rather than buffering unbounded (memory-pressure DoS guard).
+
 **Client secrets** are stored under **bcrypt** (per-secret salt + work factor).
 The raw secret is a 256-bit CSPRNG token shown once at creation and never
 recoverable. Verification format-sniffs the stored hash, so any pre-bcrypt
@@ -720,6 +754,31 @@ Every issue / rotate / revoke is written to the authz **audit trail**. **Revocat
 is fail-closed**: once revoked, the identity is denied on its **next authorize** —
 the check runs per request and denies on a lookup error rather than letting a
 revoked agent through. Manage identities from the **Agents** tab in the web UI.
+
+### Hydra-delegate mode: tokens carry Hydra's claims (not gateway-classified)
+
+When token exchange runs in **`delegate_to_hydra`** mode, flint-gate proxies the
+RFC 8693 exchange to Hydra and relays **Hydra's minted token verbatim** — it does
+**not** re-sign or re-stamp it. A delegate-issued token therefore carries **Hydra's**
+claims, **not** the gateway's signed `flint_kind=agent` marker, so on
+re-presentation it classifies by whatever those claims assert (typically not the
+gateway's `Agent` kind) and **escapes the gateway-side agent budget / rate-limit
+classification** applied to locally-minted delegated tokens.
+
+This is **intentional**: rewriting a token another authority issued would make the
+gateway an identity provider, and flint-gate's stance is to **federate any
+JWKS-capable IdM, never to become an IdP**. If agent-budget parity for delegated
+tokens is required, the correct place is a **Hydra-side claim mapper**, not gateway
+rewriting.
+
+**Observability.** The delegate path is metered so operators can see the volume
+that takes this route (and thus bypasses gateway-side agent classification). On the
+**admin** port (`GET :4457/metrics`, Prometheus text — never the public proxy):
+
+- `flint_delegate_total{result="success"|"deny_transport"|"deny_non2xx"|"deny_badjson"|"deny_actor_token"}`
+  — one increment per delegate-exchange outcome (a Hydra 3xx surfaces as
+  `deny_non2xx`, since the delegate client does not follow redirects);
+- `flint_delegate_latency_seconds` — delegate round-trip latency.
 
 ---
 

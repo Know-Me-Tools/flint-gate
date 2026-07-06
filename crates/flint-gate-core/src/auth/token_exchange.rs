@@ -394,23 +394,58 @@ pub async fn delegate_exchange_to_hydra(
         form.push(("audience", v));
     }
 
-    let resp = delegate
+    // Observe every delegate outcome (result label) + round-trip latency, so
+    // operators can see delegate volume and the share of tokens that bypass the
+    // gateway's flint_kind agent-budget classification (see build-003 doc).
+    let started = std::time::Instant::now();
+    let record = |reason: &'static str| {
+        crate::metrics::record_delegate(reason);
+        crate::metrics::record_delegate_latency(started.elapsed().as_secs_f64());
+    };
+
+    let resp = match delegate
         .http_client
         .post(&delegate.token_url)
         .form(&form)
         .send()
         .await
-        .map_err(|e| ExchangeError::MintFailed(format!("hydra token endpoint unreachable: {e}")))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            record("deny_transport");
+            return Err(ExchangeError::MintFailed(format!(
+                "hydra token endpoint unreachable: {e}"
+            )));
+        }
+    };
 
     if !resp.status().is_success() {
+        // A 3xx surfaces here (the no-redirect client turns it into a non-2xx).
+        record("deny_non2xx");
         return Err(ExchangeError::MintFailed(format!(
             "hydra token exchange returned {}",
             resp.status()
         )));
     }
-    resp.json::<Value>()
-        .await
-        .map_err(|e| ExchangeError::MintFailed(format!("malformed hydra token response: {e}")))
+    // Size-capped read (64 KiB) — a hostile/misbehaving Hydra cannot drive a
+    // memory-pressure DoS; over-cap fails closed (deny).
+    match crate::auth::http_body::read_capped_json(
+        resp,
+        crate::auth::http_body::MAX_UPSTREAM_BODY_BYTES,
+    )
+    .await
+    {
+        Ok(v) => {
+            record("success");
+            Ok(v)
+        }
+        Err(e) => {
+            record("deny_badjson");
+            Err(ExchangeError::MintFailed(format!(
+                "hydra token response: {e}"
+            )))
+        }
+    }
 }
 
 /// End-to-end token exchange: validate → (delegate to Hydra when configured, OR
@@ -427,7 +462,14 @@ pub async fn exchange(
     delegated_ttl_seconds: Option<u64>,
     delegate: Option<&HydraDelegate>,
 ) -> Result<Value, ExchangeError> {
-    validate_request(req)?;
+    // In delegate mode, a rejected actor_token is a delegate-path denial — record
+    // it before returning so the metric captures every delegate outcome.
+    if let Err(e) = validate_request(req) {
+        if delegate.is_some() && matches!(e, ExchangeError::UnsupportedActorToken) {
+            crate::metrics::record_delegate("deny_actor_token");
+        }
+        return Err(e);
+    }
 
     // Federate-first: when a Hydra delegate is configured, proxy the exchange to
     // it (Hydra owns RFC 8693) instead of minting locally.
@@ -860,6 +902,65 @@ mod tests {
             .await
             .expect("delegate exchange succeeds");
         assert_eq!(resp["access_token"], "hydra-minted-token");
+    }
+
+    #[tokio::test]
+    async fn delegate_success_is_metered_and_rendered() {
+        // A successful delegate exchange records into the global recorder that
+        // the admin /metrics endpoint renders — proving the delegate→metric→
+        // render chain end-to-end (the endpoint itself is admin-router only).
+        crate::metrics::install_recorder();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "access_token": "t", "token_type": "Bearer" })),
+            )
+            .mount(&server)
+            .await;
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::new(),
+            token_url: format!("{}/oauth2/token", server.uri()),
+        };
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: false,
+            scopes: "",
+        });
+        let m = minter().await;
+        exchange(&exchange_req(None), &verifier, &m, None, Some(&delegate))
+            .await
+            .expect("delegate exchange succeeds");
+        let out = crate::metrics::render();
+        assert!(
+            out.contains("flint_delegate_total") && out.contains("result=\"success\""),
+            "delegate success not metered:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_fails_closed_on_oversized_hydra_body() {
+        // A 200 with a body larger than the 64 KiB cap must fail closed (deny),
+        // not buffer unbounded (memory-pressure DoS guard).
+        let server = wiremock::MockServer::start().await;
+        let huge = format!(r#"{{"access_token":"{}"}}"#, "A".repeat(70 * 1024));
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(huge))
+            .mount(&server)
+            .await;
+
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::new(),
+            token_url: format!("{}/oauth2/token", server.uri()),
+        };
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read",
+        });
+        let m = minter().await;
+        let err = exchange(&exchange_req(None), &verifier, &m, None, Some(&delegate))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::MintFailed(_)));
     }
 
     #[tokio::test]

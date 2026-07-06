@@ -42,6 +42,15 @@ pub struct OAuthState {
     pub client_credentials: Option<(Arc<Database>, Option<u64>)>,
     /// Verifier + optional Hydra delegate for introspection. `None` disables it.
     pub introspection: Option<IntrospectionState>,
+    /// Shared cross-replica rate limiter for `/oauth/token` (operator posture).
+    /// `None` = no shared limiter configured (the in-process governor still
+    /// applies as a per-replica burst shield).
+    #[cfg(feature = "redis-l2")]
+    pub token_limiter: Option<Arc<crate::ratelimit::OAuthLimiter>>,
+    /// Shared cross-replica rate limiter for `/oauth/introspect` (always denies
+    /// on a backend outage — the token-scanning oracle must not lose its limit).
+    #[cfg(feature = "redis-l2")]
+    pub introspect_limiter: Option<Arc<crate::ratelimit::OAuthLimiter>>,
 }
 
 /// Introspection dependencies.
@@ -107,8 +116,27 @@ fn oauth_error(status: StatusCode, code: &str, description: String) -> Response 
 /// per-grant request type.
 pub async fn token_endpoint(
     State(state): State<OAuthState>,
+    headers: HeaderMap,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
+    // Shared cross-replica rate limit (when configured) — before any work.
+    // Key by the authenticated client_id when present (Basic or form) so the
+    // limit binds the client-credentials guessing surface even if the caller
+    // rotates the raw Authorization header.
+    #[cfg(feature = "redis-l2")]
+    if let Some(limiter) = &state.token_limiter {
+        let auth_header = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        let client_id = extract_client_credentials(auth_header, &form).map(|c| c.0);
+        if let Some(resp) = limiter
+            .reject_response(&headers, client_id.as_deref())
+            .await
+        {
+            return resp;
+        }
+    }
+
     let grant = form.get("grant_type").map(String::as_str).unwrap_or("");
 
     match grant {
@@ -184,6 +212,24 @@ pub async fn introspect_endpoint(
     headers: HeaderMap,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
+    // Shared cross-replica rate limit (when configured) — the oracle always
+    // denies on a backend outage; checked before any introspection work. Key by
+    // the authenticated client_id when present so header rotation cannot mint
+    // fresh windows against the token-scanning surface.
+    #[cfg(feature = "redis-l2")]
+    if let Some(limiter) = &state.introspect_limiter {
+        let auth_header = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        let client_id = extract_client_credentials(auth_header, &form).map(|c| c.0);
+        if let Some(resp) = limiter
+            .reject_response(&headers, client_id.as_deref())
+            .await
+        {
+            return resp;
+        }
+    }
+
     let Some(intro) = &state.introspection else {
         return oauth_error(
             StatusCode::NOT_FOUND,
@@ -336,6 +382,10 @@ mod tests {
                 require_auth,
                 client_store: None,
             }),
+            #[cfg(feature = "redis-l2")]
+            token_limiter: None,
+            #[cfg(feature = "redis-l2")]
+            introspect_limiter: None,
         };
         Router::new()
             .route("/oauth/introspect", post(introspect_endpoint))

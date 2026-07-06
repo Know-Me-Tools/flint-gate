@@ -86,11 +86,15 @@ pub fn admin_router_with_auth(
     )]
     struct AdminApiDoc;
 
-    // Probes stay unauthenticated so liveness/readiness works on an authed
-    // deployment. Everything else is a candidate for the auth layer.
+    // Probes + metrics stay unauthenticated so liveness/readiness and Prometheus
+    // scraping work on an authed deployment. `/metrics` is on the ADMIN router
+    // only (private port) — never the public proxy surface — and is gated behind
+    // the admin bind's own exposure posture. Everything else is a candidate for
+    // the auth layer.
     let public = Router::new()
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
+        .route("/metrics", get(metrics_handler))
         .with_state(state.clone());
 
     let mut protected = Router::new()
@@ -169,6 +173,20 @@ pub fn admin_router_with_auth(
 #[utoipa::path(get, path = "/health", responses((status = 200, description = "Service healthy")))]
 async fn health_handler() -> impl IntoResponse {
     Json(json!({"status": "ok", "service": "flint-gate"}))
+}
+
+/// `GET /metrics` — Prometheus text exposition of control-plane metrics
+/// (delegate outcomes/latency, etc.). Served on the **admin** router only, so it
+/// is never reachable on the public proxy port. Returns an empty body when the
+/// recorder was never installed.
+async fn metrics_handler() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        crate::metrics::render(),
+    )
 }
 
 /// Embedded admin web UI assets. In release builds they are compiled in; in

@@ -2,7 +2,7 @@
   "schemaVersion": "1",
   "updatedAt": "2026-07-06T00:00:00Z",
   "cursor": [
-    "agent-gateway-hardening-and-exposure"
+    "agent-gateway-exposure-operability"
   ],
   "root": {
     "type": "phase",
@@ -14,5 +14,11 @@
     },
     "children": [],
     "annotations": []
+  },
+  "stage": "assess_pending",
+  "nextCommand": "/kbd-assess",
+  "progress": {
+    "done": 0,
+    "total": 0
   }
 }

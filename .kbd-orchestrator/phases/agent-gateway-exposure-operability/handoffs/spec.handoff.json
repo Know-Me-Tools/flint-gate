@@ -1,0 +1,9 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["openspec/changes (4 proposals)"],
+  "nextStage": "plan",
+  "summaryForNext": "4 OpenSpec changes written (proposal.md + tasks.md, no specs/ delta — archive via --skip-specs per phase convention). Build order (dependency-aware): 1) add-oauth-shared-ratelimit (G1, 5 tasks — wire /oauth/* to RedisRateLimiter::incr_request + Redis-outage posture toggle deny/degrade); 2) add-exposure-guardrails (G3, 5 — https-only Hydra URLs + 64KiB body cap + oauth_exposure_posture mirroring admin_auth_posture); 3) add-delegate-observability (G2, 5 — adopt metrics@0.24 + metrics-exporter-prometheus@0.18, /metrics on ADMIN port, delegate counters + NO re-stamp decision); 4) add-oauth-e2e-ory (G4, 4 — extend smoke compose with Ory Hydra/Kratos + Playwright specs, depends on 1-3). zeespec: n/a (inactive). Each change has a fail-closed/deny-path test requirement. New deps only in change 3.",
+  "skipped": false,
+  "skipReason": null
+}

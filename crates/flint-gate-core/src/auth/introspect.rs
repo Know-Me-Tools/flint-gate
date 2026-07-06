@@ -147,7 +147,15 @@ pub async fn delegate_to_hydra(
 
     match resp {
         Ok(r) if r.status().is_success() => {
-            r.json::<Value>().await.unwrap_or_else(|_| json!({ "active": false }))
+            // Size-capped read (64 KiB). Any error — over-cap, transport, or
+            // malformed JSON — is treated as INACTIVE (fail-closed: a token we
+            // cannot positively confirm active is denied).
+            crate::auth::http_body::read_capped_json(
+                r,
+                crate::auth::http_body::MAX_UPSTREAM_BODY_BYTES,
+            )
+            .await
+            .unwrap_or_else(|_| json!({ "active": false }))
         }
         _ => json!({ "active": false }),
     }
@@ -269,6 +277,26 @@ mod tests {
         // Unreachable Hydra → active:false, never active.
         let resp =
             delegate_to_hydra(&reqwest::Client::new(), "http://127.0.0.1:1", "tok").await;
+        assert_eq!(resp["active"], false);
+    }
+
+    #[tokio::test]
+    async fn delegate_does_not_follow_redirects() {
+        // A Hydra 3xx must NOT be followed (token-exfiltration guard): with a
+        // no-redirect client the 302 surfaces as a non-2xx → active:false.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("location", "https://attacker.example/steal"),
+            )
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let resp = delegate_to_hydra(&client, &server.uri(), "opaque-token").await;
         assert_eq!(resp["active"], false);
     }
 }

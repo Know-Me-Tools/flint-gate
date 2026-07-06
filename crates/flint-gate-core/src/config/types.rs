@@ -32,6 +32,56 @@ pub struct GateConfig {
     pub oauth: OAuthConfig,
 }
 
+/// Outcome of [`GateConfig::oauth_exposure_posture`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthExposurePosture {
+    /// No OAuth endpoint is mounted — nothing to gate.
+    NotMounted,
+    /// The proxy bind is loopback — local dev, guardrails not enforced.
+    AllowLoopback,
+    /// Mounted on a non-loopback bind with both introspect-auth and
+    /// rate-limiting configured — safe to expose.
+    Enforce,
+    /// Mounted on a non-loopback bind but missing introspect-auth and/or
+    /// rate-limiting — refuse to start (fail-safe against exposing an
+    /// under-guarded OAuth surface).
+    RefuseStart,
+}
+
+impl GateConfig {
+    /// Decide whether the `/oauth/*` surface is safe to expose. `/oauth/token`
+    /// and `/oauth/introspect` mount on the **proxy** bind (`server.listen`), so
+    /// when that bind is non-loopback the endpoints are internet-reachable and
+    /// MUST have both introspection client-auth (RFC 7662 §2.1) **and**
+    /// rate-limiting enabled. Pure so the fail-closed rule is unit-testable.
+    ///
+    /// - no OAuth capability mounted            → [`OAuthExposurePosture::NotMounted`]
+    /// - loopback proxy bind                    → [`OAuthExposurePosture::AllowLoopback`]
+    /// - non-loopback + introspect_auth + limit → [`OAuthExposurePosture::Enforce`]
+    /// - non-loopback + missing either guard    → [`OAuthExposurePosture::RefuseStart`]
+    pub fn oauth_exposure_posture(&self) -> OAuthExposurePosture {
+        let mounted = self.oauth.client_credentials_enabled
+            || self.oauth.introspection_enabled
+            || self.token_exchange.enabled;
+        if !mounted {
+            return OAuthExposurePosture::NotMounted;
+        }
+        if listen_is_loopback(&self.server.listen) {
+            return OAuthExposurePosture::AllowLoopback;
+        }
+        // Non-loopback exposure: require BOTH guards. `introspect_auth` only
+        // matters when the introspection endpoint is actually mounted.
+        let introspect_guarded =
+            !self.oauth.introspection_enabled || self.oauth.introspect_auth;
+        let rate_limited = self.oauth.rate_limit.enabled;
+        if introspect_guarded && rate_limited {
+            OAuthExposurePosture::Enforce
+        } else {
+            OAuthExposurePosture::RefuseStart
+        }
+    }
+}
+
 /// OAuth 2.0 server-side features flint-gate offers on the proxy port.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthConfig {
@@ -49,11 +99,21 @@ pub struct OAuthConfig {
     /// endpoint is network-restricted to trusted callers.
     #[serde(default = "default_true")]
     pub introspect_auth: bool,
-    /// Per-endpoint in-process rate limiting for `/oauth/token` and
-    /// `/oauth/introspect`, independent of the proxy `server.rate_limit`.
-    /// Applied as a tower layer on the OAuth sub-router.
+    /// Per-endpoint rate limiting for `/oauth/token` and `/oauth/introspect`,
+    /// independent of the proxy `server.rate_limit`. When a shared Redis limiter
+    /// is available it is used (authoritative across replicas); otherwise the
+    /// in-process governor applies. Applied as a tower layer on the OAuth
+    /// sub-router.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// What to do when the **shared** rate-limit backend (Redis) is unavailable
+    /// mid-request. Fail-closed by default: the introspection endpoint is a
+    /// token-scanning oracle (RFC 7662 §2.1), so losing its limit must **deny**.
+    /// The token endpoint's wiring may *degrade* to the in-process governor to
+    /// avoid an availability cliff — but an operator can force uniform `Deny`
+    /// here. Only consulted when a shared limiter is configured.
+    #[serde(default)]
+    pub on_backend_unavailable: BackendUnavailablePosture,
     /// Default TTL (seconds) for client-credentials service tokens.
     #[serde(default)]
     pub service_token_ttl_seconds: Option<u64>,
@@ -80,10 +140,26 @@ impl Default for OAuthConfig {
             introspection_enabled: false,
             introspect_auth: true,
             rate_limit: RateLimitConfig::default(),
+            on_backend_unavailable: BackendUnavailablePosture::default(),
             service_token_ttl_seconds: None,
             introspection_delegate: None,
         }
     }
+}
+
+/// Posture when the shared (Redis) rate-limit backend is unavailable mid-request.
+///
+/// Defaults to [`Deny`](BackendUnavailablePosture::Deny) — fail-closed. The
+/// token endpoint may override to `Degrade` (fall back to the in-process
+/// governor + a WARN); the introspection oracle should stay `Deny`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendUnavailablePosture {
+    /// Deny the request when the shared limiter cannot be consulted (fail-closed).
+    #[default]
+    Deny,
+    /// Fall back to the in-process governor and emit a WARN (availability-first).
+    Degrade,
 }
 
 /// Configuration for delegating introspection to an external AS (Ory Hydra).
@@ -151,6 +227,44 @@ pub struct ServerConfig {
     /// a non-loopback address without `admin_auth` is refused at startup.
     #[serde(default)]
     pub admin_auth: Option<AdminAuthConfig>,
+    /// Allow plaintext `http://` upstream URLs (Hydra token/admin endpoints).
+    /// **Off by default** — a plaintext upstream carrying a `subject_token` or
+    /// client credentials is refused at startup. Set true ONLY for local dev
+    /// against an `http://` Hydra; a loud WARN is emitted when enabled.
+    #[serde(default)]
+    pub allow_insecure_upstream: bool,
+}
+
+/// Validate that an operator-configured upstream URL uses `https://` unless
+/// `allow_insecure_upstream` is set. Pure so the fail-closed rule is
+/// unit-testable. Returns `Err(reason)` when a plaintext URL is refused.
+///
+/// `https://` → always Ok. `http://` → Ok only when `allow` is true (caller
+/// should WARN). Any other scheme (or none) is refused — an upstream that
+/// forwards credentials must be an explicit, TLS-protected URL.
+pub fn validate_upstream_url_scheme(
+    field: &str,
+    url: &str,
+    allow_insecure: bool,
+) -> Result<(), String> {
+    let lower = url.trim().to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        Ok(())
+    } else if lower.starts_with("http://") {
+        if allow_insecure {
+            Ok(())
+        } else {
+            Err(format!(
+                "{field} is a plaintext http:// URL ({url}); refusing to forward \
+                 credentials over cleartext. Use https:// or set \
+                 server.allow_insecure_upstream: true for local development."
+            ))
+        }
+    } else {
+        Err(format!(
+            "{field} must be an https:// URL (got {url:?})"
+        ))
+    }
 }
 
 /// Authentication policy for the admin API.
@@ -178,7 +292,7 @@ impl ServerConfig {
         if self.admin_auth.is_some() {
             return AdminAuthPosture::Enforce;
         }
-        if admin_listen_is_loopback(&self.admin_listen) {
+        if listen_is_loopback(&self.admin_listen) {
             AdminAuthPosture::AllowLoopback
         } else {
             AdminAuthPosture::RefuseStart
@@ -198,20 +312,21 @@ pub enum AdminAuthPosture {
     RefuseStart,
 }
 
-/// Whether an `admin_listen` value binds a loopback address. Treats a missing /
+/// Whether a `host:port` bind value binds a loopback address. Treats a missing /
 /// unparseable host conservatively as **non-loopback** so an ambiguous bind
-/// fails safe (refuse-start) rather than being silently permitted.
-fn admin_listen_is_loopback(admin_listen: &str) -> bool {
+/// fails safe (refuse-start) rather than being silently permitted. Used for both
+/// the admin bind and the proxy (`server.listen`) bind that hosts `/oauth/*`.
+fn listen_is_loopback(listen: &str) -> bool {
     // Split host from the trailing `:port`. IPv6 literals are bracketed
     // (`[::1]:4457`); IPv4/hostname take the substring before the last colon.
-    let host = if let Some(rest) = admin_listen.strip_prefix('[') {
+    let host = if let Some(rest) = listen.strip_prefix('[') {
         // `[::1]:4457` → `::1`
         match rest.split_once(']') {
             Some((h, _)) => h,
             None => return false,
         }
     } else {
-        admin_listen.rsplit_once(':').map(|(h, _)| h).unwrap_or(admin_listen)
+        listen.rsplit_once(':').map(|(h, _)| h).unwrap_or(listen)
     };
 
     if host.eq_ignore_ascii_case("localhost") {
@@ -280,6 +395,7 @@ impl Default for ServerConfig {
             shutdown_timeout_secs: default_shutdown_timeout(),
             rate_limit: RateLimitConfig::default(),
             admin_auth: None,
+            allow_insecure_upstream: false,
         }
     }
 }
@@ -1210,6 +1326,38 @@ config:
         assert!(OAuthConfig { ..Default::default() }.introspect_auth);
     }
 
+    // ── OAuth Redis-outage posture: fail-closed default + lowercase wire ──────
+
+    #[test]
+    fn oauth_backend_unavailable_defaults_to_deny() {
+        // Fail-closed: an unset posture MUST be Deny on every construction path.
+        assert_eq!(
+            OAuthConfig::default().on_backend_unavailable,
+            BackendUnavailablePosture::Deny
+        );
+        assert_eq!(
+            BackendUnavailablePosture::default(),
+            BackendUnavailablePosture::Deny
+        );
+    }
+
+    #[test]
+    fn oauth_backend_unavailable_missing_key_parses_deny() {
+        // An `oauth: {}` block (no on_backend_unavailable key) MUST parse to Deny.
+        let cfg: OAuthConfig = serde_yaml::from_str("{}").expect("empty oauth parses");
+        assert_eq!(cfg.on_backend_unavailable, BackendUnavailablePosture::Deny);
+    }
+
+    #[test]
+    fn oauth_backend_unavailable_serde_lowercase() {
+        let cfg: OAuthConfig =
+            serde_yaml::from_str("on_backend_unavailable: degrade").expect("parses degrade");
+        assert_eq!(cfg.on_backend_unavailable, BackendUnavailablePosture::Degrade);
+        let cfg: OAuthConfig =
+            serde_yaml::from_str("on_backend_unavailable: deny").expect("parses deny");
+        assert_eq!(cfg.on_backend_unavailable, BackendUnavailablePosture::Deny);
+    }
+
     #[test]
     fn oauth_introspect_auth_defaults_true_via_serde_missing_key() {
         // An `oauth: {}` block (no introspect_auth key) MUST parse to true.
@@ -1217,5 +1365,90 @@ config:
         assert!(cfg.introspect_auth);
         // And the full GateConfig default keeps it true.
         assert!(GateConfig::default().oauth.introspect_auth);
+    }
+
+    // ── https-only upstream URL validation ────────────────────────────────────
+
+    #[test]
+    fn https_upstream_always_allowed() {
+        assert!(validate_upstream_url_scheme("u", "https://hydra/oauth2/token", false).is_ok());
+        assert!(validate_upstream_url_scheme("u", "HTTPS://Hydra/x", false).is_ok());
+    }
+
+    #[test]
+    fn http_upstream_refused_without_override() {
+        let err = validate_upstream_url_scheme("hydra_token_url", "http://hydra/token", false)
+            .unwrap_err();
+        assert!(err.contains("plaintext"));
+        assert!(err.contains("hydra_token_url"));
+    }
+
+    #[test]
+    fn http_upstream_allowed_with_override() {
+        assert!(validate_upstream_url_scheme("u", "http://hydra/token", true).is_ok());
+    }
+
+    #[test]
+    fn non_http_scheme_refused_even_with_override() {
+        // A non-http(s) scheme is never a valid credential-forwarding upstream.
+        assert!(validate_upstream_url_scheme("u", "ftp://hydra/x", true).is_err());
+        assert!(validate_upstream_url_scheme("u", "hydra/x", true).is_err());
+    }
+
+    // ── OAuth exposure posture ────────────────────────────────────────────────
+
+    fn exposure_cfg(listen: &str, mount: bool, introspect_auth: bool, rl: bool) -> GateConfig {
+        let mut c = GateConfig::default();
+        c.server.listen = listen.to_string();
+        c.oauth.introspection_enabled = mount;
+        c.oauth.introspect_auth = introspect_auth;
+        c.oauth.rate_limit.enabled = rl;
+        c
+    }
+
+    #[test]
+    fn exposure_not_mounted_when_no_oauth_capability() {
+        let mut c = GateConfig::default();
+        c.server.listen = "0.0.0.0:4456".into();
+        c.oauth.introspection_enabled = false;
+        c.oauth.client_credentials_enabled = false;
+        c.token_exchange.enabled = false;
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::NotMounted);
+    }
+
+    #[test]
+    fn exposure_allows_loopback_bind() {
+        let c = exposure_cfg("127.0.0.1:4456", true, false, false);
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::AllowLoopback);
+    }
+
+    #[test]
+    fn exposure_refuses_non_loopback_missing_introspect_auth() {
+        let c = exposure_cfg("0.0.0.0:4456", true, false, true);
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+    }
+
+    #[test]
+    fn exposure_refuses_non_loopback_missing_rate_limit() {
+        let c = exposure_cfg("0.0.0.0:4456", true, true, false);
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+    }
+
+    #[test]
+    fn exposure_enforces_non_loopback_with_both_guards() {
+        let c = exposure_cfg("0.0.0.0:4456", true, true, true);
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::Enforce);
+    }
+
+    #[test]
+    fn exposure_introspect_auth_irrelevant_when_introspection_not_mounted() {
+        // Only token_exchange mounted (no introspection endpoint) → introspect_auth
+        // does not gate; rate-limiting alone suffices for Enforce.
+        let mut c = GateConfig::default();
+        c.server.listen = "0.0.0.0:4456".into();
+        c.oauth.introspection_enabled = false;
+        c.token_exchange.enabled = true;
+        c.oauth.rate_limit.enabled = true;
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::Enforce);
     }
 }

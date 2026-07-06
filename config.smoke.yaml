@@ -1,0 +1,77 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Flint Gate — Smoke/E2E Configuration (docker-compose.smoke.yml)
+# ─────────────────────────────────────────────────────────────────────────────
+# Wires the OAuth surface against the Ory Hydra reference AS so the Playwright
+# E2E can exercise authenticated token/introspect/delegate + fail-closed denials.
+# NOT for production — uses http:// upstreams (allow_insecure_upstream) and a
+# shared HS-less setup suitable only for the isolated smoke network.
+# ─────────────────────────────────────────────────────────────────────────────
+
+server:
+  listen: "0.0.0.0:4456"
+  admin_listen: "0.0.0.0:4457"
+  # The smoke network is isolated; Hydra is reachable only over http:// inside it.
+  allow_insecure_upstream: true
+  tls:
+    enabled: false
+
+database:
+  url: "postgres://flintgate:flintgate@postgres:5432/flintgate"
+  max_connections: 10
+
+cache:
+  l1:
+    max_capacity: 1000
+    ttl_seconds: 60
+  l2:
+    enabled: false
+
+# Verify Hydra's JWT access tokens via its JWKS — federate the Ory-issued token.
+auth_providers:
+  hydra_jwt:
+    type: jwt
+    jwks_url: "http://hydra:4444/.well-known/jwks.json"
+    issuer: "http://hydra:4444"
+    leeway_seconds: 5
+
+jwt:
+  signing_algorithm: "HS256"
+  signing_key_secret: "smoke-test-secret"
+  issuer: "http://flint-gate:4456"
+  default_ttl_seconds: 300
+
+# RFC 8693 token exchange, delegated to Hydra (federate-first).
+token_exchange:
+  enabled: true
+  subject_token_provider: hydra_jwt
+  delegate_to_hydra: true
+  hydra_token_url: "http://hydra:4444/oauth2/token"
+
+# OAuth: client-credentials + RFC 7662 introspection (authenticated), rate-limited.
+oauth:
+  client_credentials_enabled: true
+  introspection_enabled: true
+  introspect_auth: true
+  rate_limit:
+    enabled: true
+    per_second: 5
+    burst: 10
+  on_backend_unavailable: deny
+  introspection_delegate:
+    hydra_admin_url: "http://hydra:4445"
+
+sites:
+  - id: "smoke"
+    domains: ["localhost:4456"]
+    default_auth: hydra_jwt
+    default_upstream: "http://flint-gate:4457/health"
+
+routes:
+  - id: "health"
+    site: "smoke"
+    match:
+      path: "/health"
+      methods: ["GET"]
+    upstream: "http://flint-gate:4457/health"
+    auth: hydra_jwt
+    priority: 100

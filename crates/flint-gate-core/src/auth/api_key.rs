@@ -95,6 +95,10 @@ fn build_result(client_id: String, scopes: Vec<String>) -> AuthResult {
     AuthResult {
         identity: Identity {
             id: client_id.clone(),
+            // An API key is a non-human service credential → authorize as a
+            // Service principal (so Service:: policies apply and the client is
+            // covered by the NHI revocation list).
+            kind: crate::auth::identity::IdentityKind::Service,
             ..Default::default()
         },
         method: AuthMethod::ApiKey { client_id, scopes },
@@ -110,6 +114,21 @@ mod tests {
         let h1 = ApiKeyAuthenticator::hash_key("my-secret-key");
         let h2 = ApiKeyAuthenticator::hash_key("my-secret-key");
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn api_key_identity_is_a_service_principal() {
+        // An API-key credential is a non-human service → Service kind, so
+        // Service:: policies apply and it's covered by NHI revocation.
+        let result = build_result("svc-client".into(), vec!["read".into()]);
+        assert_eq!(
+            result.identity.kind,
+            crate::auth::identity::IdentityKind::Service
+        );
+        assert_eq!(
+            crate::auth::identity::principal_kind_for(&result.identity),
+            crate::authz::PrincipalKind::Service
+        );
     }
 
     #[test]

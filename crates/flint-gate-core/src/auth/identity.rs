@@ -98,7 +98,13 @@ impl Identity {
             Some("service") => return IdentityKind::Service,
             _ => {}
         }
-        if self.metadata_public.get("act").is_some() {
+        // The `act` claim promotes to Agent ONLY for token-derived identities,
+        // never for a Kratos session: Kratos `metadata_public` can be admin- or
+        // (in some deployments) self-service-writable, so an `act` field there is
+        // not a trustworthy delegation signal. A `session_id` marks a Kratos
+        // identity — skip the `act` fallback for it. The gateway-signed
+        // `flint_kind` marker above is unaffected (Kratos never sets it).
+        if self.session_id.is_none() && self.metadata_public.get("act").is_some() {
             IdentityKind::Agent
         } else {
             IdentityKind::User
@@ -163,6 +169,44 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(id.derived_kind(), IdentityKind::User);
+    }
+
+    #[test]
+    fn kratos_session_identity_with_act_trait_stays_user() {
+        // A Kratos identity (session_id set) must NOT self-promote to Agent via
+        // an `act` field in its metadata_public — that field is not a trusted
+        // delegation signal for a session-authenticated user.
+        let id = Identity {
+            session_id: Some("kratos-sess-1".into()),
+            metadata_public: json!({ "act": { "sub": "someone" } }),
+            ..Default::default()
+        };
+        assert_eq!(id.derived_kind(), IdentityKind::User);
+        assert_eq!(principal_kind_for(&id), crate::authz::PrincipalKind::User);
+    }
+
+    #[test]
+    fn token_identity_with_act_but_no_session_is_agent() {
+        // The gateway's own delegated tokens have no session_id → `act` still
+        // promotes to Agent (unchanged behavior).
+        let id = Identity {
+            session_id: None,
+            metadata_public: json!({ "act": { "sub": "u" } }),
+            ..Default::default()
+        };
+        assert_eq!(id.derived_kind(), IdentityKind::Agent);
+    }
+
+    #[test]
+    fn kratos_session_flint_kind_still_trusted() {
+        // The gateway-signed flint_kind marker is trusted even on a session
+        // identity (Kratos never sets it, so its presence means gateway-minted).
+        let id = Identity {
+            session_id: Some("s".into()),
+            metadata_public: json!({ "flint_kind": "service" }),
+            ..Default::default()
+        };
+        assert_eq!(id.derived_kind(), IdentityKind::Service);
     }
 
     #[test]

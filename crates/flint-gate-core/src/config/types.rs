@@ -33,7 +33,7 @@ pub struct GateConfig {
 }
 
 /// OAuth 2.0 server-side features flint-gate offers on the proxy port.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthConfig {
     /// Enable the `client_credentials` grant on `POST /oauth/token` (service
     /// identities issued from the `oauth_clients` store).
@@ -42,6 +42,18 @@ pub struct OAuthConfig {
     /// Enable RFC 7662 `POST /oauth/introspect` for gateway-minted tokens.
     #[serde(default)]
     pub introspection_enabled: bool,
+    /// Require OAuth **client authentication** on `/oauth/introspect`
+    /// (`client_id` + `client_secret`, HTTP Basic or form), verified against the
+    /// `oauth_clients` store. RFC 7662 §2.1 makes this a MUST (token-scanning
+    /// defense), so it defaults to **true** — set it `false` ONLY when the
+    /// endpoint is network-restricted to trusted callers.
+    #[serde(default = "default_true")]
+    pub introspect_auth: bool,
+    /// Per-endpoint in-process rate limiting for `/oauth/token` and
+    /// `/oauth/introspect`, independent of the proxy `server.rate_limit`.
+    /// Applied as a tower layer on the OAuth sub-router.
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
     /// Default TTL (seconds) for client-credentials service tokens.
     #[serde(default)]
     pub service_token_ttl_seconds: Option<u64>,
@@ -50,12 +62,28 @@ pub struct OAuthConfig {
     /// do not verify as gateway-minted are forwarded here (Hydra owns RFC 7662
     /// for its own tokens).
     ///
-    /// SECURITY: `/oauth/introspect` is currently unauthenticated. Enabling this
-    /// delegate turns the public endpoint into a proxy to Hydra's *admin* API —
-    /// only enable it when `/oauth/introspect` is network-restricted to trusted
-    /// callers (see README). Endpoint-level auth is roadmapped.
+    /// SECURITY: this delegate proxies to Hydra's *admin* API, so it is only
+    /// reachable **after** `/oauth/introspect` client authentication passes
+    /// (`introspect_auth`, default true). Keep `introspect_auth` on when a
+    /// delegate is configured; disabling it exposes Hydra's admin surface.
     #[serde(default)]
     pub introspection_delegate: Option<IntrospectionDelegateConfig>,
+}
+
+impl Default for OAuthConfig {
+    fn default() -> Self {
+        // `introspect_auth` defaults to TRUE (fail-closed / RFC 7662 MUST) on
+        // EVERY construction path, including `..Default::default()` — a derived
+        // Default would give `false` and silently disable introspection auth.
+        Self {
+            client_credentials_enabled: false,
+            introspection_enabled: false,
+            introspect_auth: true,
+            rate_limit: RateLimitConfig::default(),
+            service_token_ttl_seconds: None,
+            introspection_delegate: None,
+        }
+    }
 }
 
 /// Configuration for delegating introspection to an external AS (Ory Hydra).
@@ -85,11 +113,13 @@ pub struct TokenExchangeConfig {
     /// TTL (seconds) for minted delegated tokens. Falls back to the JWT default.
     #[serde(default)]
     pub delegated_ttl_seconds: Option<u64>,
-    /// **Seam (not yet implemented):** proxy the exchange to an Ory Hydra token
-    /// endpoint instead of minting locally. Kept `false`.
+    /// Federate-first: proxy the exchange to an Ory Hydra token endpoint (Hydra
+    /// owns RFC 8693) instead of minting locally. Requires `hydra_token_url`.
+    /// Fails closed (deny) on a Hydra transport/non-2xx error — no local fallback.
+    /// CAVEAT: Hydra has known external-token `aud` quirks (ory/hydra#3723).
     #[serde(default)]
     pub delegate_to_hydra: bool,
-    /// **Seam:** the Hydra token endpoint used when `delegate_to_hydra` is wired.
+    /// The Hydra token endpoint used when `delegate_to_hydra` is set.
     #[serde(default)]
     pub hydra_token_url: Option<String>,
 }
@@ -1168,5 +1198,24 @@ config:
             server_with("garbage-no-port", None).admin_auth_posture(),
             AdminAuthPosture::RefuseStart
         );
+    }
+
+    // ── OAuth introspect_auth fail-closed default (RFC 7662 gate) ──────────
+
+    #[test]
+    fn oauth_introspect_auth_defaults_true_via_struct_default() {
+        // `..Default::default()` MUST yield introspect_auth=true — a derived
+        // Default would give false and silently disable the introspection gate.
+        assert!(OAuthConfig::default().introspect_auth);
+        assert!(OAuthConfig { ..Default::default() }.introspect_auth);
+    }
+
+    #[test]
+    fn oauth_introspect_auth_defaults_true_via_serde_missing_key() {
+        // An `oauth: {}` block (no introspect_auth key) MUST parse to true.
+        let cfg: OAuthConfig = serde_yaml::from_str("{}").expect("empty oauth parses");
+        assert!(cfg.introspect_auth);
+        // And the full GateConfig default keeps it true.
+        assert!(GateConfig::default().oauth.introspect_auth);
     }
 }

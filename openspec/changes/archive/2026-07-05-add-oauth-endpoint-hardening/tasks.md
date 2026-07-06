@@ -1,0 +1,5 @@
+- [x] Add `oauth.rate_limit` (per_second/burst) + `oauth.introspect_auth` config
+- [x] `/oauth/introspect`: extract client creds (HTTP Basic + form) → verify_client_credentials → 401 invalid_client on failure, BEFORE local verify / Hydra delegate
+- [x] Apply per-endpoint `build_governor_layer` to the OAuth sub-router (both endpoints)
+- [x] Tests: introspect without creds → 401; bad creds → 401; valid creds → introspects; Hydra-delegate unreachable unauthenticated; rate-limit trips (fail-closed `degrades_to_deny`)
+- [x] Docs: config.example.yaml oauth.rate_limit/introspect_auth + README RFC 7662 auth note; `cargo check/clippy/test --workspace` green

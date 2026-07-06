@@ -94,9 +94,15 @@ token_exchange:
   # An auth_providers entry (must be JWKS-backed: type jwt or mcp).
   subject_token_provider: bearer_jwt
   # delegated_ttl_seconds: 300   # falls back to jwt.default_ttl_seconds
-  # Seam (not yet implemented): proxy the exchange to an Ory Hydra token endpoint.
+  # Federate-first: proxy the exchange to an Ory Hydra token endpoint (Hydra owns
+  # RFC 8693) instead of minting locally. Requires hydra_token_url. On a Hydra
+  # transport/non-2xx error the exchange fails closed (deny) — no local fallback.
+  # CAVEAT: Hydra has known `aud`-handling quirks when exchanging EXTERNAL tokens
+  # (ory/hydra#3723) — validate your Hydra audience config before relying on it.
   # delegate_to_hydra: false
   # hydra_token_url: "https://hydra.example.com/oauth2/token"
+  # NOTE: an `actor_token` (multi-hop delegation) is rejected (400 invalid_request)
+  # — single-hop `act` only this release.
 
 # ─── OAuth 2.0 (client credentials + introspection) ───────────────────────────
 # client_credentials: service-to-service (non-human) identity. Clients live in
@@ -109,8 +115,20 @@ token_exchange:
 oauth:
   client_credentials_enabled: false   # requires a database (client store)
   introspection_enabled: false
+  # RFC 7662 §2.1 REQUIRES authenticating the introspection endpoint (token-scanning
+  # defense). Defaults to true: /oauth/introspect requires OAuth client credentials
+  # (client_id/client_secret via HTTP Basic or form), verified against oauth_clients.
+  # Set false ONLY when the endpoint is network-restricted to trusted callers.
+  introspect_auth: true
+  # Per-endpoint rate limiting for /oauth/token + /oauth/introspect (independent of
+  # server.rate_limit). Throttles the client-credentials guessing surface + the
+  # introspection oracle.
+  rate_limit:
+    enabled: false
+    per_second: 5
+    burst: 10
   # service_token_ttl_seconds: 300
-  # introspection_delegate:
+  # introspection_delegate:  # only reachable AFTER introspect client-auth
   #   hydra_admin_url: "https://hydra-admin.example.com"
 
 # ─── Sites ────────────────────────────────────────────────────────────────────

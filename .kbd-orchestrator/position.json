@@ -1,13 +1,13 @@
 {
   "schemaVersion": "1",
-  "updatedAt": "2026-07-04T18:10:00Z",
+  "updatedAt": "2026-07-06T00:00:00Z",
   "cursor": [
-    "agent-identity-and-delegation"
+    "agent-gateway-hardening-and-exposure"
   ],
   "root": {
     "type": "phase",
-    "id": "agent-identity-and-delegation",
-    "status": "reflected",
+    "id": "agent-gateway-hardening-and-exposure",
+    "status": "executing",
     "progress": {
       "done": 4,
       "total": 4

@@ -653,14 +653,48 @@ Route mutations automatically send `SELECT pg_notify('flintgate_config_changed',
 
 ---
 
+## OAuth 2.0 endpoints (proxy port)
+
+Enabled per capability under `oauth:` / `token_exchange:` (see `config.example.yaml`):
+
+- `POST /oauth/token` — RFC 8693 token exchange + RFC 6749 client-credentials,
+  dispatched by `grant_type`. Callers present their grant credentials in-body;
+  enable `oauth.rate_limit` to throttle the endpoint.
+- `POST /oauth/introspect` — RFC 7662 introspection for gateway-minted tokens.
+  **Authenticated by default** (`oauth.introspect_auth: true`): the caller must
+  present OAuth client credentials (`client_id`/`client_secret` via HTTP Basic or
+  form), verified against `oauth_clients`. This is an RFC 7662 §2.1 **MUST** — the
+  endpoint is otherwise a token-scanning oracle. The Hydra introspection-delegate
+  is only reachable **after** this client-auth passes. flint-gate refuses to start
+  if `introspect_auth` is true with no database (nothing to authenticate against).
+
+Both OAuth endpoints support per-endpoint rate limiting (`oauth.rate_limit`)
+independent of the proxy `server.rate_limit`.
+
+**Client secrets** are stored under **bcrypt** (per-secret salt + work factor).
+The raw secret is a 256-bit CSPRNG token shown once at creation and never
+recoverable. Verification format-sniffs the stored hash, so any pre-bcrypt
+(legacy SHA-256) client keeps working and is **transparently re-hashed to bcrypt
+on its next successful authentication** — no re-issue or migration step needed.
+
+---
+
 ## Non-Human Identities (agents & services)
 
 Flint Gate authorizes **non-human identities** as first-class Cedar principals,
-distinct from human users. A delegated token (from RFC 8693 token exchange,
-carrying an `act` claim) authorizes as an **`Agent`**; a client-credentials
-service token (carrying a `client_id`) authorizes as a **`Service`**; everything
-else is a **`User`**. Because the Cedar entity *type* differs, a policy can grant
-an agent something a user must not have — and vice-versa:
+distinct from human users. The principal **kind** is derived from *trusted*
+signals only:
+
+- a **delegated token** from RFC 8693 token exchange (gateway-signed `act` claim)
+  → **`Agent`**;
+- a **client-credentials** service token or an **API-key** credential → **`Service`**;
+- everything else, including any Kratos session, → **`User`**.
+
+Classification is spoof-resistant: `Agent`/`Service` require the gateway's own
+signed `flint_kind` marker (or the token-only `act` signal), so an upstream IdP
+claim (e.g. a bare `client_id`) or a Kratos session trait cannot promote a human
+into a non-human principal. Because the Cedar entity *type* differs, a policy can
+grant an agent something a user must not have — and vice-versa:
 
 ```cedar
 // Agents may call the deploy tool; a human user with the same id may not.

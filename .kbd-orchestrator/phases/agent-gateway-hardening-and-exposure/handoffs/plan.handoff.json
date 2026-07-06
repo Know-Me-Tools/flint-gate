@@ -1,0 +1,9 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-04T19:00:00Z",
+  "outputs": ["plan.md"],
+  "nextStage": "execute",
+  "summaryForNext": "4 changes ordered by dependency + security-gate: add-oauth-endpoint-hardening (G1, exposure gate — build first) -> add-bcrypt-secrets (G2, one new crate, shares the client-verify path) -> add-identity-classification-edges (G3, independent small fixes) -> add-actor-token-and-hydra-delegate (G4, completes delegation on the hardened surface). Backend openspec, driver kbd-apply (one task/turn). Every change: artifact-refiner + security-review QA, explicit fail-closed test, re-audit every authorize entry point, archive via --skip-specs. First to apply: add-oauth-endpoint-hardening.",
+  "skipped": false,
+  "skipReason": null
+}

@@ -8,8 +8,9 @@
 //! `act` (actor) claim via [`JwtMinter`]. It never forwards the subject token
 //! upstream (confused-deputy defense).
 //!
-//! `delegate_to_hydra` (config) is a forward-looking seam for proxying the
-//! exchange to Ory Hydra; it is not implemented here — the exchange is local.
+//! `delegate_to_hydra` (config) proxies the exchange to an Ory Hydra token
+//! endpoint (federate-first) instead of minting locally — see [`HydraDelegate`]
+//! and [`delegate_exchange_to_hydra`]. Local minting is the default.
 
 use crate::auth::identity::Identity;
 use crate::auth::jwt_mint::SharedJwtMinter;
@@ -54,6 +55,9 @@ pub enum ExchangeError {
     InvalidScope(String),
     /// The exchange is not configured / disabled.
     NotEnabled,
+    /// An `actor_token` was supplied but multi-hop delegation is not supported.
+    /// Rejected fail-closed rather than silently ignored.
+    UnsupportedActorToken,
     /// Minting the delegated token failed.
     MintFailed(String),
 }
@@ -66,6 +70,7 @@ impl ExchangeError {
             ExchangeError::InvalidSubjectToken(_) => "invalid_request",
             ExchangeError::InvalidScope(_) => "invalid_scope",
             ExchangeError::NotEnabled => "invalid_request",
+            ExchangeError::UnsupportedActorToken => "invalid_request",
             ExchangeError::MintFailed(_) => "server_error",
         }
     }
@@ -77,6 +82,9 @@ impl ExchangeError {
             | ExchangeError::InvalidScope(m)
             | ExchangeError::MintFailed(m) => m.clone(),
             ExchangeError::NotEnabled => "token exchange is not enabled".to_string(),
+            ExchangeError::UnsupportedActorToken => {
+                "actor_token (multi-hop delegation) is not supported".to_string()
+            }
         }
     }
 }
@@ -207,6 +215,18 @@ pub fn validate_request(req: &TokenExchangeRequest) -> Result<(), ExchangeError>
             "subject_token is required".to_string(),
         ));
     }
+    // Fail-closed on an actor_token: multi-hop `act` chaining is not supported
+    // this phase. Rejecting (rather than silently ignoring the security-relevant
+    // parameter) prevents a caller from believing a delegation constraint was
+    // applied when it was not.
+    if req
+        .actor_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Err(ExchangeError::UnsupportedActorToken);
+    }
     Ok(())
 }
 
@@ -291,6 +311,8 @@ pub struct TokenExchangeState {
     pub minter: SharedJwtMinter,
     /// TTL for minted delegated tokens.
     pub delegated_ttl_seconds: Option<u64>,
+    /// Optional Ory Hydra delegate — when set, the exchange is proxied to Hydra.
+    pub delegate: Option<HydraDelegate>,
 }
 
 /// `POST /oauth/token` (RFC 8693) axum handler. Maps [`ExchangeError`] to the
@@ -307,6 +329,7 @@ pub async fn token_exchange_handler(
         &state.verifier,
         &state.minter,
         state.delegated_ttl_seconds,
+        state.delegate.as_ref(),
     )
     .await
     {
@@ -328,19 +351,89 @@ pub async fn token_exchange_handler(
     }
 }
 
-/// End-to-end gateway-local token exchange: validate → verify `subject_token`
-/// → downscope → mint a delegated token (`act` claim + audience) via the shared
-/// [`JwtMinter`]. Returns the RFC 8693 response body or a mapped [`ExchangeError`].
+/// Configured Ory Hydra token-endpoint delegate for the exchange. When present,
+/// the RFC 8693 request is proxied to Hydra (which owns 8693) instead of being
+/// minted locally — the federate-first path.
+#[derive(Clone)]
+pub struct HydraDelegate {
+    pub http_client: reqwest::Client,
+    /// Hydra token endpoint, e.g. `https://hydra.example.com/oauth2/token`.
+    pub token_url: String,
+}
+
+/// Proxy an RFC 8693 token-exchange request to a configured Ory Hydra token
+/// endpoint. Fail-closed: a transport error or a non-2xx from Hydra is a
+/// `MintFailed` (deny) — it never falls back to local minting, which would be a
+/// confusing dual mode. Returns Hydra's JSON token response on success.
 ///
-/// Fail-closed at every step: a bad grant, unverifiable subject token, scope
-/// escalation, or an unavailable minter all reject rather than issue a token.
+/// The `http_client` MUST be configured with `redirect(Policy::none())` — a
+/// delegate posts the `subject_token` to a fixed operator URL, so following a
+/// (compromised/misconfigured) Hydra 3xx to another host would exfiltrate the
+/// token. A 3xx then surfaces as a non-2xx → fail-closed deny.
+///
+/// NOTE: Hydra has known `aud`-handling quirks when exchanging external tokens
+/// (ory/hydra#3723); operators should validate their Hydra audience config.
+pub async fn delegate_exchange_to_hydra(
+    delegate: &HydraDelegate,
+    req: &TokenExchangeRequest,
+) -> Result<Value, ExchangeError> {
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", GRANT_TYPE_TOKEN_EXCHANGE),
+        ("subject_token", req.subject_token.as_str()),
+    ];
+    if let Some(v) = req.subject_token_type.as_deref() {
+        form.push(("subject_token_type", v));
+    }
+    if let Some(v) = req.scope.as_deref() {
+        form.push(("scope", v));
+    }
+    if let Some(v) = req.resource.as_deref() {
+        form.push(("resource", v));
+    }
+    if let Some(v) = req.audience.as_deref() {
+        form.push(("audience", v));
+    }
+
+    let resp = delegate
+        .http_client
+        .post(&delegate.token_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| ExchangeError::MintFailed(format!("hydra token endpoint unreachable: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(ExchangeError::MintFailed(format!(
+            "hydra token exchange returned {}",
+            resp.status()
+        )));
+    }
+    resp.json::<Value>()
+        .await
+        .map_err(|e| ExchangeError::MintFailed(format!("malformed hydra token response: {e}")))
+}
+
+/// End-to-end token exchange: validate → (delegate to Hydra when configured, OR
+/// verify `subject_token` → downscope → mint a delegated token via [`JwtMinter`]).
+/// Returns the RFC 8693 response body or a mapped [`ExchangeError`].
+///
+/// Fail-closed at every step: a bad grant, an `actor_token`, an unverifiable
+/// subject token, scope escalation, an unavailable minter, or a Hydra delegate
+/// error all reject rather than issue a token.
 pub async fn exchange(
     req: &TokenExchangeRequest,
     verifier: &Arc<dyn Authenticator>,
     minter: &SharedJwtMinter,
     delegated_ttl_seconds: Option<u64>,
+    delegate: Option<&HydraDelegate>,
 ) -> Result<Value, ExchangeError> {
     validate_request(req)?;
+
+    // Federate-first: when a Hydra delegate is configured, proxy the exchange to
+    // it (Hydra owns RFC 8693) instead of minting locally.
+    if let Some(delegate) = delegate {
+        return delegate_exchange_to_hydra(delegate, req).await;
+    }
 
     let subject = verify_subject_token(verifier, &req.subject_token).await?;
     let granted = downscope(req.scope.as_deref(), &subject.scopes)?;
@@ -395,6 +488,25 @@ mod tests {
     #[test]
     fn validate_accepts_well_formed_request() {
         assert!(validate_request(&req(GRANT_TYPE_TOKEN_EXCHANGE, "a.b.c")).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_actor_token_fail_closed() {
+        // A present actor_token must be REJECTED (not silently ignored) — the
+        // fail-closed close of the phase's silent-drop gap.
+        let mut r = req(GRANT_TYPE_TOKEN_EXCHANGE, "a.b.c");
+        r.actor_token = Some("actor.jwt.here".into());
+        let err = validate_request(&r).unwrap_err();
+        assert_eq!(err, ExchangeError::UnsupportedActorToken);
+        assert_eq!(err.oauth_code(), "invalid_request");
+    }
+
+    #[test]
+    fn validate_ignores_empty_actor_token() {
+        // An empty/whitespace actor_token is not a real actor → allowed.
+        let mut r = req(GRANT_TYPE_TOKEN_EXCHANGE, "a.b.c");
+        r.actor_token = Some("   ".into());
+        assert!(validate_request(&r).is_ok());
     }
 
     // ── Subject-provider startup guard (fail-closed against fail-open config) ─
@@ -640,7 +752,7 @@ mod tests {
             scopes: "read write admin",
         });
         let m = minter().await;
-        let resp = exchange(&exchange_req(Some("read write")), &verifier, &m, None)
+        let resp = exchange(&exchange_req(Some("read write")), &verifier, &m, None, None)
             .await
             .expect("valid exchange");
         assert_eq!(resp["scope"], "read write");
@@ -659,7 +771,7 @@ mod tests {
             scopes: "read",
         });
         let m = minter().await;
-        assert!(exchange(&exchange_req(None), &verifier, &m, None).await.is_ok());
+        assert!(exchange(&exchange_req(None), &verifier, &m, None, None).await.is_ok());
     }
 
     #[tokio::test]
@@ -669,7 +781,7 @@ mod tests {
             scopes: "read",
         });
         let m = minter().await;
-        let err = exchange(&exchange_req(Some("read admin")), &verifier, &m, None)
+        let err = exchange(&exchange_req(Some("read admin")), &verifier, &m, None, None)
             .await
             .unwrap_err();
         assert_eq!(err.oauth_code(), "invalid_scope");
@@ -682,7 +794,7 @@ mod tests {
             scopes: "read",
         });
         let m = minter().await;
-        let err = exchange(&exchange_req(None), &verifier, &m, None)
+        let err = exchange(&exchange_req(None), &verifier, &m, None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, ExchangeError::InvalidSubjectToken(_)));
@@ -698,7 +810,127 @@ mod tests {
         let m = minter().await;
         let mut bad = exchange_req(None);
         bad.grant_type = "authorization_code".into();
-        let err = exchange(&bad, &verifier, &m, None).await.unwrap_err();
+        let err = exchange(&bad, &verifier, &m, None, None).await.unwrap_err();
         assert_eq!(err.oauth_code(), "unsupported_grant_type");
+    }
+
+    #[tokio::test]
+    async fn exchange_rejects_actor_token_before_minting() {
+        // An actor_token present → rejected, no token minted (fail-closed).
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read",
+        });
+        let m = minter().await;
+        let mut req = exchange_req(None);
+        req.actor_token = Some("actor.jwt".into());
+        let err = exchange(&req, &verifier, &m, None, None).await.unwrap_err();
+        assert_eq!(err, ExchangeError::UnsupportedActorToken);
+    }
+
+    // ── Hydra-delegate exchange ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn delegate_forwards_to_hydra_and_returns_its_token() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/oauth2/token"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                    "access_token": "hydra-minted-token",
+                    "token_type": "Bearer",
+                    "scope": "read"
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::new(),
+            token_url: format!("{}/oauth2/token", server.uri()),
+        };
+        // With a delegate set, exchange proxies to Hydra — the local verifier/
+        // minter are NOT consulted (a deny-all verifier proves it's bypassed).
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: false,
+            scopes: "",
+        });
+        let m = minter().await;
+        let resp = exchange(&exchange_req(None), &verifier, &m, None, Some(&delegate))
+            .await
+            .expect("delegate exchange succeeds");
+        assert_eq!(resp["access_token"], "hydra-minted-token");
+    }
+
+    #[tokio::test]
+    async fn delegate_fails_closed_on_hydra_error() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::new(),
+            token_url: format!("{}/oauth2/token", server.uri()),
+        };
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read",
+        });
+        let m = minter().await;
+        let err = exchange(&exchange_req(None), &verifier, &m, None, Some(&delegate))
+            .await
+            .unwrap_err();
+        // Non-2xx from Hydra → MintFailed (deny), never a local-mint fallback.
+        assert!(matches!(err, ExchangeError::MintFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn delegate_fails_closed_on_hydra_redirect() {
+        // A 3xx from Hydra must NOT be followed (token-exfiltration guard). With
+        // a no-redirect client the 302 surfaces as a non-2xx → deny.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("location", "https://attacker.example/steal"),
+            )
+            .mount(&server)
+            .await;
+
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            token_url: format!("{}/oauth2/token", server.uri()),
+        };
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read",
+        });
+        let m = minter().await;
+        let err = exchange(&exchange_req(None), &verifier, &m, None, Some(&delegate))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::MintFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn delegate_fails_closed_on_transport_error() {
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::new(),
+            token_url: "http://127.0.0.1:1/oauth2/token".into(),
+        };
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read",
+        });
+        let m = minter().await;
+        let err = exchange(&exchange_req(None), &verifier, &m, None, Some(&delegate))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::MintFailed(_)));
     }
 }

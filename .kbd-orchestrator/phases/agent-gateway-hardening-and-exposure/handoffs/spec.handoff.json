@@ -1,0 +1,15 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-04T18:50:00Z",
+  "outputs": [
+    "openspec/changes/add-oauth-endpoint-hardening",
+    "openspec/changes/add-bcrypt-secrets",
+    "openspec/changes/add-identity-classification-edges",
+    "openspec/changes/add-actor-token-and-hydra-delegate"
+  ],
+  "nextStage": "plan",
+  "summaryForNext": "4 OpenSpec changes (19 tasks) in dependency order: add-oauth-endpoint-hardening (G1,5) -> add-bcrypt-secrets (G2,5) -> add-identity-classification-edges (G3,5) -> add-actor-token-and-hydra-delegate (G4,4). ZeeSpec inactive. Operator decisions baked in: G1 hard client-auth on /oauth/introspect + rate-limit on /oauth/token (both get governor; Hydra-delegate behind introspect auth); G2 format-sniff verify with transparent re-hash to bcrypt (no lockout); G4 reject actor_token if present (fail-closed, defer chaining) + wire Hydra-delegate proxy. One new crate: bcrypt@0.19. Backend openspec, driver kbd-apply. Every change has a fail-closed degrades_to_deny test task.",
+  "skipped": false,
+  "skipReason": null,
+  "zeespec": "n/a"
+}

@@ -362,8 +362,33 @@ async fn main() -> Result<()> {
             let verifier = auth_providers.get(provider_name).cloned().ok_or_else(|| {
                 anyhow::anyhow!("subject_token_provider {provider_name:?} authenticator was not built")
             })?;
-            info!("RFC 8693 token exchange enabled");
-            Some((verifier, tx_cfg.delegated_ttl_seconds))
+            // Optional Hydra-delegate: proxy the exchange to a configured Hydra
+            // token endpoint (federate-first). Requires delegate_to_hydra + a URL.
+            let delegate = if tx_cfg.delegate_to_hydra {
+                let url = tx_cfg.hydra_token_url.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "token_exchange.delegate_to_hydra is true but hydra_token_url is not set"
+                    )
+                })?;
+                // Dedicated client that does NOT follow redirects: the delegate
+                // forwards the subject_token to a FIXED operator-configured URL,
+                // so a Hydra 3xx must never be followed to another host (that
+                // would exfiltrate the subject token to an attacker).
+                let delegate_client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .context("building Hydra-delegate HTTP client")?;
+                info!(token_url = %url, "RFC 8693 token exchange enabled (Hydra delegate)");
+                Some(flint_gate_core::auth::token_exchange::HydraDelegate {
+                    http_client: delegate_client,
+                    token_url: url,
+                })
+            } else {
+                info!("RFC 8693 token exchange enabled (gateway-local)");
+                None
+            };
+            Some((verifier, tx_cfg.delegated_ttl_seconds, delegate))
         } else {
             None
         };
@@ -390,7 +415,25 @@ async fn main() -> Result<()> {
             let verifier = TokenVerifier::from_jwt_config(&initial_config.jwt)
                 .await
                 .context("building introspection verifier from jwt config")?;
-            info!("RFC 7662 introspection enabled");
+            // RFC 7662 §2.1: introspection auth is required by default. Refuse to
+            // start if auth is required but there is no client store to verify
+            // against (fail-closed — never run an unauthable-but-required endpoint).
+            if oauth_cfg.introspect_auth && db.is_none() {
+                anyhow::bail!(
+                    "oauth.introspect_auth is true but no database is configured — \
+                     the client store is required to authenticate /oauth/introspect. \
+                     Configure a database or set oauth.introspect_auth=false (only when \
+                     the endpoint is network-restricted)."
+                );
+            }
+            if oauth_cfg.introspect_auth {
+                info!("RFC 7662 introspection enabled (client auth REQUIRED)");
+            } else {
+                info!(
+                    "RFC 7662 introspection enabled — UNAUTHENTICATED (introspect_auth=false); \
+                     ensure /oauth/introspect is network-restricted"
+                );
+            }
             Some(IntrospectionState {
                 verifier,
                 http_client: http_client.clone(),
@@ -398,6 +441,8 @@ async fn main() -> Result<()> {
                     .introspection_delegate
                     .as_ref()
                     .map(|d| d.hydra_admin_url.clone()),
+                require_auth: oauth_cfg.introspect_auth,
+                client_store: db.clone(),
             })
         } else {
             None
@@ -411,12 +456,30 @@ async fn main() -> Result<()> {
                 client_credentials,
                 introspection,
             };
-            proxy_app = proxy_app.merge(
-                Router::new()
-                    .route("/oauth/token", post(token_endpoint))
-                    .route("/oauth/introspect", post(introspect_endpoint))
-                    .with_state(oauth_state),
-            );
+            let mut oauth_router = Router::new()
+                .route("/oauth/token", post(token_endpoint))
+                .route("/oauth/introspect", post(introspect_endpoint))
+                .with_state(oauth_state);
+
+            // Per-endpoint rate limiting on /oauth/* (independent of the proxy
+            // server.rate_limit), keyed on credential/IP — throttles the
+            // client-credentials guessing surface and the introspection oracle.
+            let orl = &oauth_cfg.rate_limit;
+            if orl.enabled {
+                match flint_gate_core::ratelimit::build_governor_layer(orl.per_second, orl.burst) {
+                    Some(layer) => {
+                        oauth_router = oauth_router.layer(layer);
+                        info!(
+                            per_second = orl.per_second,
+                            burst = orl.burst,
+                            "OAuth endpoint rate limiter enabled"
+                        );
+                    }
+                    None => warn!("oauth.rate_limit enabled but config degenerate — not applied"),
+                }
+            }
+
+            proxy_app = proxy_app.merge(oauth_router);
         }
     }
 

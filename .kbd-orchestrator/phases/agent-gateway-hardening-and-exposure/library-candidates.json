@@ -1,0 +1,68 @@
+{
+  "phase": "agent-gateway-hardening-and-exposure",
+  "generated": "2026-07-04",
+  "mode": "stack-specified",
+  "stack": "rust-axum-tokio-postgres",
+  "governing_constraint": "Harden the OAuth/identity surface for safe exposure. Federate any JWKS IdM (Ory reference), never an IdP. Single-binary, jsonwebtoken@9 pin. Fail-closed + degrades_to_deny on every new auth path; audit every authorize entry point.",
+  "decisions": [
+    {
+      "gap": "G1-oauth-endpoint-auth-ratelimit",
+      "verdict": "reuse-client-store-plus-governor",
+      "choice": ["verify_client_credentials (existing oauth_clients store)", "build_governor_layer (existing)", "axum tower layer on the OAuth sub-router"],
+      "version": {"jsonwebtoken": "9 (existing)"},
+      "confidence": "high",
+      "rationale": "RFC 7662 §2.1 MANDATES introspection-endpoint auth to stop token scanning; client-credentials is the standard mechanism and flint-gate already verifies them (client-credentials grant). The in-process governor layer already exists and is composable per-endpoint. Zero new crates.",
+      "fallback": "network-restriction + rate-limit only if client-auth wiring slips",
+      "rejected": ["bespoke admin credential (off-standard)", "leaving /oauth/introspect unauthenticated (violates RFC 7662 MUST)"],
+      "license": "existing",
+      "open_questions": ["/oauth/token hard client-auth gate vs rate-limit-only (lean: rate-limit + in-body client-auth)"]
+    },
+    {
+      "gap": "G2-slow-kdf-secrets",
+      "verdict": "adopt",
+      "choice": "bcrypt",
+      "version": {"bcrypt": "0.19"},
+      "confidence": "high",
+      "rationale": "Client secret is a 256-bit CSPRNG token, so bcrypt's work factor is sufficient; bcrypt@0.19.2 is STABLE, minimal-API (internal salt, hash/verify), pure-Rust (single-binary-safe). argon2 crate is mid-release-churn (0.6.0-rc; RustCrypto stable lags) and Argon2id memory-hardness is overkill for a high-entropy machine secret. KISS.",
+      "fallback": "argon2 0.5 if a memory-hard KDF is later mandated",
+      "rejected": ["argon2 (rc-version churn; memory-hardness unnecessary)", "scrypt (overkill)", "keep unsalted sha256 (no work factor)"],
+      "license": "MIT",
+      "new_crate": true,
+      "integration_notes": "Verify refactors from `WHERE secret_hash=$2` lookup to fetch-client-by-id then bcrypt::verify. Format-sniff on verify ($2b$ prefix) for a clean cutover from existing SHA-256 rows. rand@0.8 already present.",
+      "open_questions": ["migration: format-sniff verify vs re-issue (lean: format-sniff)"]
+    },
+    {
+      "gap": "G3-classification-edges",
+      "verdict": "extend-existing",
+      "choice": ["auth/api_key.rs::build_result kind=Service", "identity.rs::derived_kind gate act-fallback off session_id (Kratos)", "db transaction wrapping status-flip + audit insert (mirror db:834 .begin())"],
+      "version": {},
+      "confidence": "high",
+      "rationale": "Three targeted correctness/robustness fixes on existing code, no new deps: API-key workloads authorize as Service (covered by NHI revocation); Kratos metadata_public can never promote kind; NHI revoke is audited-before-effect.",
+      "fallback": null,
+      "rejected": ["leaving api-key as User (escapes revocation)", "post-mutation best-effort audit (non-transactional)"],
+      "license": "existing"
+    },
+    {
+      "gap": "G4-chained-delegation-hydra-delegate",
+      "verdict": "handroll-reject-first-plus-wire-seam",
+      "choice": ["verify actor_token via existing JWKS verifier OR reject present-but-unsupported (fail-closed)", "wire delegate_to_hydra to proxy the exchange to the configured Hydra token endpoint (reqwest)"],
+      "version": {"jsonwebtoken": "9 (existing)", "reqwest": "existing"},
+      "confidence": "medium",
+      "rationale": "Silently ignoring the security-relevant actor_token param (today's behavior) is the exact fail-open pattern this phase kills; verify-or-reject closes it. Hydra proxy completes federate-first delegation (external-aud caveat ory/hydra#3723).",
+      "fallback": "reject-if-present only; defer full multi-hop chaining",
+      "rejected": ["silently ignoring actor_token (fail-open)", "a new delegation crate"],
+      "license": "existing",
+      "open_questions": ["verify-and-chain now vs reject-if-present this phase (lean: reject-if-present)"]
+    }
+  ],
+  "new_crates": ["bcrypt@0.19"],
+  "reused_crates": ["jsonwebtoken@9", "cedar-policy@4", "axum", "tower", "tower_governor@0.8", "reqwest", "sqlx", "rand@0.8"],
+  "explicitly_excluded": ["argon2", "scrypt", "password-hash (using bcrypt's own API)"],
+  "build_order": ["G1-oauth-endpoint-auth-ratelimit", "G2-slow-kdf-secrets", "G3-classification-edges", "G4-chained-delegation-hydra-delegate"],
+  "open_questions": [
+    "/oauth/token hard client-auth gate vs rate-limit-only",
+    "bcrypt migration: format-sniff verify vs re-issue",
+    "G4 actor_token verify-and-chain now vs reject-if-present",
+    "rate-limit backend: in-process governor per-endpoint vs Redis window counters (carried Redis-L2)"
+  ]
+}

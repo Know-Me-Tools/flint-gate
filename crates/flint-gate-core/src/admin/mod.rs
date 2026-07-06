@@ -974,24 +974,6 @@ struct IssueAgentIdentityRequest {
     label: Option<String>,
 }
 
-/// Write an NHI lifecycle event to the authz audit trail (best-effort).
-async fn audit_nhi_event(db: &Database, id: &str, action: &str) {
-    let record = crate::db::AuthzAuditRecord {
-        request_id: None,
-        principal: id.to_string(),
-        action: action.to_string(),
-        resource: "agent_identity".to_string(),
-        // Lifecycle events are administrative; record as `allow` (the action
-        // succeeded) — the decision column tracks authz outcomes, and these rows
-        // are distinguished by their `action` (issue/rotate/revoke).
-        decision: crate::db::AuthzAuditDecision::Allow,
-        reason: Some(format!("nhi {action}")),
-        context: Some(json!({ "agent_id": id })),
-    };
-    if let Err(e) = db.log_authz_decision(&record).await {
-        tracing::warn!(error = %e, id, action, "nhi lifecycle audit write failed (ignored)");
-    }
-}
 
 /// `GET /agent-identities` — list all non-human identities.
 async fn list_agent_identities_handler(State(state): State<AdminState>) -> impl IntoResponse {
@@ -1024,7 +1006,7 @@ async fn issue_agent_identity_handler(
         .await
     {
         Ok(()) => {
-            audit_nhi_event(db, &payload.id, "nhi_issue").await;
+            // Audit row is written transactionally inside issue_agent_identity.
             (
                 StatusCode::CREATED,
                 Json(json!({"status": "issued", "id": payload.id, "kind": payload.kind})),
@@ -1045,7 +1027,7 @@ async fn rotate_agent_identity_handler(
     };
     match db.rotate_agent_identity(&id).await {
         Ok(true) => {
-            audit_nhi_event(db, &id, "nhi_rotate").await;
+            // Audit row is written transactionally inside rotate_agent_identity.
             Json(json!({"status": "rotated", "id": id})).into_response()
         }
         Ok(false) => (
@@ -1068,7 +1050,7 @@ async fn revoke_agent_identity_handler(
     };
     match db.revoke_agent_identity(&id).await {
         Ok(true) => {
-            audit_nhi_event(db, &id, "nhi_revoke").await;
+            // Audit row is written transactionally inside revoke_agent_identity.
             Json(json!({"status": "revoked", "id": id})).into_response()
         }
         Ok(false) => (

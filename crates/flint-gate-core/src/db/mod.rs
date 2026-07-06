@@ -107,13 +107,69 @@ CREATE TABLE IF NOT EXISTS agent_identities (
 CREATE INDEX IF NOT EXISTS agent_identities_status_idx ON agent_identities (status);
 "#;
 
-/// SHA-256 of `input`, hex-encoded. Used to store API-key / client-secret
-/// hashes so raw secrets are never persisted.
+/// SHA-256 of `input`, hex-encoded. Used to store API-key hashes so raw secrets
+/// are never persisted. (Client secrets now use [`SecretHash`] — bcrypt.)
 fn sha256_hex(input: &str) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     h.update(input.as_bytes());
     hex::encode(h.finalize())
+}
+
+/// bcrypt work factor for client-secret hashing. Client secrets are 256-bit
+/// CSPRNG tokens, so the default cost is comfortably sufficient.
+const BCRYPT_COST: u32 = bcrypt::DEFAULT_COST;
+
+/// Password/secret hashing for OAuth client secrets.
+///
+/// New secrets are hashed with **bcrypt** (per-hash salt, tunable work factor).
+/// Verification **format-sniffs** the stored hash so pre-existing unsalted
+/// SHA-256 rows keep working: a bcrypt hash (`$2b$…` / `$2a$…` / `$2y$…`)
+/// verifies via `bcrypt::verify`; anything else is treated as a legacy 64-hex
+/// SHA-256 hash and compared by re-hashing. A legacy verify signals
+/// [`SecretHash::needs_rehash`] so the caller can transparently upgrade the row.
+struct SecretHash;
+
+impl SecretHash {
+    /// bcrypt silently truncates its input at 72 bytes. Every secret we create
+    /// is 64 hex chars, so this is never hit in practice — but we enforce the
+    /// bound explicitly so a future path that hashes a longer, caller-supplied
+    /// secret fails loudly rather than silently colliding on a 72-byte prefix.
+    const MAX_SECRET_LEN: usize = 72;
+
+    /// Hash a raw secret with bcrypt for storage. Rejects an over-length secret
+    /// (bcrypt would otherwise truncate at 72 bytes without error).
+    fn hash(raw: &str) -> anyhow::Result<String> {
+        if raw.len() > Self::MAX_SECRET_LEN {
+            anyhow::bail!(
+                "client secret exceeds {} bytes (bcrypt would truncate)",
+                Self::MAX_SECRET_LEN
+            );
+        }
+        bcrypt::hash(raw, BCRYPT_COST).context("hashing client secret")
+    }
+
+    /// True when the stored hash is a modern bcrypt hash.
+    fn is_bcrypt(stored: &str) -> bool {
+        stored.starts_with("$2b$") || stored.starts_with("$2a$") || stored.starts_with("$2y$")
+    }
+
+    /// Verify a raw secret against a stored hash (bcrypt or legacy SHA-256).
+    /// Never errors on a bad hash format — an unverifiable hash is simply `false`.
+    fn verify(raw: &str, stored: &str) -> bool {
+        if Self::is_bcrypt(stored) {
+            bcrypt::verify(raw, stored).unwrap_or(false)
+        } else {
+            // Legacy unsalted SHA-256 (64 hex chars). Constant-ish: both sides
+            // are fixed-length hex compared byte-for-byte.
+            sha256_hex(raw) == stored
+        }
+    }
+
+    /// Whether a successfully-verified stored hash should be upgraded to bcrypt.
+    fn needs_rehash(stored: &str) -> bool {
+        !Self::is_bcrypt(stored)
+    }
 }
 
 /// Database access wrapper.
@@ -571,9 +627,11 @@ impl Database {
         audience: Option<&str>,
     ) -> Result<(Uuid, String)> {
         use rand::Rng;
+        // 256-bit CSPRNG secret — this is the ONLY path that creates a client
+        // secret, so every stored secret is high-entropy + bcrypt-hashed.
         let raw_bytes: [u8; 32] = rand::thread_rng().gen();
         let raw_secret = hex::encode(raw_bytes);
-        let secret_hash = sha256_hex(&raw_secret);
+        let secret_hash = SecretHash::hash(&raw_secret)?;
         let scopes_json = serde_json::to_value(scopes).context("serializing scopes")?;
 
         let row = sqlx::query(
@@ -597,25 +655,54 @@ impl Database {
     /// Verify a `client_id` + `client_secret` pair. Returns the client record on
     /// success, `None` on any mismatch (unknown client, wrong secret, inactive).
     ///
-    /// The secret is looked up by its SHA-256 hash against the unique-indexed
-    /// column, so the presented secret is never string-compared in the clear.
+    /// The row is fetched by `client_id`, then the presented secret is verified
+    /// against the stored hash via [`SecretHash`] (bcrypt, or legacy SHA-256 with
+    /// a transparent upgrade). The raw secret is never persisted or compared in
+    /// the clear.
     pub async fn verify_client_credentials(
         &self,
         client_id: &str,
         client_secret: &str,
     ) -> Result<Option<OAuthClientRecord>> {
-        let secret_hash = sha256_hex(client_secret);
+        // Fetch by client_id (the secret hash is per-hash-salted with bcrypt, so
+        // a `WHERE secret_hash = $2` lookup is impossible) then KDF-verify.
         let row = sqlx::query(
-            "SELECT id, client_id, scopes, audience FROM oauth_clients
-             WHERE client_id = $1 AND secret_hash = $2 AND active = true",
+            "SELECT id, client_id, secret_hash, scopes, audience FROM oauth_clients
+             WHERE client_id = $1 AND active = true",
         )
         .bind(client_id)
-        .bind(&secret_hash)
         .fetch_optional(&self.pool)
         .await
         .context("verifying client credentials")?;
 
         let Some(r) = row else { return Ok(None) };
+        let stored_hash: String = r.try_get("secret_hash")?;
+
+        if !SecretHash::verify(client_secret, &stored_hash) {
+            return Ok(None);
+        }
+
+        let id: Uuid = r.try_get("id")?;
+
+        // Transparently upgrade a legacy (SHA-256) hash to bcrypt on a successful
+        // verify — best-effort: a failed upgrade never fails the auth.
+        if SecretHash::needs_rehash(&stored_hash) {
+            if let Ok(new_hash) = SecretHash::hash(client_secret) {
+                if let Err(e) = sqlx::query(
+                    "UPDATE oauth_clients SET secret_hash = $1 WHERE id = $2",
+                )
+                .bind(&new_hash)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                {
+                    tracing::warn!(error = %e, client_id, "client secret re-hash to bcrypt failed (ignored)");
+                } else {
+                    info!(client_id, "client secret upgraded to bcrypt");
+                }
+            }
+        }
+
         let scopes: serde_json::Value = r.try_get("scopes")?;
         let scopes: Vec<String> = scopes
             .as_array()
@@ -626,7 +713,7 @@ impl Database {
             })
             .unwrap_or_default();
         Ok(Some(OAuthClientRecord {
-            id: r.try_get("id")?,
+            id,
             client_id: r.try_get("client_id")?,
             scopes,
             audience: r.try_get("audience")?,
@@ -637,12 +724,41 @@ impl Database {
 
     /// Issue (register) a non-human identity. `kind` is `"agent"` or `"service"`.
     /// Idempotent on the id (upsert keeps it active and updates the label).
+    /// Insert an NHI-lifecycle audit row inside an open transaction. The row is
+    /// an administrative `allow` decision distinguished by its `action`
+    /// (`nhi_issue`/`nhi_rotate`/`nhi_revoke`), so it commits atomically with the
+    /// status change — audited-before-effect.
+    async fn insert_nhi_audit(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        id: &str,
+        action: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO authz_audit \
+             (id, request_id, principal, action, resource, decision, reason, context) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(Option::<String>::None)
+        .bind(id)
+        .bind(action)
+        .bind("agent_identity")
+        .bind(AuthzAuditDecision::Allow.as_str())
+        .bind(Some(format!("nhi {action}")))
+        .bind(Some(serde_json::json!({ "agent_id": id })))
+        .execute(&mut **tx)
+        .await
+        .context("writing NHI lifecycle audit row")?;
+        Ok(())
+    }
+
     pub async fn issue_agent_identity(
         &self,
         id: &str,
         kind: &str,
         label: Option<&str>,
     ) -> Result<()> {
+        let mut tx = self.pool.begin().await.context("begin issue txn")?;
         sqlx::query(
             "INSERT INTO agent_identities (id, kind, status, label)
              VALUES ($1, $2, 'active', $3)
@@ -651,9 +767,11 @@ impl Database {
         .bind(id)
         .bind(kind)
         .bind(label)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("issuing agent identity")?;
+        Self::insert_nhi_audit(&mut tx, id, "nhi_issue").await?;
+        tx.commit().await.context("commit issue txn")?;
         info!(id, kind, "agent identity issued");
         Ok(())
     }
@@ -661,30 +779,45 @@ impl Database {
     /// Mark an identity rotated (stamps `rotated_at`). Caller rotates the
     /// underlying credential separately (client secret / signing key).
     pub async fn rotate_agent_identity(&self, id: &str) -> Result<bool> {
+        let mut tx = self.pool.begin().await.context("begin rotate txn")?;
         let r = sqlx::query(
             "UPDATE agent_identities SET rotated_at = NOW() WHERE id = $1 AND status = 'active'",
         )
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("rotating agent identity")?;
-        Ok(r.rows_affected() > 0)
+        let changed = r.rows_affected() > 0;
+        // Only audit (and commit meaningfully) when a row was actually rotated.
+        if changed {
+            Self::insert_nhi_audit(&mut tx, id, "nhi_rotate").await?;
+        }
+        tx.commit().await.context("commit rotate txn")?;
+        Ok(changed)
     }
 
     /// Revoke a non-human identity. After this returns, [`Self::is_agent_revoked`]
     /// reports it revoked, so the next authorize denies it (fail-closed).
     pub async fn revoke_agent_identity(&self, id: &str) -> Result<bool> {
+        let mut tx = self.pool.begin().await.context("begin revoke txn")?;
         let r = sqlx::query(
             "UPDATE agent_identities SET status = 'revoked' WHERE id = $1 AND status = 'active'",
         )
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("revoking agent identity")?;
-        if r.rows_affected() > 0 {
+        let changed = r.rows_affected() > 0;
+        // The revoke and its audit row commit together — audited-before-effect.
+        // If the audit insert fails, the whole revoke rolls back.
+        if changed {
+            Self::insert_nhi_audit(&mut tx, id, "nhi_revoke").await?;
+        }
+        tx.commit().await.context("commit revoke txn")?;
+        if changed {
             info!(id, "agent identity revoked");
         }
-        Ok(r.rows_affected() > 0)
+        Ok(changed)
     }
 
     /// Whether a non-human identity is revoked. An id that was never issued is
@@ -1438,6 +1571,49 @@ mod tests {
         assert_ne!(h, super::sha256_hex("secre7"));
     }
 
+    // ── SecretHash (bcrypt + legacy SHA-256 format-sniff) ─────────────────
+
+    #[test]
+    fn secret_hash_bcrypt_round_trip() {
+        let hash = super::SecretHash::hash("s3cr3t-token").expect("bcrypt hash");
+        assert!(super::SecretHash::is_bcrypt(&hash));
+        assert!(super::SecretHash::verify("s3cr3t-token", &hash));
+        assert!(!super::SecretHash::verify("wrong", &hash));
+        // A fresh bcrypt hash does not need a rehash.
+        assert!(!super::SecretHash::needs_rehash(&hash));
+        // Each hash is salted → two hashes of the same secret differ.
+        let hash2 = super::SecretHash::hash("s3cr3t-token").unwrap();
+        assert_ne!(hash, hash2);
+    }
+
+    #[test]
+    fn secret_hash_verifies_legacy_sha256_and_flags_rehash() {
+        // A legacy row stores the raw sha256_hex; it must still verify, and be
+        // flagged for upgrade to bcrypt.
+        let legacy = super::sha256_hex("legacy-secret");
+        assert!(!super::SecretHash::is_bcrypt(&legacy));
+        assert!(super::SecretHash::verify("legacy-secret", &legacy));
+        assert!(!super::SecretHash::verify("nope", &legacy));
+        assert!(super::SecretHash::needs_rehash(&legacy));
+    }
+
+    #[test]
+    fn secret_hash_rejects_over_length_secret() {
+        // >72 bytes would be silently truncated by bcrypt — reject instead.
+        let over = "a".repeat(73);
+        assert!(super::SecretHash::hash(&over).is_err());
+        // 72 bytes is the boundary and is accepted.
+        assert!(super::SecretHash::hash(&"a".repeat(72)).is_ok());
+    }
+
+    #[test]
+    fn secret_hash_verify_never_panics_on_garbage() {
+        // An unparseable / truncated hash → false, never a panic.
+        assert!(!super::SecretHash::verify("x", "$2b$not-a-real-bcrypt-hash"));
+        assert!(!super::SecretHash::verify("x", ""));
+        assert!(!super::SecretHash::verify("x", "short"));
+    }
+
     /// Round-trip for the OAuth client store: create → verify good secret →
     /// verify bad secret denied. Requires a live Postgres via `DATABASE_URL`.
     ///   DATABASE_URL=postgres://... cargo test -p flint-gate-core --all-features -- --ignored
@@ -1478,6 +1654,46 @@ mod tests {
             .await
             .unwrap();
         assert!(unknown.is_none());
+
+        // The stored hash for a freshly-created client is bcrypt.
+        let stored: String =
+            sqlx::query_scalar("SELECT secret_hash FROM oauth_clients WHERE client_id = $1")
+                .bind(&client_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(super::SecretHash::is_bcrypt(&stored));
+
+        // ── Legacy SHA-256 migration ──────────────────────────────────────
+        // Insert a client with a raw legacy hash, verify it still authenticates,
+        // and confirm the stored hash is transparently upgraded to bcrypt.
+        let legacy_id = format!("legacy-{}", uuid::Uuid::new_v4());
+        let legacy_secret = "legacy-plaintext-secret";
+        sqlx::query(
+            "INSERT INTO oauth_clients (client_id, secret_hash, scopes) VALUES ($1, $2, '[]')",
+        )
+        .bind(&legacy_id)
+        .bind(super::sha256_hex(legacy_secret))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        assert!(db
+            .verify_client_credentials(&legacy_id, legacy_secret)
+            .await
+            .unwrap()
+            .is_some());
+
+        let upgraded: String =
+            sqlx::query_scalar("SELECT secret_hash FROM oauth_clients WHERE client_id = $1")
+                .bind(&legacy_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(
+            super::SecretHash::is_bcrypt(&upgraded),
+            "legacy hash should be upgraded to bcrypt on verify"
+        );
     }
 
     /// Round-trip for the NHI lifecycle: issue → not-revoked → revoke →
@@ -1515,5 +1731,24 @@ mod tests {
         // It appears in the listing.
         let list = db.list_agent_identities().await.unwrap();
         assert!(list.iter().any(|r| r.id == id && r.status == "revoked"));
+
+        // Each lifecycle event was audited transactionally (audited-before-effect):
+        // issue + rotate + revoke → exactly 3 audit rows for this principal, all
+        // with resource='agent_identity'. Revoking-again was a no-op → no 4th row.
+        let audit_actions: Vec<String> = sqlx::query_scalar(
+            "SELECT action FROM authz_audit WHERE principal = $1 AND resource = 'agent_identity' ORDER BY created_at",
+        )
+        .bind(&id)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            audit_actions,
+            vec![
+                "nhi_issue".to_string(),
+                "nhi_rotate".to_string(),
+                "nhi_revoke".to_string()
+            ]
+        );
     }
 }

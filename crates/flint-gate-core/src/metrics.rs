@@ -18,6 +18,10 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 pub const DELEGATE_TOTAL: &str = "flint_delegate_total";
 /// Metric name for delegate-exchange latency (seconds).
 pub const DELEGATE_LATENCY: &str = "flint_delegate_latency_seconds";
+/// Metric name for per-tool-call authz decisions (labelled `decision`).
+pub const TOOL_AUTHZ_TOTAL: &str = "flint_tool_authz_total";
+/// Metric name for over-budget denials of agent-scoped budgets.
+pub const AGENT_BUDGET_DENIED_TOTAL: &str = "flint_agent_budget_denied_total";
 
 static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 
@@ -50,6 +54,23 @@ pub fn record_delegate(reason: &'static str) {
 /// Record delegate-exchange latency in seconds under `flint_delegate_latency_seconds`.
 pub fn record_delegate_latency(seconds: f64) {
     metrics::histogram!(DELEGATE_LATENCY).record(seconds);
+}
+
+/// Record one per-tool-call authz decision: increments
+/// `flint_tool_authz_total{decision="<decision>"}`. `decision` is a stable,
+/// low-cardinality **`&'static str`** label (e.g. `allow`, `deny`,
+/// `deny_shadow`) — the tool NAME is deliberately NOT a label (it is
+/// operator/attacker-influenced and would explode cardinality; it stays in the
+/// DB authz audit trail).
+pub fn record_tool_authz(decision: &'static str) {
+    metrics::counter!(TOOL_AUTHZ_TOTAL, "decision" => decision).increment(1);
+}
+
+/// Record one over-budget denial of an **agent**-scoped budget: increments
+/// `flint_agent_budget_denied_total`. Surfaces the volume of agent spend caps
+/// actually enforced (over-limit or fail-closed on a backend outage).
+pub fn record_agent_budget_denied() {
+    metrics::counter!(AGENT_BUDGET_DENIED_TOTAL).increment(1);
 }
 
 #[cfg(test)]
@@ -99,6 +120,22 @@ mod tests {
         assert!(
             out.contains("flint_delegate_latency_seconds"),
             "missing latency histogram in render:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_exposes_tool_authz_and_budget_denied() {
+        install_recorder();
+        record_tool_authz("allow");
+        record_tool_authz("deny");
+        record_agent_budget_denied();
+        let out = render();
+        assert!(out.contains("flint_tool_authz_total"), "render:\n{out}");
+        assert!(out.contains("decision=\"allow\""), "render:\n{out}");
+        assert!(out.contains("decision=\"deny\""), "render:\n{out}");
+        assert!(
+            out.contains("flint_agent_budget_denied_total"),
+            "render:\n{out}"
         );
     }
 }

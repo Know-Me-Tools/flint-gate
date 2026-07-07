@@ -79,9 +79,15 @@ impl Identity {
     /// `User`, never escalates):
     /// - an explicit `self.kind` (set by the authenticator) is authoritative;
     /// - the gateway-stamped `flint_kind` claim (`agent`|`service`) wins — this
-    ///   only appears on tokens flint-gate itself minted;
+    ///   is trustworthy because the JWKS verifiers (`jwt_verify`, `mcp`) STRIP any
+    ///   inbound `flint_kind`, so it can only be present on a token flint-gate
+    ///   itself minted (a federated IdP cannot forge it to escalate);
     /// - an `act` (RFC 8693 actor) claim ⇒ **Agent** (delegation-specific; a
-    ///   normal user token does not carry it);
+    ///   normal user token does not carry it). This is **gateway-side** and
+    ///   **IdM-agnostic**: a delegated token minted by ANY JWKS provider — the
+    ///   gateway-local exchange OR an Ory Hydra `delegate_to_hydra` exchange —
+    ///   carries `act`, so it classifies as Agent without the gateway rewriting
+    ///   the token or requiring a Hydra-side claim mapper (federate, never an IdP);
     /// - otherwise **User**.
     ///
     /// A bare `client_id` claim is deliberately NOT treated as a Service signal:
@@ -104,11 +110,55 @@ impl Identity {
         // not a trustworthy delegation signal. A `session_id` marks a Kratos
         // identity — skip the `act` fallback for it. The gateway-signed
         // `flint_kind` marker above is unaffected (Kratos never sets it).
-        if self.session_id.is_none() && self.metadata_public.get("act").is_some() {
+        //
+        // The `act` value must be a **well-formed actor object** (RFC 8693 §4.1:
+        // a JSON object identifying the current actor). A non-object `act`
+        // (`null`, `false`, `""`, `[]`, …) is NOT a valid delegation signal and
+        // must not promote to Agent — this tightens the spoof surface.
+        if self.session_id.is_none()
+            && self
+                .metadata_public
+                .get("act")
+                .is_some_and(is_well_formed_act)
+        {
             IdentityKind::Agent
         } else {
             IdentityKind::User
         }
+    }
+}
+
+/// Whether a claim value is a well-formed RFC 8693 §4.1 `act` (actor) claim: a
+/// JSON object carrying a non-empty string `sub` (the actor's identifier). A
+/// non-object, an object without a usable `sub`, or an empty `act` is not a
+/// trustworthy delegation signal and must not classify the token as an Agent.
+fn is_well_formed_act(act: &Value) -> bool {
+    act.as_object().is_some_and(|o| {
+        o.get("sub")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty())
+    })
+}
+
+/// Remove any `flint_kind` key from a metadata object sourced from an **external
+/// / federated** authenticator (JWKS IdM, Kratos session). `flint_kind` is the
+/// gateway's own spoof-resistant principal-kind marker and is trustworthy ONLY on
+/// tokens the gateway itself minted; an external IdP or a self-service identity
+/// could otherwise carry `flint_kind: agent`/`service` and escalate to a
+/// non-human principal via [`derived_kind`](Identity::derived_kind). Every
+/// authenticator that builds an `Identity` from untrusted upstream metadata MUST
+/// call this. Delegated agents re-enter via their RFC 8693 `act` claim, not a
+/// surviving `flint_kind`.
+///
+/// NOTE (re-entry asymmetry): only the `act`-based **Agent** signal survives a
+/// JWKS round-trip. A gateway-minted **Service** (client-credentials) token
+/// carries `flint_kind: service` but no `act`, so if re-verified through a JWKS
+/// authenticator its Service kind is stripped and it classifies as `User` — a
+/// fail-safe downgrade (never an escalation). Service kind is authoritative at
+/// its mint boundary (explicit `kind`), not on JWKS re-entry.
+pub fn strip_untrusted_kind(metadata: &mut Value) {
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.remove(FLINT_KIND_CLAIM);
     }
 }
 
@@ -198,15 +248,28 @@ mod tests {
     }
 
     #[test]
-    fn kratos_session_flint_kind_still_trusted() {
-        // The gateway-signed flint_kind marker is trusted even on a session
-        // identity (Kratos never sets it, so its presence means gateway-minted).
+    fn strip_untrusted_kind_removes_flint_kind_from_federated_metadata() {
+        // `flint_kind` on federated metadata (a Kratos session, an IdP token) is
+        // UNTRUSTED — the authenticator strips it, so it can never reach
+        // derived_kind to escalate a human into a non-human principal.
+        let mut meta = json!({ "flint_kind": "service", "org": "acme" });
+        strip_untrusted_kind(&mut meta);
+        assert!(meta.get("flint_kind").is_none(), "flint_kind must be stripped");
+        assert_eq!(meta["org"], json!("acme"), "other metadata preserved");
+        // A stripped identity classifies as User, not the forged Service.
         let id = Identity {
             session_id: Some("s".into()),
-            metadata_public: json!({ "flint_kind": "service" }),
+            metadata_public: meta,
             ..Default::default()
         };
-        assert_eq!(id.derived_kind(), IdentityKind::Service);
+        assert_eq!(id.derived_kind(), IdentityKind::User);
+    }
+
+    #[test]
+    fn strip_untrusted_kind_is_a_noop_on_non_object() {
+        let mut null = json!(null);
+        strip_untrusted_kind(&mut null); // must not panic
+        assert_eq!(null, json!(null));
     }
 
     #[test]
@@ -256,5 +319,86 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(id.email(), Some("hi@example.com"));
+    }
+
+    // ── Delegate classification: well-formed act + spoof-resistance ───────────
+
+    #[test]
+    fn well_formed_act_object_classifies_agent_for_any_jwks_idm() {
+        // A delegated token from ANY JWKS IdM (gateway-local OR Hydra 8693)
+        // carries an `act` actor object + no Kratos session → Agent, gateway-side.
+        for act in [
+            json!({ "sub": "user-1" }),                       // gateway-local shape
+            json!({ "sub": "user-1", "client_id": "hydra" }), // Hydra-delegate shape (act has sub)
+        ] {
+            let id = Identity {
+                metadata_public: json!({ "act": act }),
+                ..Default::default()
+            };
+            assert_eq!(id.derived_kind(), IdentityKind::Agent);
+        }
+    }
+
+    #[test]
+    fn malformed_act_does_not_promote_to_agent() {
+        // A non-object / empty `act` is not a valid RFC 8693 actor → safe default.
+        for bad in [
+            json!(null),
+            json!(false),
+            json!(""),
+            json!("x"),
+            json!(42),
+            json!([]),
+            json!({}), // empty object is not a well-formed actor
+        ] {
+            let id = Identity {
+                metadata_public: json!({ "act": bad }),
+                ..Default::default()
+            };
+            assert_eq!(
+                id.derived_kind(),
+                IdentityKind::User,
+                "act={:?} must NOT promote to Agent",
+                id.metadata_public["act"]
+            );
+        }
+    }
+
+    #[test]
+    fn act_on_a_kratos_session_does_not_promote() {
+        // A `session_id` marks a Kratos identity whose metadata_public may be
+        // self-service-writable — an `act` there is not a trustworthy signal.
+        let id = Identity {
+            session_id: Some("kratos-sess".into()),
+            metadata_public: json!({ "act": { "sub": "u" } }),
+            ..Default::default()
+        };
+        assert_eq!(id.derived_kind(), IdentityKind::User);
+    }
+
+    #[test]
+    fn bare_client_id_never_classifies_non_user() {
+        // A normal OIDC access token carries client_id/azp for ordinary users —
+        // it must NOT reach an Agent/Service policy (privilege escalation).
+        let id = Identity {
+            metadata_public: json!({ "client_id": "svc-7", "azp": "svc-7" }),
+            ..Default::default()
+        };
+        assert_eq!(id.derived_kind(), IdentityKind::User);
+    }
+
+    #[test]
+    fn is_well_formed_act_requires_a_nonempty_sub() {
+        assert!(is_well_formed_act(&json!({ "sub": "x" })));
+        assert!(is_well_formed_act(&json!({ "sub": "x", "client_id": "c" })));
+        // Object without a usable `sub` is NOT a valid actor (RFC 8693 §4.1).
+        assert!(!is_well_formed_act(&json!({ "client_id": "c" })));
+        assert!(!is_well_formed_act(&json!({ "sub": "" })));
+        assert!(!is_well_formed_act(&json!({ "sub": "   " })));
+        assert!(!is_well_formed_act(&json!({ "sub": 42 })));
+        assert!(!is_well_formed_act(&json!({})));
+        assert!(!is_well_formed_act(&json!(null)));
+        assert!(!is_well_formed_act(&json!("x")));
+        assert!(!is_well_formed_act(&json!([{ "sub": "x" }])));
     }
 }

@@ -150,7 +150,18 @@ fn identity_from_claims(claims: McpClaims) -> (Identity, Vec<String>) {
         "phone_number",
         "locale",
     ];
-    const SKIP_KEYS: &[&str] = &["iss", "iat", "exp", "nbf", "jti", "auth_time"];
+    // `flint_kind` is STRIPPED: it is the gateway's own principal-kind marker and
+    // must never be trusted from a JWKS-federated token (an external IdP could
+    // set it to escalate to Agent/Service). Delegated agents re-enter via `act`.
+    const SKIP_KEYS: &[&str] = &[
+        "iss",
+        "iat",
+        "exp",
+        "nbf",
+        "jti",
+        "auth_time",
+        crate::auth::identity::FLINT_KIND_CLAIM,
+    ];
 
     let mut traits = serde_json::Map::new();
     let mut metadata = serde_json::Map::new();

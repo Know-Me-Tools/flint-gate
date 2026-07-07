@@ -95,12 +95,18 @@ impl Authenticator for KratosAuthenticator {
             AuthError::ProviderError("Kratos response missing identity".to_string())
         })?;
 
+        // Kratos `metadata_public` is admin- and (in some deployments)
+        // self-service-writable, so it is UNTRUSTED for principal-kind: strip any
+        // `flint_kind` a Kratos identity might carry, otherwise a human could set
+        // `flint_kind: service` and escalate to a non-human principal.
+        let mut metadata_public = kratos_id.metadata_public.unwrap_or(Value::Null);
+        crate::auth::identity::strip_untrusted_kind(&mut metadata_public);
         let identity = Identity {
             id: kratos_id.id,
             // Kratos authenticates human sessions.
             kind: crate::auth::identity::IdentityKind::User,
             traits: kratos_id.traits.unwrap_or(Value::Null),
-            metadata_public: kratos_id.metadata_public.unwrap_or(Value::Null),
+            metadata_public,
             schema_id: kratos_id.schema_id,
             session_id: session.id,
             aal: session.authenticator_assurance_level,

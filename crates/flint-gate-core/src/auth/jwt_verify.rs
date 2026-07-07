@@ -91,34 +91,7 @@ impl Authenticator for JwtVerifyAuthenticator {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Well-known OIDC traits go into identity.traits; everything else into metadata_public.
-        const TRAIT_KEYS: &[&str] = &[
-            "email",
-            "email_verified",
-            "name",
-            "given_name",
-            "family_name",
-            "nickname",
-            "preferred_username",
-            "picture",
-            "phone_number",
-            "locale",
-        ];
-        const SKIP_KEYS: &[&str] = &["iss", "iat", "exp", "nbf", "jti", "auth_time"];
-
-        let mut traits = serde_json::Map::new();
-        let mut metadata = serde_json::Map::new();
-
-        for (k, v) in claims.rest {
-            if SKIP_KEYS.contains(&k.as_str()) {
-                continue;
-            }
-            if TRAIT_KEYS.contains(&k.as_str()) {
-                traits.insert(k, v);
-            } else {
-                metadata.insert(k, v);
-            }
-        }
+        let (traits, metadata) = partition_jwt_claims(claims.rest);
 
         let identity = Identity {
             id: subject,
@@ -134,10 +107,85 @@ impl Authenticator for JwtVerifyAuthenticator {
     }
 }
 
+/// Partition non-`sub` JWT claims into `(traits, metadata_public)`.
+///
+/// Well-known OIDC profile claims become identity traits; everything else is
+/// metadata. Two classes are **dropped**:
+/// - registered/temporal claims (`iss`, `iat`, `exp`, …) — non-identity;
+/// - **`flint_kind`** — the gateway's own spoof-resistant principal-kind marker.
+///   It is trusted ONLY on gateway-minted tokens; stripping it from every inbound
+///   JWKS-verified token prevents an external IdP (or a self-service identity)
+///   from forging `flint_kind: agent`/`service` to escalate to a non-human
+///   principal. A legitimately-delegated agent re-enters via its RFC 8693 `act`
+///   claim (see [`Identity::derived_kind`]), not a surviving `flint_kind`.
+fn partition_jwt_claims(
+    rest: std::collections::HashMap<String, Value>,
+) -> (serde_json::Map<String, Value>, serde_json::Map<String, Value>) {
+    const TRAIT_KEYS: &[&str] = &[
+        "email",
+        "email_verified",
+        "name",
+        "given_name",
+        "family_name",
+        "nickname",
+        "preferred_username",
+        "picture",
+        "phone_number",
+        "locale",
+    ];
+    const SKIP_KEYS: &[&str] = &[
+        "iss",
+        "iat",
+        "exp",
+        "nbf",
+        "jti",
+        "auth_time",
+        crate::auth::identity::FLINT_KIND_CLAIM,
+    ];
+
+    let mut traits = serde_json::Map::new();
+    let mut metadata = serde_json::Map::new();
+    for (k, v) in rest {
+        if SKIP_KEYS.contains(&k.as_str()) {
+            continue;
+        }
+        if TRAIT_KEYS.contains(&k.as_str()) {
+            traits.insert(k, v);
+        } else {
+            metadata.insert(k, v);
+        }
+    }
+    (traits, metadata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::types::JwtAuthConfig;
+    use std::collections::HashMap;
+
+    #[test]
+    fn partition_strips_inbound_flint_kind_spoof() {
+        // A forged `flint_kind` on an externally-verified JWT must NOT survive
+        // into metadata_public (else derived_kind would escalate it to Agent).
+        let mut rest = HashMap::new();
+        rest.insert("flint_kind".to_string(), serde_json::json!("agent"));
+        rest.insert("act".to_string(), serde_json::json!({ "sub": "u" }));
+        rest.insert("org".to_string(), serde_json::json!("acme"));
+        rest.insert("email".to_string(), serde_json::json!("a@b.co"));
+        let (traits, metadata) = partition_jwt_claims(rest);
+        // flint_kind dropped; act + org kept as metadata; email routed to traits.
+        assert!(!metadata.contains_key("flint_kind"), "flint_kind must be stripped");
+        assert!(metadata.contains_key("act"));
+        assert_eq!(metadata["org"], serde_json::json!("acme"));
+        assert_eq!(traits["email"], serde_json::json!("a@b.co"));
+        // And the resulting identity classifies as Agent via act, NOT flint_kind.
+        let id = Identity {
+            metadata_public: Value::Object(metadata),
+            ..Default::default()
+        };
+        assert_eq!(id.derived_kind(), crate::auth::identity::IdentityKind::Agent);
+    }
 
     fn jwt_config(jwks_url: &str) -> JwtAuthConfig {
         JwtAuthConfig {

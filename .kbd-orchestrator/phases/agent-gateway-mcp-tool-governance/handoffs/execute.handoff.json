@@ -1,0 +1,9 @@
+{
+  "stage": "execute",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["execution.md", "progress.json"],
+  "nextStage": "reflect",
+  "summaryForNext": "Backend: openspec, driven by /kbd-apply (one task/turn). 3 changes in dependency order; first pending: add-agent-delegate-classification (G1, the linchpin). Per-change QA: artifact-refiner + separated security review (all three touch auth/budget) + a fail-closed/spoof/degrades_to_deny test each; archive via --skip-specs. ZERO new deps (reuse derived_kind, BudgetScope/BackendUnavailablePosture, metrics.rs). Guardrail: federate any JWKS IdM, Ory reference, never an IdP (load-bearing in change 1). Sync progress.json then advance waypoint in SEPARATE commands (pipeline-enforce hook).",
+  "skipped": false,
+  "skipReason": null
+}

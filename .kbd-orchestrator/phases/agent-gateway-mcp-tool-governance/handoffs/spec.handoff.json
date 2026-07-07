@@ -1,0 +1,9 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["openspec/changes (3 proposals)"],
+  "nextStage": "plan",
+  "summaryForNext": "3 OpenSpec changes (proposal.md + tasks.md, no specs/ delta -> archive via --skip-specs). Dependency-ordered: 1) add-agent-delegate-classification (G1, 5 tasks -- classify Agent gateway-side from the RFC 8693 act claim, NOT a Hydra claim mapper; the linchpin, gates 2+3 for delegated agents); 2) add-agent-budget-scope (G2, 5 -- add BudgetScope::Agent + fail-closed outage posture reusing BackendUnavailablePosture, Agent->Deny / User->degrade; closes the fail-OPEN resolve_budget_usage seam; depends on 1); 3) add-tool-authz-metrics (G3 + G4 stretch, 5 -- flint_tool_authz_total{decision} DECISION-ONLY label + budget-denial counter + optional local-exchange metric on admin /metrics; depends on 1-2). ZERO new deps. G4 optional folded into change 3 as a stretch task. zeespec: n/a. Each change has a fail-closed/spoof-resistance/degrades_to_deny test requirement + separated security review (all touch auth/budget). First change: add-agent-delegate-classification.",
+  "skipped": false,
+  "skipReason": null
+}

@@ -346,7 +346,40 @@ async fn handle_request(
                 // the token amount the metering step must INCR, nor branch on
                 // Redis-vs-Postgres. This arm is already async, so inline async
                 // resolution is both correct and simpler than a second lookup.
-                let used = resolve_budget_usage(&state, config, &user_id, &template_ctx).await;
+                let usage = resolve_budget_usage(&state, config, &user_id, &template_ctx).await;
+                let used = match usage {
+                    BudgetUsage::Known(u) => u,
+                    BudgetUsage::Unavailable => {
+                        // Outage posture: an Agent budget is a hard governance
+                        // control, so a backend outage fails CLOSED (deny); a
+                        // User/Team budget degrades (allow + WARN) to avoid
+                        // hard-blocking human traffic on a transient blip.
+                        //
+                        // Defense in depth: the deny also fires when the ACTUAL
+                        // principal is an Agent (`derived_kind`), even if the route
+                        // left the budget at a non-agent scope — so a delegated
+                        // agent never silently escapes fail-closed via a mis-scoped
+                        // (`scope: user`) budget.
+                        if outage_must_deny(config.scope, &identity) {
+                            warn!(
+                                request_id = %request_id,
+                                user_id = %user_id,
+                                scope = config.scope.tag(),
+                                window = config.window.tag(),
+                                "budget backend unavailable — DENYING (fail-closed, agent scope)"
+                            );
+                            crate::metrics::record_agent_budget_denied();
+                            return Ok(quota_exceeded_response(&budget_error_message(config)));
+                        }
+                        warn!(
+                            request_id = %request_id,
+                            user_id = %user_id,
+                            scope = config.scope.tag(),
+                            "budget backend unavailable — degrading (allow) for non-agent scope"
+                        );
+                        0
+                    }
+                };
                 if budget_exceeded(used, config.limit) {
                     let msg = budget_error_message(config);
                     warn!(
@@ -357,6 +390,11 @@ async fn handle_request(
                         window = config.window.tag(),
                         "token budget exceeded — blocking request"
                     );
+                    // Count over-budget blocks of agent principals/scopes so the
+                    // volume of enforced agent spend caps is observable.
+                    if outage_must_deny(config.scope, &identity) {
+                        crate::metrics::record_agent_budget_denied();
+                    }
                     return Ok(quota_exceeded_response(&msg));
                 }
             }
@@ -927,6 +965,32 @@ fn budget_exceeded(used: u64, limit: u64) -> bool {
     used >= limit
 }
 
+/// Whether a budget-backend **outage** must DENY the request for this scope.
+///
+/// Fail-closed for `Agent` — an agent budget is a hard governance control, so it
+/// must never be silently bypassed by a Redis/DB blip. `User`/`Team` budgets
+/// degrade (allow) to preserve human-traffic availability, matching the
+/// pre-existing best-effort behavior. This mirrors the OAuth rate-limiter's
+/// [`BackendUnavailablePosture`](crate::config::types::BackendUnavailablePosture):
+/// Agent = Deny, others = Degrade.
+fn budget_outage_denies(scope: crate::config::types::BudgetScope) -> bool {
+    matches!(scope, crate::config::types::BudgetScope::Agent)
+}
+
+/// Whether a budget-backend outage must DENY, considering BOTH the operator-
+/// declared scope AND the request's actual principal kind (defense in depth): an
+/// Agent-scoped budget denies, AND an actual `Agent` principal denies even under a
+/// mis-scoped (non-agent) budget, so a delegated agent can never silently escape
+/// fail-closed via a route that left the budget at `scope: user`.
+///
+/// NOTE: fail-closed applies to **windowed** budgets (Minute/Hour/Day). A
+/// `Lifetime` budget is ledger-only and keeps its best-effort (allow-on-error)
+/// read — an agent budget that must fail closed requires a fixed window.
+fn outage_must_deny(scope: crate::config::types::BudgetScope, identity: &Identity) -> bool {
+    budget_outage_denies(scope)
+        || identity.derived_kind() == crate::auth::identity::IdentityKind::Agent
+}
+
 /// The 429 error message for a budget hook — the configured override, or the
 /// default `"token budget exceeded"`.
 fn budget_error_message(config: &MaxTokenBudgetConfig) -> String {
@@ -1142,22 +1206,34 @@ fn lifetime_usage_from_lookups(lookups: &HashMap<String, String>, user_id: &str)
         .unwrap_or(0)
 }
 
+/// Outcome of a budget-usage read. `Known` carries the window total; `Unavailable`
+/// means neither the shared Redis counter nor the Postgres fallback could be
+/// consulted — the caller decides deny-vs-degrade per the scope's outage posture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BudgetUsage {
+    Known(u64),
+    Unavailable,
+}
+
 /// Resolve current budget usage for a `MaxTokenBudget` hook.
 ///
 /// - `Lifetime` → the value the lookup registry pre-resolved into
-///   `template_ctx.lookups` (unchanged all-time behavior).
+///   `template_ctx.lookups` (unchanged all-time behavior); always `Known`.
 /// - windowed → the shared Redis window counter when a rate limiter is present,
-///   otherwise the Postgres time-bounded sum fallback. Both are best-effort:
-///   on backend error we log and return `0` (fail-open) so a transient Redis /
-///   DB blip never hard-blocks live traffic.
+///   otherwise the Postgres time-bounded sum fallback. When BOTH are
+///   unavailable (Redis error → DB error / no DB) the read is `Unavailable` and
+///   the caller applies the scope's outage posture (Agent fails closed).
 async fn resolve_budget_usage(
     state: &Arc<AppState>,
     config: &MaxTokenBudgetConfig,
     user_id: &str,
     template_ctx: &TemplateContext,
-) -> u64 {
+) -> BudgetUsage {
     if config.window == BudgetWindow::Lifetime {
-        return lifetime_usage_from_lookups(&template_ctx.lookups, user_id);
+        return BudgetUsage::Known(lifetime_usage_from_lookups(
+            &template_ctx.lookups,
+            user_id,
+        ));
     }
 
     // Windowed: prefer the shared Redis counter, fall back to Postgres.
@@ -1168,7 +1244,7 @@ async fn resolve_budget_usage(
                 .get_budget(config.scope, user_id, config.window)
                 .await
             {
-                Ok(used) => return used,
+                Ok(used) => return BudgetUsage::Known(used),
                 Err(e) => {
                     warn!(error = %e, user_id, "windowed budget Redis read failed — falling back to DB");
                 }
@@ -1179,24 +1255,26 @@ async fn resolve_budget_usage(
     resolve_budget_usage_from_db(state, config, user_id).await
 }
 
-/// Postgres fallback for windowed budget usage. Returns `0` on any error or
-/// when no DB / interval is available (fail-open).
+/// Postgres fallback for windowed budget usage. `Unavailable` when the DB read
+/// errors or no DB is configured (the caller decides deny-vs-degrade per scope).
 async fn resolve_budget_usage_from_db(
     state: &Arc<AppState>,
     config: &MaxTokenBudgetConfig,
     user_id: &str,
-) -> u64 {
+) -> BudgetUsage {
     let Some(interval) = config.window.pg_interval() else {
-        return 0;
+        // No fixed interval (Lifetime only) — treated as 0 usage, not an outage.
+        return BudgetUsage::Known(0);
     };
     let Some(ref db) = state.db else {
-        return 0;
+        // No shared limiter AND no DB — the usage backend is unavailable.
+        return BudgetUsage::Unavailable;
     };
     match db.get_user_token_total_windowed(user_id, interval).await {
-        Ok(total) => total.max(0) as u64,
+        Ok(total) => BudgetUsage::Known(total.max(0) as u64),
         Err(e) => {
-            warn!(error = %e, user_id, "windowed budget DB read failed — allowing request");
-            0
+            warn!(error = %e, user_id, "windowed budget backend read failed — usage unavailable");
+            BudgetUsage::Unavailable
         }
     }
 }
@@ -1271,6 +1349,50 @@ mod tests {
     fn budget_exceeded_passes_under_limit() {
         assert!(!budget_exceeded(0, 100));
         assert!(!budget_exceeded(99, 100));
+    }
+
+    // ── Budget-backend outage posture (fail-closed for agents) ───────────────
+
+    #[test]
+    fn budget_outage_denies_only_for_agent_scope() {
+        use crate::config::types::BudgetScope;
+        // Agent = hard governance control → deny on a backend outage.
+        assert!(budget_outage_denies(BudgetScope::Agent));
+        // User/Team = availability-first → degrade (allow) on an outage.
+        assert!(!budget_outage_denies(BudgetScope::User));
+        assert!(!budget_outage_denies(BudgetScope::Team));
+    }
+
+    #[test]
+    fn budget_usage_unavailable_is_distinct_from_zero_usage() {
+        // The whole point: an outage (`Unavailable`) must NOT be conflated with
+        // "0 tokens used" (`Known(0)`), so the check site can fail closed for
+        // agents instead of silently allowing.
+        assert_ne!(BudgetUsage::Unavailable, BudgetUsage::Known(0));
+        assert_eq!(BudgetUsage::Known(0), BudgetUsage::Known(0));
+    }
+
+    #[test]
+    fn outage_must_deny_covers_agent_scope_and_agent_principal() {
+        use crate::auth::identity::{Identity, IdentityKind};
+        use crate::config::types::BudgetScope;
+        use serde_json::json;
+
+        let human = Identity::default(); // derived_kind == User
+        let agent = Identity {
+            metadata_public: json!({ "act": { "sub": "u" } }),
+            ..Default::default()
+        };
+        assert_eq!(agent.derived_kind(), IdentityKind::Agent);
+
+        // Agent SCOPE denies regardless of principal.
+        assert!(outage_must_deny(BudgetScope::Agent, &human));
+        // Actual Agent PRINCIPAL denies even under a mis-scoped user budget
+        // (defense in depth — no silent escape via `scope: user`).
+        assert!(outage_must_deny(BudgetScope::User, &agent));
+        // A human on a user/team budget still degrades (does not deny).
+        assert!(!outage_must_deny(BudgetScope::User, &human));
+        assert!(!outage_must_deny(BudgetScope::Team, &human));
     }
 
     #[test]
@@ -1509,5 +1631,23 @@ mod tests {
         }];
         let ctx = ctx_with_identity("u1");
         assert!(collect_windowed_budgets(&hooks, &ctx).is_empty());
+    }
+
+    #[test]
+    fn agent_scoped_budget_collects_under_agent_scope_and_keys_the_agent_id() {
+        // An operator declaring `scope: agent` budgets the agent identity under
+        // the Agent scope, so incr_budget writes flint:budget:agent:{id}:… —
+        // distinct from the user counter. This is what makes a delegated agent's
+        // spend count against its Agent budget, not its User.
+        let mut cfg = budget_config(50, BudgetWindow::Hour);
+        cfg.scope = crate::config::types::BudgetScope::Agent;
+        let hooks = vec![PreRequestHook::MaxTokenBudget { config: cfg }];
+        let ctx = ctx_with_identity("agent-7");
+        let collected = collect_windowed_budgets(&hooks, &ctx);
+        assert_eq!(collected.len(), 1);
+        let (scope, _window, id) = &collected[0];
+        assert_eq!(*scope, crate::config::types::BudgetScope::Agent);
+        assert_eq!(id, "agent-7");
+        assert_eq!(scope.tag(), "agent"); // → flint:budget:agent:agent-7:hour
     }
 }

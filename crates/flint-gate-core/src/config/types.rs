@@ -865,14 +865,20 @@ pub enum BudgetScope {
     User,
     /// Per-team accounting.
     Team,
+    /// Per-agent accounting — a non-human (delegated) principal is budgeted
+    /// independently of the human `User` it may act for, so agent spend is a
+    /// first-class governance control (see `Identity::derived_kind`).
+    Agent,
 }
 
 impl BudgetScope {
-    /// A short, stable string tag used in Redis keys.
+    /// A short, stable string tag used in Redis keys. Distinct per scope so the
+    /// counters never collide (`flint:budget:agent:…` vs `…:user:…`).
     pub fn tag(&self) -> &'static str {
         match self {
             BudgetScope::User => "user",
             BudgetScope::Team => "team",
+            BudgetScope::Agent => "agent",
         }
     }
 }
@@ -1157,13 +1163,27 @@ config:
 
     #[test]
     fn budget_scope_serde_round_trip() {
-        for (scope, tag) in [(BudgetScope::User, "user"), (BudgetScope::Team, "team")] {
+        for (scope, tag) in [
+            (BudgetScope::User, "user"),
+            (BudgetScope::Team, "team"),
+            (BudgetScope::Agent, "agent"),
+        ] {
             assert_eq!(scope.tag(), tag);
             let json = serde_json::to_string(&scope).unwrap();
             assert_eq!(json, format!("\"{tag}\""));
             let back: BudgetScope = serde_json::from_str(&json).unwrap();
             assert_eq!(back, scope);
         }
+    }
+
+    #[test]
+    fn budget_scope_tags_are_distinct_no_key_collision() {
+        use std::collections::HashSet;
+        let tags: HashSet<_> = [BudgetScope::User, BudgetScope::Team, BudgetScope::Agent]
+            .iter()
+            .map(|s| s.tag())
+            .collect();
+        assert_eq!(tags.len(), 3, "each scope must key into a distinct namespace");
     }
 
     #[test]

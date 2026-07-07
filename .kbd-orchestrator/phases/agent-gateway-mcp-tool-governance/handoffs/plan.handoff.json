@@ -1,0 +1,9 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["plan.md"],
+  "nextStage": "execute",
+  "summaryForNext": "3 changes ordered (dependency-aware): 1) add-agent-delegate-classification (G1, BUILD FIRST -- the linchpin; reuse derived_kind, classify Agent gateway-side from the act claim, NO Hydra claim mapper; security review for spoof-resistance); 2) add-agent-budget-scope (G2 -- reuse BudgetScope + incr_budget + BackendUnavailablePosture; add Agent scope + fail-closed Agent->Deny posture, closing the fail-OPEN budget seam; depends on 1; security+rust review); 3) add-tool-authz-metrics (G3+G4 stretch -- reuse the record_delegate metrics pattern; flint_tool_authz_total{decision} decision-only label + budget-denial counter on admin /metrics; depends on 1-2; rust review). ZERO new deps. Each change: fail-closed/spoof/degrades_to_deny test + separated security review + archive via --skip-specs. First change to apply: add-agent-delegate-classification.",
+  "skipped": false,
+  "skipReason": null
+}

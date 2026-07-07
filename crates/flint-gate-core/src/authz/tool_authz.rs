@@ -111,6 +111,9 @@ impl ToolAuthzContext {
         // policy engine even runs (fail-closed revocation).
         if self.revoked {
             self.record_tool_deny(tool_name);
+            // Metric label is the static DECISION only — the tool name stays in
+            // the DB audit (record_tool_deny), never a metric label (cardinality).
+            crate::metrics::record_tool_authz("deny_revoked");
             return AuthzDecision::Deny;
         }
         let decision = authorize_tool_call(
@@ -121,8 +124,11 @@ impl ToolAuthzContext {
             arguments,
             &self.route_id,
         );
-        if !decision.is_allow() {
+        if decision.is_allow() {
+            crate::metrics::record_tool_authz("allow");
+        } else {
             self.record_tool_deny(tool_name);
+            crate::metrics::record_tool_authz("deny");
         }
         decision
     }
@@ -461,6 +467,56 @@ mod tests {
             audit: None,
         };
         assert_eq!(ctx.authorize("read_file", &json!({})), AuthzDecision::Deny);
+    }
+
+    #[test]
+    fn authorize_emits_tool_authz_metric_for_allow_deny_and_revoked() {
+        // End-to-end: ToolAuthzContext::authorize records the decision into the
+        // global metrics recorder that admin /metrics renders. Labels are the
+        // static decision only — the tool name never appears in the render.
+        crate::metrics::install_recorder();
+
+        // allow
+        ToolAuthzContext {
+            engine: Arc::new(engine_permit_all()),
+            principal_kind: crate::authz::PrincipalKind::Agent,
+            revoked: false,
+            principal_id: "bot-1".to_string(),
+            route_id: "r1".to_string(),
+            audit: None,
+        }
+        .authorize("a_secret_tool_name", &json!({}));
+
+        // deny (empty engine denies)
+        ToolAuthzContext {
+            engine: Arc::new(AuthzEngine::empty()),
+            principal_kind: crate::authz::PrincipalKind::Agent,
+            revoked: false,
+            principal_id: "bot-2".to_string(),
+            route_id: "r1".to_string(),
+            audit: None,
+        }
+        .authorize("another_secret_tool", &json!({}));
+
+        // deny_revoked
+        ToolAuthzContext {
+            engine: Arc::new(engine_permit_all()),
+            principal_kind: crate::authz::PrincipalKind::Agent,
+            revoked: true,
+            principal_id: "bot-3".to_string(),
+            route_id: "r1".to_string(),
+            audit: None,
+        }
+        .authorize("yet_another_tool", &json!({}));
+
+        let out = crate::metrics::render();
+        assert!(out.contains("flint_tool_authz_total"), "render:\n{out}");
+        assert!(out.contains("decision=\"allow\""), "render:\n{out}");
+        assert!(out.contains("decision=\"deny\""), "render:\n{out}");
+        assert!(out.contains("decision=\"deny_revoked\""), "render:\n{out}");
+        // The tool NAMEs must never leak into the metric render (cardinality/leak).
+        assert!(!out.contains("a_secret_tool_name"), "tool name leaked:\n{out}");
+        assert!(!out.contains("another_secret_tool"), "tool name leaked:\n{out}");
     }
 
     // ── list_tools filtering ────────────────────────────────────────────────

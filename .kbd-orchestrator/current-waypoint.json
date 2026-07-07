@@ -1,11 +1,11 @@
 {
-  "phase": "agent-gateway-exposure-operability",
+  "phase": "agent-gateway-mcp-tool-governance",
   "change": "add-actor-token-and-hydra-delegate",
   "exactNextCommand": "/kbd-next-phase",
   "status": "executing",
   "seeded_from_phase": "agent-identity-and-delegation",
   "note": "add-identity-classification-edges archived (5/5; PASS; api-key->Service, Kratos act-gate, transactional NHI audit). Final change: add-actor-token-and-hydra-delegate.",
   "stage": "reflect_complete",
-  "changes_completed": 4,
-  "changes_total": 4
+  "changes_completed": 3,
+  "changes_total": 3
 }

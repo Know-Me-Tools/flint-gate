@@ -719,16 +719,29 @@ Flint Gate authorizes **non-human identities** as first-class Cedar principals,
 distinct from human users. The principal **kind** is derived from *trusted*
 signals only:
 
-- a **delegated token** from RFC 8693 token exchange (gateway-signed `act` claim)
-  → **`Agent`**;
+- a **delegated token** carrying an RFC 8693 **`act`** (actor) claim → **`Agent`**.
+  This is **gateway-side and IdM-agnostic**: a delegated token minted by the
+  gateway-local exchange OR by an Ory Hydra `delegate_to_hydra` exchange — indeed
+  by **any** JWKS provider that emits `act` — classifies as `Agent` without the
+  gateway rewriting the token. The `act` value must be a **well-formed actor
+  object** (a non-object `act` is ignored). *(A Hydra-side claim mapper that stamps
+  an agent marker is an **optional** operator enhancement — not required, and not
+  the gateway's mechanism; flint-gate stays a pure verifier: federate, never an IdP.)*
 - a **client-credentials** service token or an **API-key** credential → **`Service`**;
 - everything else, including any Kratos session, → **`User`**.
 
-Classification is spoof-resistant: `Agent`/`Service` require the gateway's own
-signed `flint_kind` marker (or the token-only `act` signal), so an upstream IdP
-claim (e.g. a bare `client_id`) or a Kratos session trait cannot promote a human
-into a non-human principal. Because the Cedar entity *type* differs, a policy can
-grant an agent something a user must not have — and vice-versa:
+Classification is spoof-resistant on two fronts:
+
+1. **`flint_kind` is trusted only on gateway-minted tokens.** The gateway stamps
+   its `flint_kind` marker (`agent`/`service`) on tokens *it* mints; the JWKS
+   verifiers (`jwt`, `mcp`) **strip any inbound `flint_kind`**, so a federated IdP
+   (or a self-service identity) cannot forge `flint_kind: agent` to escalate.
+2. **`act` promotes only token-derived identities**, never a Kratos session
+   (whose `metadata_public` may be self-service-writable), and a bare `client_id`
+   / `azp` never classifies as non-`User`.
+
+Because the Cedar entity *type* differs, a policy can grant an agent something a
+user must not have — and vice-versa:
 
 ```cedar
 // Agents may call the deploy tool; a human user with the same id may not.
@@ -740,6 +753,23 @@ permit(principal == Service::"metrics-scraper", action, resource == Route::"metr
 // Humans keep their own policies.
 permit(principal == User::"alice", action, resource);
 ```
+
+### Agent budgets (fail-closed)
+
+Token budgets are accounted per **scope** — set a route's `max_token_budget.scope`
+to `agent` to budget an agent principal **independently of the human it may act
+for**. Agent-scoped spend keys into its own counter (`flint:budget:agent:{id}:…`),
+so a delegated agent's usage never merges into a `User` budget.
+
+**A budget-backend outage fails closed for agents.** If neither the shared Redis
+counter nor the Postgres fallback can be read, the request **denies** when either
+the budget is `agent`-scoped **or** the actual principal is an `Agent` (defense in
+depth — a delegated agent never silently escapes fail-closed via a route left at
+`scope: user`). `user`/`team` budgets for human principals **degrade** — they allow
+the request with a `WARN` to preserve availability. This mirrors the OAuth
+rate-limiter's outage posture. Fail-closed applies to **windowed** budgets
+(minute/hour/day); a `lifetime` budget is ledger-only and best-effort, so an agent
+budget that must fail closed needs a fixed window.
 
 ### Lifecycle (Admin API)
 
@@ -755,21 +785,20 @@ is fail-closed**: once revoked, the identity is denied on its **next authorize**
 the check runs per request and denies on a lookup error rather than letting a
 revoked agent through. Manage identities from the **Agents** tab in the web UI.
 
-### Hydra-delegate mode: tokens carry Hydra's claims (not gateway-classified)
+### Hydra-delegate mode: tokens carry Hydra's claims (gateway relays, never rewrites)
 
 When token exchange runs in **`delegate_to_hydra`** mode, flint-gate proxies the
 RFC 8693 exchange to Hydra and relays **Hydra's minted token verbatim** — it does
-**not** re-sign or re-stamp it. A delegate-issued token therefore carries **Hydra's**
-claims, **not** the gateway's signed `flint_kind=agent` marker, so on
-re-presentation it classifies by whatever those claims assert (typically not the
-gateway's `Agent` kind) and **escapes the gateway-side agent budget / rate-limit
-classification** applied to locally-minted delegated tokens.
+**not** re-sign or re-stamp it (rewriting another authority's token would make the
+gateway an IdP; flint-gate **federates any JWKS-capable IdM, never becomes one**).
 
-This is **intentional**: rewriting a token another authority issued would make the
-gateway an identity provider, and flint-gate's stance is to **federate any
-JWKS-capable IdM, never to become an IdP**. If agent-budget parity for delegated
-tokens is required, the correct place is a **Hydra-side claim mapper**, not gateway
-rewriting.
+The delegated token carries **Hydra's** claims, not the gateway's signed
+`flint_kind=agent` marker. It is still classified `Agent` on re-presentation —
+**gateway-side, from its RFC 8693 `act` claim** (see *Classification*, above),
+which any 8693-conformant Hydra exchange emits. So a delegated agent **is** subject
+to `Agent`-scoped tool policy and agent budgets, without the gateway rewriting the
+token or requiring a Hydra-side claim mapper. (A Hydra claim mapper that stamps an
+agent marker remains an *optional* operator enhancement.)
 
 **Observability.** The delegate path is metered so operators can see the volume
 that takes this route (and thus bypasses gateway-side agent classification). On the
@@ -778,7 +807,17 @@ that takes this route (and thus bypasses gateway-side agent classification). On 
 - `flint_delegate_total{result="success"|"deny_transport"|"deny_non2xx"|"deny_badjson"|"deny_actor_token"}`
   — one increment per delegate-exchange outcome (a Hydra 3xx surfaces as
   `deny_non2xx`, since the delegate client does not follow redirects);
-- `flint_delegate_latency_seconds` — delegate round-trip latency.
+- `flint_delegate_latency_seconds` — delegate round-trip latency;
+- `flint_tool_authz_total{decision="allow"|"deny"|"deny_revoked"}` — one increment
+  per **per-tool-call** authz decision, so operators see agent tool-call behavior
+  at a glance. The label is the **decision only** — the tool name is deliberately
+  never a metric label (it is operator/attacker-influenced and would explode
+  Prometheus cardinality); the tool name stays in the DB authz **audit trail**;
+- `flint_agent_budget_denied_total` — over-budget or fail-closed-on-outage denials
+  of **agent**-scoped budgets, so the volume of enforced agent spend caps is visible.
+
+All metrics carry **bounded, static labels** and are served on the admin port
+only — never the public proxy surface.
 
 ---
 

@@ -2,7 +2,7 @@
   "schemaVersion": "1",
   "updatedAt": "2026-07-06T00:00:00Z",
   "cursor": [
-    "agent-gateway-exposure-operability"
+    "agent-gateway-mcp-tool-governance"
   ],
   "root": {
     "type": "phase",

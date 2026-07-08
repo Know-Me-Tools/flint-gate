@@ -32,4 +32,10 @@ pub enum AuthzError {
     /// The database layer returned an error while loading policies.
     #[error("failed to load policies from database: {0}")]
     Load(String),
+
+    /// An `agent_tool_policies` sugar entry was malformed (empty/illegal agent id
+    /// or tool name) and was rejected before compilation. Rejecting here keeps
+    /// untrusted text out of the emitted Cedar source (injection-safe).
+    #[error("invalid agent_tool_policies entry: {0}")]
+    SugarCompile(String),
 }

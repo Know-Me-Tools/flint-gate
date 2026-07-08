@@ -163,6 +163,28 @@ async fn main() -> Result<()> {
         "config ready"
     );
 
+    // 4b. Agent-governance lint runs AFTER the DB routes are loaded (step 8), so
+    // it lints the MERGED (YAML + DB) route set actually served — not YAML alone.
+    // See the merged-set lint just after the route table is built below.
+
+    // 4c. Agent tool-scope sugar: compile `agent_tool_policies` to Cedar and run
+    // every emitted policy through the write-time validator BEFORE serving. A
+    // sugar block that compiles to invalid Cedar refuses start (fail-closed — a
+    // bad policy never loads). The sugar is a validated front-end over the Cedar
+    // the engine already runs, not a second authority.
+    let sugar_policies = match flint_gate_core::authz::compile_and_validate(
+        &initial_config.agent_tool_policies,
+    ) {
+        Ok(records) => records,
+        Err(e) => anyhow::bail!("refusing to start: invalid agent_tool_policies — {e}"),
+    };
+    if !sugar_policies.is_empty() {
+        info!(
+            count = sugar_policies.len(),
+            "compiled agent_tool_policies sugar to validated Cedar policies"
+        );
+    }
+
     // 5. Connect to database
     let db = if initial_config.database.url.is_empty() {
         info!("no database URL configured; DB features disabled");
@@ -214,28 +236,51 @@ async fn main() -> Result<()> {
         info!("no JWT signing key configured; JWT minting disabled");
     }
 
-    // 8. Build router — merge YAML with DB routes when override_yaml is set
-    let gate_router = if initial_config.database.override_yaml {
-        if let Some(ref d) = db {
-            match d.load_routes().await {
-                Ok(db_routes) => {
-                    info!(
-                        count = db_routes.len(),
-                        "loaded DB routes for override mode"
-                    );
-                    GateRouter::from_config_and_db_routes(&initial_config, &db_routes)
+    // 8. Compute the merged (YAML + DB) route set, then build the router from it.
+    // Merging into an explicit Vec (rather than straight into the router) lets the
+    // agent-governance lint below inspect the exact routes that will be served.
+    let merged_routes: Vec<flint_gate_core::config::types::RouteConfig> =
+        if initial_config.database.override_yaml {
+            if let Some(ref d) = db {
+                match d.load_routes().await {
+                    Ok(db_routes) => {
+                        info!(count = db_routes.len(), "loaded DB routes for override mode");
+                        flint_gate_core::proxy::merge_routes(&initial_config, &db_routes)
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to load DB routes — falling back to YAML only");
+                        initial_config.routes.clone()
+                    }
                 }
-                Err(e) => {
-                    warn!(error = %e, "failed to load DB routes — falling back to YAML only");
-                    GateRouter::from_config(&initial_config)
-                }
+            } else {
+                initial_config.routes.clone()
             }
         } else {
-            GateRouter::from_config(&initial_config)
-        }
-    } else {
-        GateRouter::from_config(&initial_config)
-    };
+            initial_config.routes.clone()
+        };
+
+    // 8b. Agent-governance lint over the MERGED route set (YAML + DB), so a
+    // DB-only under-governed agent route is surfaced too. WARN by default; refuse
+    // to start under `server.strict_agent_governance` (safe — pre-serve). Linting
+    // the merged set once avoids double-WARNing YAML routes.
+    let governance_findings = initial_config.agent_governance_lint_routes(&merged_routes);
+    for f in &governance_findings {
+        warn!(route_id = %f.route_id, "agent-governance: {}", f.reason.as_str());
+    }
+    if initial_config.server.strict_agent_governance && !governance_findings.is_empty() {
+        let detail = governance_findings
+            .iter()
+            .map(|f| format!("route {}: {}", f.route_id, f.reason.as_str()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        anyhow::bail!(
+            "refusing to start: {} agent-governance finding(s) with \
+             server.strict_agent_governance=true — {detail}",
+            governance_findings.len()
+        );
+    }
+
+    let gate_router = GateRouter::from_config_with_routes(&initial_config, merged_routes);
     info!(route_count = gate_router.route_count(), "route table built");
     let shared_router: SharedRouter = Arc::new(RwLock::new(gate_router));
 
@@ -253,11 +298,21 @@ async fn main() -> Result<()> {
 
     // Build the embedded Cedar authorization engine BEFORE the LISTEN/NOTIFY
     // listener so its handle can be threaded in — a "policies" NOTIFY on any
-    // replica must reload this engine (multi-replica hot-reload). When a
-    // database is present, load enabled policies into the initial bundle
-    // (lenient — bad rows are skipped); otherwise start empty (default-deny).
+    // replica must reload this engine (multi-replica hot-reload). The validated
+    // `agent_tool_policies` sugar is carried as an IMMUTABLE OVERLAY on the engine
+    // and re-applied on every reload, so config tool-scopes enforce ALONGSIDE the
+    // DB policies (Cedar forbid-overrides-permit resolves cross-source conflicts).
+    // With a database: initial bundle = DB rows ++ sugar overlay (lenient — bad
+    // rows skipped). Without: seed from the sugar overlay alone (pure-config
+    // deployment), else empty (default-deny).
     let authz = match &db {
-        Some(d) => Arc::new(AuthzEngine::from_database(d).await),
+        Some(d) => Arc::new(
+            AuthzEngine::from_database_with_sugar(d, sugar_policies.clone()).await,
+        ),
+        None if !sugar_policies.is_empty() => Arc::new(
+            AuthzEngine::from_records_with_sugar(&[], sugar_policies.clone())
+                .map_err(|e| anyhow::anyhow!("failed to build authz engine from sugar: {e}"))?,
+        ),
         None => Arc::new(AuthzEngine::empty()),
     };
 
@@ -356,8 +411,10 @@ async fn main() -> Result<()> {
         match initial_config.oauth_exposure_posture() {
             OAuthExposurePosture::RefuseStart => anyhow::bail!(
                 "refusing to start: /oauth/* is mounted on a non-loopback bind \
-                 ({}) without both oauth.introspect_auth and oauth.rate_limit.enabled. \
-                 Enable both, or bind server.listen to loopback for local development.",
+                 ({}) without the required guardrails — need oauth.introspect_auth, \
+                 oauth.rate_limit.enabled, and (when oauth.rate_limit.require_shared_backend \
+                 is set) a shared limiter via cache.l2.enabled + cache.l2.redis_url. \
+                 Enable the missing guard(s), or bind server.listen to loopback for local development.",
                 initial_config.server.listen
             ),
             OAuthExposurePosture::AllowLoopback => {
@@ -878,6 +935,7 @@ mod tests {
                 rate_limit: Default::default(),
                 admin_auth: None,
                 allow_insecure_upstream: false,
+                strict_agent_governance: false,
             },
             database: DatabaseConfig {
                 url: "postgres://original".to_string(),

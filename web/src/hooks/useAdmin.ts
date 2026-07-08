@@ -14,11 +14,14 @@ import {
   listAudit,
   listPolicies,
   listRoutes,
+  listToolScopes,
   revokeAgentIdentity,
   revokeApiKey,
   rotateAgentIdentity,
+  deleteToolScope,
   upsertPolicy,
   upsertRoute,
+  upsertToolScope,
 } from '@/api/admin';
 import type { AnalyticsInterval, AuditQueryParams } from '@/api/types';
 
@@ -75,6 +78,33 @@ export function useDeletePolicy() {
   return useMutation({
     mutationFn: deletePolicy,
     onSuccess: () => client.invalidateQueries({ queryKey: ['policies'] }),
+  });
+}
+
+export function useToolScopes() {
+  return useQuery({ queryKey: ['tool-scopes'], queryFn: listToolScopes });
+}
+
+export function useUpsertToolScope() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: upsertToolScope,
+    // Tool scopes persist as policy rows and reload the engine — refresh both.
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['tool-scopes'] });
+      client.invalidateQueries({ queryKey: ['policies'] });
+    },
+  });
+}
+
+export function useDeleteToolScope() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: deleteToolScope,
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['tool-scopes'] });
+      client.invalidateQueries({ queryKey: ['policies'] });
+    },
   });
 }
 

@@ -1,0 +1,52 @@
+{
+  "phase": "agent-governance-completeness-and-policy-authoring",
+  "status": "reflected",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": "2026-07-07T00:00:00Z",
+  "updated_at": "2026-07-08T00:00:00Z",
+  "changes_total": 3,
+  "changes_completed": 3,
+  "assessment_complete": true,
+  "analysis_complete": true,
+  "plan_complete": true,
+  "spec_complete": true,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/agent-gateway-budget-and-policy-operability/reflection.md",
+  "seeded_from_phase": "agent-gateway-budget-and-policy-operability",
+  "changes": [
+    {
+      "id": "lint-db-sourced-routes",
+      "goal": "G1",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    },
+    {
+      "id": "merge-agent-tool-policies-into-engine",
+      "goal": "G2",
+      "status": "archived",
+      "tasks_total": 6,
+      "tasks_done": 6
+    },
+    {
+      "id": "admin-tool-scope-builder",
+      "goal": "G3",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "analysis.md",
+    "library-candidates.json",
+    "plan.md",
+    "execution.md",
+    "reflection.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

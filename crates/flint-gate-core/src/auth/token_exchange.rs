@@ -477,8 +477,24 @@ pub async fn exchange(
         return delegate_exchange_to_hydra(delegate, req).await;
     }
 
-    let subject = verify_subject_token(verifier, &req.subject_token).await?;
-    let granted = downscope(req.scope.as_deref(), &subject.scopes)?;
+    // Local-mint path. Instrument every outcome (result label) so this mode is
+    // observable symmetrically with the Hydra-delegate path. The `?`-propagation
+    // is unrolled into explicit arms: each fail-closed exit records its reason
+    // and still returns the SAME error it did before (behavior preserved).
+    let subject = match verify_subject_token(verifier, &req.subject_token).await {
+        Ok(s) => s,
+        Err(e) => {
+            crate::metrics::record_local_exchange("deny_verify");
+            return Err(e);
+        }
+    };
+    let granted = match downscope(req.scope.as_deref(), &subject.scopes) {
+        Ok(g) => g,
+        Err(e) => {
+            crate::metrics::record_local_exchange("deny_downscope");
+            return Err(e);
+        }
+    };
 
     // RFC 8707: prefer `resource`, then `audience`, as the issued token's `aud`.
     let audience = req.resource.as_deref().or(req.audience.as_deref());
@@ -488,13 +504,23 @@ pub async fn exchange(
     let additional = build_delegated_claims(&subject.identity, &granted, audience, None);
 
     let guard = minter.read().await;
-    let minter = guard.as_ref().ok_or_else(|| {
-        ExchangeError::MintFailed("JWT minter is not configured".to_string())
-    })?;
-    let token = minter
-        .mint(&subject.identity, Some(&additional), delegated_ttl_seconds)
-        .map_err(|e| ExchangeError::MintFailed(e.to_string()))?;
+    let token = match guard.as_ref() {
+        Some(m) => match m.mint(&subject.identity, Some(&additional), delegated_ttl_seconds) {
+            Ok(t) => t,
+            Err(e) => {
+                crate::metrics::record_local_exchange("mint_failed");
+                return Err(ExchangeError::MintFailed(e.to_string()));
+            }
+        },
+        None => {
+            crate::metrics::record_local_exchange("mint_failed");
+            return Err(ExchangeError::MintFailed(
+                "JWT minter is not configured".to_string(),
+            ));
+        }
+    };
 
+    crate::metrics::record_local_exchange("success");
     Ok(token_exchange_response(token, &granted))
 }
 
@@ -868,6 +894,90 @@ mod tests {
         req.actor_token = Some("actor.jwt".into());
         let err = exchange(&req, &verifier, &m, None, None).await.unwrap_err();
         assert_eq!(err, ExchangeError::UnsupportedActorToken);
+    }
+
+    // ── Local-exchange outcome metering ───────────────────────────────────
+    // The recorder is process-global, so these assert PRESENCE of each result
+    // label after driving the outcome (robust under parallel execution). The
+    // deny_verify / deny_downscope / mint_failed labels are UNIQUE to the local
+    // path (the delegate path uses deny_transport / deny_non2xx / deny_badjson),
+    // so their presence unambiguously proves this branch recorded them.
+
+    #[tokio::test]
+    async fn local_exchange_success_is_metered() {
+        crate::metrics::install_recorder();
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read write",
+        });
+        let m = minter().await;
+        exchange(&exchange_req(Some("read")), &verifier, &m, None, None)
+            .await
+            .expect("valid exchange");
+        let out = crate::metrics::render();
+        assert!(
+            out.contains("flint_local_exchange_total"),
+            "local success not metered:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_exchange_deny_verify_is_metered() {
+        crate::metrics::install_recorder();
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: false,
+            scopes: "read",
+        });
+        let m = minter().await;
+        let err = exchange(&exchange_req(None), &verifier, &m, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::InvalidSubjectToken(_)));
+        let out = crate::metrics::render();
+        assert!(
+            out.contains("result=\"deny_verify\""),
+            "deny_verify not metered:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_exchange_deny_downscope_is_metered() {
+        crate::metrics::install_recorder();
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read",
+        });
+        let m = minter().await;
+        // Requesting a scope the subject lacks → downscope rejects (escalation).
+        let err = exchange(&exchange_req(Some("read admin")), &verifier, &m, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.oauth_code(), "invalid_scope");
+        let out = crate::metrics::render();
+        assert!(
+            out.contains("result=\"deny_downscope\""),
+            "deny_downscope not metered:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_exchange_mint_failed_is_metered_when_minter_absent() {
+        crate::metrics::install_recorder();
+        let verifier: Arc<dyn Authenticator> = Arc::new(StubVerifier {
+            accept: true,
+            scopes: "read",
+        });
+        // A minter guard holding None → mint step fails closed (MintFailed).
+        let m: SharedJwtMinter = Arc::new(RwLock::new(None));
+        let err = exchange(&exchange_req(Some("read")), &verifier, &m, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::MintFailed(_)));
+        let out = crate::metrics::render();
+        assert!(
+            out.contains("result=\"mint_failed\""),
+            "mint_failed not metered:\n{out}"
+        );
     }
 
     // ── Hydra-delegate exchange ───────────────────────────────────────────

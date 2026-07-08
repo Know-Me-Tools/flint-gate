@@ -1,0 +1,7 @@
+{"ts":"2026-07-07T00:00:00Z","kind":"phase","event":"before","phase":"agent-gateway-budget-and-policy-operability","index":1,"total":1,"note":"phase-bracket transition via /kbd-next-phase"}
+{"ts":"2026-07-07T00:00:00Z","kind":"assess","event":"after","phase":"agent-gateway-budget-and-policy-operability","index":1,"total":1}
+{"ts":"2026-07-07T00:00:00Z","kind":"analyze","event":"after","phase":"agent-gateway-budget-and-policy-operability","index":1,"total":1}
+{"ts":"2026-07-07T00:00:00Z","kind":"spec","event":"after","phase":"agent-gateway-budget-and-policy-operability","index":1,"total":1}
+{"ts":"2026-07-07T00:00:00Z","kind":"plan","event":"after","phase":"agent-gateway-budget-and-policy-operability","index":1,"total":1}
+{"ts":"2026-07-07T00:00:00Z","kind":"execute","event":"before","phase":"agent-gateway-budget-and-policy-operability","index":1,"total":1}
+{"ts":"2026-07-07T00:00:00Z","kind":"execute","event":"after","phase":"agent-gateway-budget-and-policy-operability","index":1,"total":1}

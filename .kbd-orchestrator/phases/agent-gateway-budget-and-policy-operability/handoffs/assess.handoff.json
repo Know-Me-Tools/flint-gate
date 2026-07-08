@@ -1,0 +1,9 @@
+{
+  "stage": "assess",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": ["assessment.md"],
+  "nextStage": "analyze",
+  "summaryForNext": "Unlike the prior 3 phases, little here is already built — these are genuine operability gaps, each with a strong template. G1 (config-validation lint) = REAL GAP but mirrors the established *_posture()->bail! pattern (admin_auth_posture/oauth_exposure_posture); agent-reachable route is derivable: a route is agent-reachable iff its resolved AuthProviderConfig is Jwt or Mcp (JWKS-backed, can carry an act/agent token) — Kratos=human, ApiKey=Service, Anonymous=none. Add GateConfig::agent_governance_lint() flagging (a) agent-reachable route with a non-agent-scoped MaxTokenBudget, (b) agent-reachable route with no Authorize hook; WARN default + opt-in strict(refuse-start). G2 = REAL 2-part: local-mint path is UNMETERED (only record_delegate exists; needs flint_local_exchange_total + ?-restructure), AND strict cross-replica mode is NEW (on_backend_unavailable only covers mid-request ERROR, not 'no shared limiter configured at all' — build_oauth_routes silently falls back to the per-replica governor). G3 = REAL: only raw Cedar exists; add tools:{allow/deny} sugar compiling to Cedar validated by the existing write-time validator. G4 = REAL/LOW: lifetime agent budget is best-effort (never Unavailable) — recommend REFUSE scope:agent+window:lifetime at config time (folds into G1's lint). Order: G1 lint -> G4 refusal (fold into G1) -> G2 metric+strict -> G3 sugar. Open Qs: lint severity default (recommend WARN+opt-in strict per admin precedent); agent-reachable precision (route->site->provider chain; provider-type is the clean signal); G3 sugar shape + UI scope; G4 fail-closed-read vs refuse-at-config (recommend refuse). Reuse-first: build ONE agent_governance_lint + severity enum, not ad-hoc checks.",
+  "skipped": false,
+  "skipReason": null
+}

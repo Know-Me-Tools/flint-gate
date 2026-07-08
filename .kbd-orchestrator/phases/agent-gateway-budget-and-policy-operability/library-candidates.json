@@ -1,0 +1,46 @@
+{
+  "phase": "agent-gateway-budget-and-policy-operability",
+  "generated_at": "2026-07-07T00:00:00Z",
+  "mode": "stack-specified",
+  "stack": "rust / cedar-policy 4 / axum 0.8 / metrics 0.24 / Ory reference",
+  "candidates": [],
+  "new_dependencies": [],
+  "research_evidence": [
+    {
+      "source": "flint-gate in-repo precedent (admin_auth_posture / oauth_exposure_posture)",
+      "finding": "Security-config gates in this repo allow the loose case by default (loopback) and RefuseStart only when the surface is actually exposed. Stronger than the generic API-security web results — the lint severity default follows this: WARN by default, opt-in strict->refuse-start."
+    }
+  ],
+  "build_required": [
+    {
+      "id": "build-001",
+      "gap": "G1 agent-governance config lint + severity posture (+ G4 folded in)",
+      "rationale": "GateConfig::agent_governance_lint() walks routes, resolves the effective provider exactly as the pipeline (route.auth ?? site.default_auth -> auth_providers -> variant), and flags: agent-reachable route (provider Jwt|Mcp) with a non-agent-scoped MaxTokenBudget; agent-reachable route with no Authorize hook; scope:agent+window:lifetime (G4). DECIDED: WARN default + opt-in server.strict_agent_governance -> startup bail!, mirroring admin_auth_posture. Reuse the *_posture()->bail! pattern; ONE lint fn + severity enum, not ad-hoc checks.",
+      "reuses": "admin_auth_posture/oauth_exposure_posture pattern, pipeline route->provider resolution, RouteConfig.auth/hooks",
+      "capability_gap_id": null
+    },
+    {
+      "id": "build-002",
+      "gap": "G2 local-mint exchange metric",
+      "rationale": "Add flint_local_exchange_total{result} via the record_delegate pattern (&'static str labels). Restructure the local exchange() ?-propagation (verify->downscope->mint) into outcome arms (success/deny_verify/deny_downscope/mint_failed) — mechanical, guarded by existing unit tests.",
+      "reuses": "metrics.rs record_delegate pattern",
+      "capability_gap_id": null
+    },
+    {
+      "id": "build-003",
+      "gap": "G2 strict cross-replica rate-limit mode",
+      "rationale": "on_backend_unavailable only covers a mid-request Redis error, NOT 'no shared limiter configured at all' (redis-l2 off -> silent per-replica governor). Add oauth.rate_limit.require_shared_backend: bool (off by default): when true, refuse to start if the OAuth surface is exposed non-loopback without a shared Redis limiter. Folds into oauth_exposure_posture.",
+      "reuses": "oauth_exposure_posture, BackendUnavailablePosture, build_oauth_routes",
+      "capability_gap_id": null
+    },
+    {
+      "id": "build-004",
+      "gap": "G3 Cedar tool-scope config sugar",
+      "rationale": "Add a per-agent config block (agent: allow:[...] deny:[...]) that COMPILES to Cedar permit/forbid on Action::call_tool + Route::<tool>, validated by the existing authz/validator.rs write-time validation before load. No new policy engine. DECIDED: config-block sugar this phase; admin-UI policy builder deferred.",
+      "reuses": "authz/validator.rs (write-time validation), the Cedar call_tool/Route model",
+      "capability_gap_id": null
+    }
+  ],
+  "contested_stack_choice": null,
+  "deferred": ["G3 admin-UI policy builder (config sugar ships this phase)"]
+}

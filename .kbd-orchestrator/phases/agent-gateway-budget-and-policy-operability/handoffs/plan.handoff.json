@@ -1,0 +1,9 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": ["plan.md"],
+  "nextStage": "execute",
+  "summaryForNext": "3 changes ordered: 1) add-agent-governance-lint (G1+G4, BUILD FIRST -- the anchor; reuse admin_auth_posture pattern + pipeline route->provider resolution; WARN default + opt-in strict->bail!; security review for the agent-reachable classification / silent-gap risk); 2) add-local-exchange-metric-strict-ratelimit (G2 -- reuse record_delegate pattern + oauth_exposure_posture; ?-restructure must preserve fail-closed outcomes; rust+security review); 3) add-agent-tool-scope-sugar (G3, fully independent -- reuse the Cedar write-time validator; sugar->permit/forbid, deny-wins, admin-UI deferred; rust review + light security). ZERO new deps. Each change: fail-safe-default/fail-closed test + separated security review (1+2 startup/deny; 3 light). First change to apply: add-agent-governance-lint.",
+  "skipped": false,
+  "skipReason": null
+}

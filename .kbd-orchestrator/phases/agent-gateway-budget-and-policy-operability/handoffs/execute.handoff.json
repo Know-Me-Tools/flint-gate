@@ -1,0 +1,9 @@
+{
+  "stage": "execute",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": ["execution.md", "progress.json"],
+  "nextStage": "reflect",
+  "summaryForNext": "Backend: openspec, driven by /kbd-apply (one task/turn). 3 changes in dependency order; first pending: add-agent-governance-lint (G1+G4, the anchor). Per-change QA: artifact-refiner + separated security review (full on 1+2 startup/deny behavior; light on 3, validated by the Cedar validator) + a fail-safe-default/fail-closed test each; archive via --skip-specs. ZERO new deps (reuse admin_auth_posture pattern, pipeline route->provider resolution, record_delegate metric, Cedar write-time validator). Guardrail: federate any JWKS IdM, Ory reference, never an IdP. Sync progress.json then advance waypoint in SEPARATE commands (pipeline-enforce hook).",
+  "skipped": false,
+  "skipReason": null
+}

@@ -1,0 +1,9 @@
+{
+  "stage": "analyze",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": ["analysis.md", "library-candidates.json", "decision-log.md"],
+  "nextStage": "spec",
+  "summaryForNext": "ZERO new dependencies — all build on cedar-policy 4 + metrics + the *_posture()->bail! pattern + the Cedar write-time validator. Decisions: (1) G1 lint severity = WARN default + opt-in server.strict_agent_governance -> refuse-start (per admin/oauth precedent); (2) agent-reachable = resolved provider (route.auth ?? site.default_auth) is Jwt|Mcp; (3) G4 = refuse scope:agent+window:lifetime at config, FOLDED into G1's lint; (4) G2 strict mode = new oauth.rate_limit.require_shared_backend (off default) -> refuse-start if exposed non-loopback without a shared limiter (folds into oauth_exposure_posture); (5) G2 local-mint metric = flint_local_exchange_total{result} via the record_delegate pattern + ?-restructure into outcome arms; (6) G3 = config-block sugar (agent: allow/deny) compiling to Cedar validated by the existing validator — admin-UI DEFERRED. Order: G1 lint(+G4 fold) -> G2 metric+strict -> G3 sugar. No contested stack, no elicitation.",
+  "skipped": false,
+  "skipReason": null
+}

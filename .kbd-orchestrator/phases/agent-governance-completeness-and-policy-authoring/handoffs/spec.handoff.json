@@ -1,0 +1,13 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": [
+    "openspec/changes/lint-db-sourced-routes/",
+    "openspec/changes/merge-agent-tool-policies-into-engine/",
+    "openspec/changes/admin-tool-scope-builder/"
+  ],
+  "nextStage": "plan",
+  "summaryForNext": "3 openspec changes written + validated strict, build-ordered G1->G2->G3 (each 5 tasks): (1) lint-db-sourced-routes [G1, dep: none] — surface the merged Vec<RouteConfig> from router.rs:128, lint it at startup (bail!-under-strict) AND on hot-reload in rebuild_router_from_db (WARN always; strict -> reject-route + retain-last-good, never terminate). (2) merge-agent-tool-policies-into-engine [G2, dep: none, order after G1] — carry validated sugar_policies as an immutable overlay on AuthzEngine, concatenate DB records ++ overlay in from_database/reload_from_database + the cache & admin-CRUD reload sites, remove the db+sugar refuse-start guard (main.rs:306-315); precedence = Cedar forbid-overrides-permit (no custom code); test the permit/forbid conflict matrix. (3) admin-tool-scope-builder [G3, DEPENDS ON G2] — new admin endpoint {agent,allow,deny} -> compile_and_validate (SAME allowlist-charset 400-gate, NO raw-Cedar bypass) -> sugar-overlay source + reload; Policies-tab builder UI following AgentIdentities.tsx + Routes.tsx patterns. ZeeSpec: n/a (no .zeespec). Backend: openspec. ZERO new deps. Each change touches authz/policy/reload -> separated security review each; G3's API-boundary injection re-check is the highest-priority security item. Plan ordering is the natural G1->G2->G3 (G3 hard-depends on G2; G1 independent but built first per the phase's HIGH-first ordering).",
+  "skipped": false,
+  "skipReason": null
+}

@@ -66,6 +66,29 @@ export interface PolicyListResponse {
   policies: PolicyRow[];
 }
 
+/**
+ * Structured agent tool-scope authored via the builder. Compiles server-side to
+ * Cedar `permit`/`forbid` on `call_tool` for the agent — there is deliberately no
+ * raw-Cedar field, so operator input reaches Cedar only through the validated
+ * compiler. `deny` wins over `allow`. Values containing `*` are globs.
+ */
+export interface ToolScopeRequest {
+  agent: string;
+  allow: string[];
+  deny: string[];
+}
+
+export interface ToolScopeListResponse {
+  tool_scopes: PolicyRow[];
+}
+
+export interface ToolScopeUpsertResponse {
+  status: string;
+  agent: string;
+  id: string;
+  reloaded?: boolean;
+}
+
 export interface ApiKey {
   id: string;
   client_id: string;

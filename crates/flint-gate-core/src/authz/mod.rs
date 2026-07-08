@@ -19,6 +19,7 @@
 mod bundle;
 mod engine;
 mod error;
+mod sugar;
 mod tool_authz;
 mod validator;
 
@@ -32,6 +33,7 @@ pub use tool_authz::{
     authorize_tool_call, filter_list_tools_body, filter_list_tools_response, ToolAuditSink,
     ToolAuthzContext, ACTION_CALL_TOOL,
 };
+pub use sugar::{compile_agent_tool_policies, compile_and_validate, SUGAR_ID_PREFIX};
 pub use validator::{policy_warnings, validate_policy, ALLOW_ALL_WARNING};
 
 /// Re-export of Cedar's decision enum for callers that want to match on it.

@@ -2,7 +2,7 @@
   "schemaVersion": "1",
   "updatedAt": "2026-07-06T00:00:00Z",
   "cursor": [
-    "agent-gateway-mcp-tool-governance"
+    "agent-gateway-budget-and-policy-operability"
   ],
   "root": {
     "type": "phase",

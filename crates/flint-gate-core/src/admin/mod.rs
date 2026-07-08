@@ -14,10 +14,17 @@
 /// - `POST /api-keys` — create a new API key (returns raw key once)
 /// - `DELETE /api-keys/{id}` — revoke an API key
 /// - `POST /approvals/{id}/decision` — resolve a pending human-in-the-loop approval
+/// - `GET  /tool-scopes` — list UI-authored agent tool-scope policies
+/// - `POST /tool-scopes` — compile `{agent,allow,deny}` to Cedar + persist (structured-only)
+/// - `DELETE /tool-scopes/{agent}` — remove an agent's tool-scope policy
 pub mod auth;
 
 use crate::approval::{ApprovalDecision, ApprovalError};
-use crate::authz::{policy_warnings, validate_policy, AuthzEngine, PolicyRecord};
+use crate::authz::{
+    compile_and_validate, policy_warnings, validate_policy, AuthzEngine, PolicyRecord,
+    SUGAR_ID_PREFIX,
+};
+use crate::config::types::AgentToolPolicy;
 use crate::cache::GateCache;
 use crate::config::SharedConfig;
 use crate::db::{AuditQuery, AuthzAuditDecision, Database};
@@ -136,6 +143,14 @@ pub fn admin_router_with_auth(
             get(get_policy_handler)
                 .put(update_policy_handler)
                 .delete(delete_policy_handler),
+        )
+        .route(
+            "/tool-scopes",
+            get(list_tool_scopes_handler).post(upsert_tool_scope_handler),
+        )
+        .route(
+            "/tool-scopes/{agent}",
+            axum::routing::delete(delete_tool_scope_handler),
         )
         .route("/audit", get(list_audit_handler))
         .route("/analytics/summary", get(usage_summary_handler))
@@ -677,6 +692,13 @@ async fn update_policy_handler(
 /// path. After a successful write the engine is reloaded parse-before-swap; a
 /// reload failure there does not undo the (already-validated) write but is
 /// surfaced so operators can see the bundle did not advance.
+/// Whether a policy id is in the reserved compiled-sugar namespace and must be
+/// rejected on a DB write (see the guard in [`upsert_policy_inner`]). Pure so the
+/// reserved-namespace rule is unit-testable without a database.
+fn is_reserved_policy_id(id: &str) -> bool {
+    id.starts_with(SUGAR_ID_PREFIX)
+}
+
 async fn upsert_policy_inner(
     state: &AdminState,
     id: &str,
@@ -685,6 +707,26 @@ async fn upsert_policy_inner(
     let Some(db) = &state.db else {
         return db_not_configured();
     };
+
+    // 0. Reserved-namespace guard: a stored policy MUST NOT use the compiled
+    // `agent_tool_policies` sugar id prefix. Sugar policies are merged into the
+    // live PolicySet as an overlay; a DB row sharing a sugar id would collide and
+    // (on the lenient reload path) silently SUPPRESS the config tool-scope — a
+    // vanishing `deny:`. Reject at the write boundary so the merge's
+    // id-disjointness invariant holds by construction (defense in depth).
+    if is_reserved_policy_id(id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "reserved_policy_id",
+                "message": format!(
+                    "policy id must not start with the reserved prefix {SUGAR_ID_PREFIX:?} \
+                     (reserved for compiled agent_tool_policies)"
+                )
+            })),
+        )
+            .into_response();
+    }
 
     // 1. Write-time Cedar validation — reject bad policy (text, schema, AND
     // entities) BEFORE it is stored. This is a true superset of what the loader
@@ -764,6 +806,168 @@ async fn delete_policy_handler(
                     "message": format!("policy deleted but engine reload failed: {e}"),
                     "id": id,
                     "reloaded": false,
+                })),
+            )
+                .into_response(),
+        },
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ── Agent tool-scope builder (structured → compiled Cedar) ───────────────────
+//
+// An ergonomic, STRUCTURED-ONLY front-end over the same Cedar the engine runs.
+// The operator posts `{ agent, allow[], deny[] }`; the endpoint compiles it via
+// `compile_and_validate` (the SAME allowlist-charset + Cedar-validate gate the
+// config sugar uses) and stores the result as a database policy row so it is
+// hot-reloadable and enforced alongside other policies. There is deliberately NO
+// raw-Cedar field here — operator input reaches Cedar ONLY through the compiler,
+// so the string-concatenation injection surface the compiler defends can never be
+// reached from this endpoint (see the compiler's allowlist in `authz::sugar`).
+
+/// DB `authz_policies` id prefix for UI-authored tool-scopes. Distinct from the
+/// config-file overlay prefix (`SUGAR_ID_PREFIX`) so the two never collide; one
+/// row per agent (`tool_scope::<agent>`), upserted.
+const TOOL_SCOPE_ID_PREFIX: &str = "tool_scope::";
+
+#[derive(Debug, Deserialize)]
+struct ToolScopeRequest {
+    agent: String,
+    #[serde(default)]
+    allow: Vec<String>,
+    #[serde(default)]
+    deny: Vec<String>,
+}
+
+/// Why a tool-scope request could not be compiled to a storable policy.
+#[derive(Debug, PartialEq)]
+enum ToolScopeError {
+    /// Illegal agent id / tool token, or Cedar that fails validation (400).
+    Invalid(String),
+    /// Neither allow nor deny — nothing to enforce (400).
+    Empty,
+}
+
+/// Compile a `{ agent, allow, deny }` request into a `(db_id, policy_text)` pair,
+/// routing operator input through the SAME allowlist-charset + Cedar-validate gate
+/// as the config sugar. Pure (no DB), so the injection-safety + id-derivation
+/// contract is unit-testable. Returns [`ToolScopeError::Invalid`] on illegal input
+/// (the injection fail-closed boundary) and [`ToolScopeError::Empty`] when there is
+/// nothing to enforce.
+fn compile_tool_scope(req: &ToolScopeRequest) -> Result<(String, String), ToolScopeError> {
+    let entry = AgentToolPolicy {
+        agent: req.agent.clone(),
+        allow: req.allow.clone(),
+        deny: req.deny.clone(),
+    };
+    let compiled = compile_and_validate(std::slice::from_ref(&entry))
+        .map_err(|e| ToolScopeError::Invalid(e.to_string()))?;
+    let record = compiled.into_iter().next().ok_or(ToolScopeError::Empty)?;
+    Ok((format!("{TOOL_SCOPE_ID_PREFIX}{}", req.agent), record.policy_text))
+}
+
+/// `GET /tool-scopes` — list UI-authored tool-scope policy rows (the compiled
+/// Cedar is returned as stored; the structured form is not round-tripped).
+async fn list_tool_scopes_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    match db.list_policies().await {
+        Ok(policies) => {
+            let scopes: Vec<_> = policies
+                .into_iter()
+                .filter(|p| p.id.starts_with(TOOL_SCOPE_ID_PREFIX))
+                .collect();
+            Json(json!({ "tool_scopes": scopes })).into_response()
+        }
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// `POST /tool-scopes` — compile `{ agent, allow, deny }` to Cedar and upsert it
+/// as a database policy row, then reload the engine.
+async fn upsert_tool_scope_handler(
+    State(state): State<AdminState>,
+    Json(payload): Json<ToolScopeRequest>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+
+    // Compile via the SAME structured-only gate as the config sugar. An illegal
+    // agent id / tool token (outside the allowlist charset) or Cedar that fails
+    // validation is rejected 400 — fail-closed, injection-safe (no raw-Cedar path).
+    // The DB row is keyed on the agent (the compiler's own id uses the reserved
+    // config-overlay prefix, which the policy write-guard rejects), so re-authoring
+    // the same agent upserts in place.
+    let (db_id, policy_text) = match compile_tool_scope(&payload) {
+        Ok(pair) => pair,
+        Err(ToolScopeError::Invalid(msg)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid_tool_scope", "message": msg})),
+            )
+                .into_response();
+        }
+        Err(ToolScopeError::Empty) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "empty_tool_scope",
+                    "message": "tool scope must have at least one allow or deny entry"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) = db
+        .upsert_policy(&db_id, &policy_text, None, None, true)
+        .await
+    {
+        return internal_error(&e.to_string());
+    }
+
+    match state.authz.reload_from_database(db).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"status": "ok", "agent": payload.agent, "id": db_id, "reloaded": true})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "stored_but_not_activated",
+                "message": format!("tool scope stored but engine reload failed: {e}"),
+                "id": db_id,
+                "reloaded": false,
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /tool-scopes/{agent}` — remove an agent's UI-authored tool-scope row.
+async fn delete_tool_scope_handler(
+    Path(agent): Path<String>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    let Some(db) = &state.db else {
+        return db_not_configured();
+    };
+    let db_id = format!("{TOOL_SCOPE_ID_PREFIX}{agent}");
+    match db.delete_policy(&db_id).await {
+        Ok(true) => match state.authz.reload_from_database(db).await {
+            Ok(()) => {
+                Json(json!({"status": "deleted", "agent": agent, "reloaded": true})).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "deleted_but_not_reloaded",
+                    "message": format!("tool scope deleted but engine reload failed: {e}"),
+                    "agent": agent,
                 })),
             )
                 .into_response(),
@@ -1101,10 +1305,90 @@ fn internal_error(msg: &str) -> axum::response::Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_audit_query, default_analytics_interval, default_analytics_limit, AuditParams,
-        AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT,
+        build_audit_query, default_analytics_interval, default_analytics_limit,
+        is_reserved_policy_id, AuditParams, AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT,
     };
+    use crate::authz::SUGAR_ID_PREFIX;
     use crate::db::AuthzAuditDecision;
+    use serde_json::json;
+
+    use super::{compile_tool_scope, ToolScopeError, ToolScopeRequest, TOOL_SCOPE_ID_PREFIX};
+
+    fn scope(agent: &str, allow: &[&str], deny: &[&str]) -> ToolScopeRequest {
+        ToolScopeRequest {
+            agent: agent.to_string(),
+            allow: allow.iter().map(|s| s.to_string()).collect(),
+            deny: deny.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn tool_scope_valid_compiles_to_db_id_and_cedar() {
+        let (id, text) = compile_tool_scope(&scope("ci-bot", &["deploy"], &["delete_*"]))
+            .expect("valid tool scope compiles");
+        assert_eq!(id, format!("{TOOL_SCOPE_ID_PREFIX}ci-bot"));
+        // Structured-only → compiled Cedar; deny-wins is preserved (a forbid is emitted).
+        assert!(text.contains("permit"), "text:\n{text}");
+        assert!(text.contains("forbid"), "deny must compile to a forbid:\n{text}");
+        // The stored id is NOT in the reserved config-overlay namespace.
+        assert!(!id.starts_with(SUGAR_ID_PREFIX));
+    }
+
+    #[test]
+    fn tool_scope_illegal_agent_is_rejected_injection_safe() {
+        // A quote in the agent id would break out of a Cedar literal — rejected at
+        // the API boundary (the injection fail-closed gate), never persisted.
+        let err = compile_tool_scope(&scope("ci\"bot", &["deploy"], &[])).unwrap_err();
+        assert!(matches!(err, ToolScopeError::Invalid(_)));
+    }
+
+    #[test]
+    fn tool_scope_illegal_tool_is_rejected() {
+        let err = compile_tool_scope(&scope("ci-bot", &["de ploy"], &[])).unwrap_err();
+        assert!(matches!(err, ToolScopeError::Invalid(_)));
+    }
+
+    #[test]
+    fn tool_scope_empty_is_rejected() {
+        let err = compile_tool_scope(&scope("ci-bot", &[], &[])).unwrap_err();
+        assert_eq!(err, ToolScopeError::Empty);
+    }
+
+    #[test]
+    fn tool_scope_request_has_no_raw_cedar_field() {
+        // Structural guarantee: the request accepts ONLY agent/allow/deny — there is
+        // no `policy_text`/raw-Cedar field, so operator input can reach Cedar only
+        // through compile_and_validate. A body with a raw-Cedar field is ignored
+        // (serde drops unknown fields) — the agent/allow/deny still drive compilation.
+        let req: ToolScopeRequest = serde_json::from_value(json!({
+            "agent": "ci-bot",
+            "allow": ["deploy"],
+            "policy_text": "permit(principal, action, resource);"
+        }))
+        .expect("parses");
+        assert_eq!(req.agent, "ci-bot");
+        assert_eq!(req.allow, vec!["deploy"]);
+        // The injected raw-Cedar field had no effect: compilation uses only the
+        // structured fields.
+        let (_, text) = compile_tool_scope(&req).expect("compiles");
+        assert!(text.contains(r#"Route::"deploy""#), "text:\n{text}");
+        assert!(
+            !text.contains("permit(principal, action, resource)"),
+            "raw-Cedar injection must not appear in the compiled output:\n{text}"
+        );
+    }
+
+    #[test]
+    fn reserved_policy_id_rejects_sugar_namespace() {
+        // A DB write using the compiled-sugar id prefix must be rejected so it
+        // cannot collide with (and silently suppress) a sugar overlay policy.
+        assert!(is_reserved_policy_id(&format!("{SUGAR_ID_PREFIX}ci-bot::0")));
+        assert!(is_reserved_policy_id(SUGAR_ID_PREFIX));
+        // Ordinary operator ids are allowed.
+        assert!(!is_reserved_policy_id("allow-deploy"));
+        assert!(!is_reserved_policy_id("team-policy-42"));
+        assert!(!is_reserved_policy_id(""));
+    }
 
     fn params() -> AuditParams {
         AuditParams {

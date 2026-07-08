@@ -1,0 +1,5 @@
+- [x] Add `server.strict_agent_governance: bool` (serde default false) + a `GovernanceFinding` type (route id + reason, static-ish) in config/types.rs
+- [x] Implement `GateConfig::agent_governance_lint() -> Vec<GovernanceFinding>`: resolve each route's effective provider (route.auth ?? site.default_auth -> auth_providers -> variant); flag agent-reachable (Jwt|Mcp) routes with a non-agent-scoped MaxTokenBudget, or no Authorize hook, or scope:agent+window:lifetime (G4)
+- [x] Consume at startup in main.rs: WARN each finding; if strict_agent_governance -> anyhow::bail! listing the findings (mirror admin_auth_posture consumption)
+- [x] Tests: agent-reachable + non-agent budget -> finding; agent-reachable + no Authorize -> finding; scope:agent+lifetime -> finding; Kratos/ApiKey/Anonymous route -> NO finding; clean config -> empty; strict=true bails, strict=false warns
+- [x] Docs: README + config.example.yaml (strict_agent_governance + what the lint catches); `cargo check/clippy/test --workspace` green

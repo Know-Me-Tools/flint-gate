@@ -165,6 +165,11 @@ impl AuthzDecision {
 pub struct AuthzEngine {
     bundle: ArcSwap<CedarBundle>,
     authorizer: Authorizer,
+    /// Immutable config-sourced **sugar overlay** (compiled `agent_tool_policies`).
+    /// Fixed once at construction and concatenated with the DB records on EVERY
+    /// bundle build/reload, so config tool-scopes enforce alongside DB policies and
+    /// are never dropped by a DB-only reload. Empty for engines built without sugar.
+    sugar: Vec<PolicyRecord>,
 }
 
 impl std::fmt::Debug for AuthzEngine {
@@ -176,11 +181,12 @@ impl std::fmt::Debug for AuthzEngine {
 }
 
 impl AuthzEngine {
-    /// Create an engine around an already-compiled bundle.
+    /// Create an engine around an already-compiled bundle, with no sugar overlay.
     pub fn new(bundle: CedarBundle) -> Self {
         Self {
             bundle: ArcSwap::from_pointee(bundle),
             authorizer: Authorizer::new(),
+            sugar: Vec::new(),
         }
     }
 
@@ -190,9 +196,25 @@ impl AuthzEngine {
         Self::new(CedarBundle::empty())
     }
 
-    /// Build an engine directly from policy records.
+    /// Build an engine directly from policy records (no sugar overlay).
     pub fn from_records(records: &[PolicyRecord]) -> Result<Self, AuthzError> {
         Ok(Self::new(CedarBundle::from_records(records)?))
+    }
+
+    /// Build an engine from an initial record set PLUS an immutable sugar overlay.
+    /// The bundle is compiled from `records ++ sugar`; the overlay is retained so
+    /// every later reload re-applies it. Used for the config-only deployment
+    /// (records empty, sugar non-empty) and available for any seeded set.
+    pub fn from_records_with_sugar(
+        records: &[PolicyRecord],
+        sugar: Vec<PolicyRecord>,
+    ) -> Result<Self, AuthzError> {
+        let combined = concat_records(records, &sugar);
+        Ok(Self {
+            bundle: ArcSwap::from_pointee(CedarBundle::from_records(&combined)?),
+            authorizer: Authorizer::new(),
+            sugar,
+        })
     }
 
     /// Load the current snapshot of the bundle (lock-free).
@@ -208,15 +230,40 @@ impl AuthzEngine {
     /// EMPTY (default-deny) engine — the safe fail-closed floor. When the
     /// database is absent the engine is empty (deny-all) by construction.
     pub async fn from_database(db: &crate::db::Database) -> Self {
+        Self::from_database_with_sugar(db, Vec::new()).await
+    }
+
+    /// Like [`Self::from_database`] but also carries an immutable **sugar overlay**
+    /// (compiled `agent_tool_policies`). The initial bundle is built from the DB
+    /// rows concatenated with the overlay, and the overlay is retained so every
+    /// later reload re-applies it (the sugar is never dropped by a DB-only reload).
+    /// A DB-load failure still yields a fail-closed engine — but one that STILL
+    /// carries the sugar overlay (so config tool-scopes remain enforced even if the
+    /// DB is unreachable at startup).
+    pub async fn from_database_with_sugar(
+        db: &crate::db::Database,
+        sugar: Vec<PolicyRecord>,
+    ) -> Self {
         match db.load_enabled_policies().await {
             Ok(rows) => {
                 let records: Vec<PolicyRecord> =
                     rows.into_iter().map(|r| r.into_record()).collect();
-                Self::new(CedarBundle::from_records_lenient(&records))
+                let combined = concat_records(&records, &sugar);
+                Self {
+                    bundle: ArcSwap::from_pointee(CedarBundle::from_records_lenient(&combined)),
+                    authorizer: Authorizer::new(),
+                    sugar,
+                }
             }
             Err(e) => {
-                error!(error = %e, "failed to load policies at startup — starting default-deny");
-                Self::empty()
+                error!(error = %e, "failed to load policies at startup — starting default-deny (sugar overlay retained)");
+                // Fail-closed on DB, but keep the sugar overlay: build from the
+                // overlay alone (empty DB set) so config tool-scopes still enforce.
+                Self {
+                    bundle: ArcSwap::from_pointee(CedarBundle::from_records_lenient(&sugar)),
+                    authorizer: Authorizer::new(),
+                    sugar,
+                }
             }
         }
     }
@@ -243,7 +290,10 @@ impl AuthzEngine {
     /// [`Self::reload_from_database`] and is directly testable without a live DB
     /// (it is what a "policies" NOTIFY drives on every replica — C1).
     pub fn reload_from_records_lenient(&self, records: &[PolicyRecord]) {
-        let new_bundle = CedarBundle::from_records_lenient(records);
+        // Re-apply the immutable sugar overlay on every reload — otherwise a
+        // DB-only reload would drop the config tool-scopes.
+        let combined = concat_records(records, &self.sugar);
+        let new_bundle = CedarBundle::from_records_lenient(&combined);
         self.bundle.store(Arc::new(new_bundle));
     }
 
@@ -252,7 +302,9 @@ impl AuthzEngine {
     /// last-good bundle is RETAINED and the error is returned — a bad reload can
     /// never blank the policy set.
     pub fn reload_from_records(&self, records: &[PolicyRecord]) -> Result<(), AuthzError> {
-        match CedarBundle::from_records(records) {
+        // Re-apply the immutable sugar overlay (strict build) on every reload.
+        let combined = concat_records(records, &self.sugar);
+        match CedarBundle::from_records(&combined) {
             Ok(new_bundle) => {
                 self.bundle.store(Arc::new(new_bundle));
                 Ok(())
@@ -411,6 +463,15 @@ fn extract_approval_context(
         resource_id,
         reason,
     ))
+}
+
+/// Concatenate DB (or seed) records with the sugar overlay into one owned Vec for
+/// bundle compilation. DB records first, then sugar — but ordering is immaterial
+/// to the decision (Cedar `forbid` overrides `permit` regardless of order), and
+/// the sugar's namespaced PolicyIds (`agent_tool_sugar::…`) cannot collide with DB
+/// row ids.
+fn concat_records(records: &[PolicyRecord], sugar: &[PolicyRecord]) -> Vec<PolicyRecord> {
+    records.iter().chain(sugar.iter()).cloned().collect()
 }
 
 /// Construct a Cedar `EntityUid` of `Type::"id"` from an untrusted string id.
@@ -775,5 +836,118 @@ mod tests {
             primary.authorize("alice", DEFAULT_ACTION, "r1", &json!({})),
             AuthzDecision::Allow
         );
+    }
+
+    // ── sugar overlay merged with DB policies ────────────────────────────────
+
+    use crate::authz::{authorize_tool_call, compile_and_validate};
+    use crate::config::types::AgentToolPolicy;
+
+    fn sugar(agent: &str, allow: &[&str], deny: &[&str]) -> Vec<PolicyRecord> {
+        compile_and_validate(&[AgentToolPolicy {
+            agent: agent.to_string(),
+            allow: allow.iter().map(|s| s.to_string()).collect(),
+            deny: deny.iter().map(|s| s.to_string()).collect(),
+        }])
+        .expect("valid sugar compiles")
+    }
+
+    fn agent_can_call(engine: &AuthzEngine, agent: &str, tool: &str) -> bool {
+        authorize_tool_call(engine, PrincipalKind::Agent, agent, tool, &json!({}), "route-1")
+            .is_allow()
+    }
+
+    #[test]
+    fn sugar_overlay_enforced_alongside_db_records() {
+        // Simulates the DB-present engine: DB rows seed the bundle, the sugar is
+        // the overlay. Both are enforced.
+        let db = record("db-perm", r#"permit(principal, action == Action::"call_tool", resource == Route::"db_tool");"#);
+        let engine = AuthzEngine::from_records_with_sugar(
+            std::slice::from_ref(&db),
+            sugar("ci-bot", &["deploy"], &[]),
+        )
+        .expect("builds");
+        // DB policy enforced.
+        assert!(agent_can_call(&engine, "anyone", "db_tool"));
+        // Sugar policy enforced too.
+        assert!(agent_can_call(&engine, "ci-bot", "deploy"));
+        // A tool neither grants → denied.
+        assert!(!agent_can_call(&engine, "ci-bot", "other"));
+    }
+
+    #[test]
+    fn sugar_overlay_survives_a_reload() {
+        // The overlay must NOT be dropped when a "policies" reload rebuilds from
+        // DB rows only — the exact bug this change fixes.
+        let engine =
+            AuthzEngine::from_records_with_sugar(&[], sugar("ci-bot", &["deploy"], &[]))
+                .expect("builds");
+        assert!(agent_can_call(&engine, "ci-bot", "deploy"));
+        // Simulate a DB-driven reload carrying an unrelated DB policy (no sugar).
+        engine.reload_from_records_lenient(&[record(
+            "db-only",
+            r#"permit(principal, action == Action::"call_tool", resource == Route::"db_tool");"#,
+        )]);
+        // Sugar is STILL enforced after the reload.
+        assert!(agent_can_call(&engine, "ci-bot", "deploy"));
+        // And the reloaded DB policy is now active too.
+        assert!(agent_can_call(&engine, "anyone", "db_tool"));
+    }
+
+    #[test]
+    fn precedence_sugar_permit_vs_db_forbid_denies() {
+        // DB forbids a tool the sugar permits → deny (Cedar forbid-overrides-permit,
+        // source-agnostic).
+        let db = record(
+            "db-forbid",
+            r#"forbid(principal, action == Action::"call_tool", resource == Route::"deploy");"#,
+        );
+        let engine = AuthzEngine::from_records_with_sugar(
+            std::slice::from_ref(&db),
+            sugar("ci-bot", &["deploy"], &[]),
+        )
+        .expect("builds");
+        assert!(!agent_can_call(&engine, "ci-bot", "deploy"));
+    }
+
+    #[test]
+    fn precedence_db_permit_vs_sugar_forbid_denies() {
+        // Sugar forbids (deny list) a tool the DB permits → deny.
+        let db = record(
+            "db-perm",
+            r#"permit(principal, action == Action::"call_tool", resource == Route::"deploy");"#,
+        );
+        let engine = AuthzEngine::from_records_with_sugar(
+            std::slice::from_ref(&db),
+            sugar("ci-bot", &[], &["deploy"]),
+        )
+        .expect("builds");
+        assert!(!agent_can_call(&engine, "ci-bot", "deploy"));
+    }
+
+    #[test]
+    fn precedence_two_permits_allow() {
+        // DB permits generally; sugar permits specifically → allow (union).
+        let db = record(
+            "db-perm",
+            r#"permit(principal, action == Action::"call_tool", resource == Route::"deploy");"#,
+        );
+        let engine = AuthzEngine::from_records_with_sugar(
+            std::slice::from_ref(&db),
+            sugar("ci-bot", &["deploy"], &[]),
+        )
+        .expect("builds");
+        assert!(agent_can_call(&engine, "ci-bot", "deploy"));
+    }
+
+    #[test]
+    fn config_only_sugar_still_enforces() {
+        // No DB records — the config-only deployment path.
+        let engine =
+            AuthzEngine::from_records_with_sugar(&[], sugar("reader", &["read_*"], &["read_secret"]))
+                .expect("builds");
+        assert!(agent_can_call(&engine, "reader", "read_file")); // glob allow
+        assert!(!agent_can_call(&engine, "reader", "read_secret")); // deny wins
+        assert!(!agent_can_call(&engine, "reader", "write_file")); // not allowed
     }
 }

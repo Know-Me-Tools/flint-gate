@@ -11,10 +11,10 @@ links:
 - agent-authorization-control-plane-executor-session
 sources:
 - stdin
-timestamp: 2026-07-03T16:57:32.142643+00:00
-created_at: 2026-07-03T16:57:32.142643+00:00
-updated_at: 2026-07-03T16:57:32.142643+00:00
-revision: 0
+timestamp: 2026-07-04T14:54:58.761999+00:00
+created_at: 2026-07-04T14:54:58.761964+00:00
+updated_at: 2026-07-04T14:54:58.761999+00:00
+revision: 1
 ---
 
 ## Session Record

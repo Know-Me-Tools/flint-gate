@@ -1,0 +1,5 @@
+- [x] Surface the merged route set from Router::from_config_and_db_routes (return the merged Vec<RouteConfig> it already builds at router.rs:128, or add a sibling fn that returns it) without changing merge semantics
+- [x] Startup: lint the merged (YAML+DB) set via agent_governance_lint_routes when database.override_yaml is honored (main.rs) — WARN each, bail! under strict_agent_governance; lint the merged set once (no double-WARN of YAML routes)
+- [x] Hot-reload: lint the merged set in rebuild_router_from_db (cache/mod.rs) on every "routes" NOTIFY — WARN always; under strict, reject the offending route(s) + retain last-good router (never terminate), loudly logged
+- [x] Tests: DB-only under-governed route flagged at startup (strict -> bail); reload strict -> last-good retained + logged; non-strict -> warn + still applies; existing YAML-only lint tests unregressed
+- [x] Docs: README (governance lint now covers DB-sourced + hot-reloaded routes; startup bail vs reload reject-and-retain) + config.example.yaml note; cargo check/clippy/test --workspace green

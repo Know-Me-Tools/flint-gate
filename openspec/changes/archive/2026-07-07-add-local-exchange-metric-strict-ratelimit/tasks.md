@@ -1,0 +1,5 @@
+- [x] Add flint_local_exchange_total{result} to metrics.rs (record_local_exchange(&'static str), reuse the record_delegate pattern)
+- [x] Restructure the local exchange() branch (verify -> downscope -> mint) from ?-propagation into outcome arms; emit success / deny_verify / deny_downscope / mint_failed; every prior fail-closed outcome preserved
+- [x] Add oauth.rate_limit.require_shared_backend: bool (serde default false); refuse-start when the OAuth surface is exposed non-loopback without a shared Redis limiter (fold into oauth_exposure_posture / the exposure startup check in main.rs)
+- [x] Tests: local exchange success + each deny reason increments the metric; existing token-exchange fail-closed tests unregressed; require_shared_backend=true + non-loopback + no shared limiter -> refuse start; loopback / not-required -> starts
+- [x] Docs: README + config.example.yaml (local-exchange metric + require_shared_backend strict mode); `cargo check/clippy/test --workspace` green

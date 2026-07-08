@@ -394,6 +394,16 @@ pub async fn start_cache_invalidation_listener(
     });
 }
 
+/// Decide whether a route hot-reload must be rejected (last-good retained).
+///
+/// Fail-closed posture for a LIVE process (which cannot refuse-to-start): a reload
+/// is rejected only under `strict_agent_governance` AND when the merged set has at
+/// least one governance finding. Pure, so the reload policy is unit-testable
+/// without a database.
+fn reload_must_be_rejected(strict: bool, finding_count: usize) -> bool {
+    strict && finding_count > 0
+}
+
 /// Reload DB routes and rebuild the shared router.
 async fn rebuild_router_from_db(
     shared_router: &crate::proxy::SharedRouter,
@@ -403,7 +413,27 @@ async fn rebuild_router_from_db(
     let config = shared_config.read().await.clone();
     match db.load_routes().await {
         Ok(db_routes) => {
-            let new_router = crate::proxy::Router::from_config_and_db_routes(&config, &db_routes);
+            // Compute the merged (YAML + DB) route set and lint it for
+            // under-governed agent routes. A live process CANNOT refuse-to-start,
+            // so the fail-closed posture here is: WARN always, and under
+            // `strict_agent_governance` REJECT the reload and RETAIN the last-good
+            // router (never apply an under-governed route, never terminate).
+            let merged = crate::proxy::merge_routes(&config, &db_routes);
+            let findings = config.agent_governance_lint_routes(&merged);
+            for f in &findings {
+                warn!(route_id = %f.route_id, "agent-governance (reload): {}", f.reason.as_str());
+            }
+            if reload_must_be_rejected(config.server.strict_agent_governance, findings.len()) {
+                crate::metrics::record_governance_reload_rejected();
+                warn!(
+                    findings = findings.len(),
+                    "agent-governance (reload, strict): under-governed agent route(s) in the \
+                     reloaded set — REJECTING the reload and retaining the last-good router; \
+                     the new route set is NOT applied"
+                );
+                return;
+            }
+            let new_router = crate::proxy::Router::from_config_with_routes(&config, merged);
             let count = new_router.route_count();
             *shared_router.write().await = new_router;
             info!(route_count = count, "router rebuilt from DB + YAML routes");
@@ -467,5 +497,27 @@ mod tests {
         assert_eq!(classify_notification("signing_keys"), NotifyAction::All);
         assert_eq!(classify_notification("something_else"), NotifyAction::All);
         assert_eq!(classify_notification(""), NotifyAction::All);
+    }
+
+    // ── reload governance decision (fail-closed for a live process) ──────────
+
+    #[test]
+    fn reload_rejected_only_under_strict_with_findings() {
+        // Strict + findings → reject (retain last-good); a live process can't bail.
+        assert!(reload_must_be_rejected(true, 1));
+        assert!(reload_must_be_rejected(true, 5));
+    }
+
+    #[test]
+    fn reload_applies_when_not_strict_even_with_findings() {
+        // Non-strict → advisory only: warn but still apply the reload.
+        assert!(!reload_must_be_rejected(false, 3));
+    }
+
+    #[test]
+    fn reload_applies_when_strict_but_clean() {
+        // Strict but no findings → apply normally.
+        assert!(!reload_must_be_rejected(true, 0));
+        assert!(!reload_must_be_rejected(false, 0));
     }
 }

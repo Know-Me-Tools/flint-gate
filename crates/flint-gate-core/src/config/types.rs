@@ -30,6 +30,33 @@ pub struct GateConfig {
     /// OAuth 2.0 features: client-credentials grant + RFC 7662 introspection.
     #[serde(default)]
     pub oauth: OAuthConfig,
+    /// Per-agent tool-scope sugar. Each entry compiles to Cedar `permit`/`forbid`
+    /// policies on `Action::"call_tool"` for the `Agent::"<agent>"` principal — an
+    /// ergonomic front-end over the policy the engine already runs (validated at
+    /// load, never a second authority). Empty by default.
+    #[serde(default)]
+    pub agent_tool_policies: Vec<AgentToolPolicy>,
+}
+
+/// Per-agent tool-scope sugar (`agent_tool_policies` entry).
+///
+/// Compiles to Cedar: each `allow` tool → a `permit`, each `deny` tool → a
+/// `forbid` (which, per Cedar semantics, **overrides** any `permit`), all scoped
+/// to `principal == Agent::"<agent>"` and `action == Action::"call_tool"`. A
+/// value containing `*` is a glob matched against the tool name
+/// (`context.tool_name like "<glob>"`); otherwise it is an exact
+/// `resource == Route::"<tool>"` match.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentToolPolicy {
+    /// The agent principal id — becomes `Agent::"<agent>"`.
+    pub agent: String,
+    /// Tool names (or `*`-globs) this agent MAY call.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Tool names (or `*`-globs) this agent MUST NOT call. `deny` wins over
+    /// `allow` (Cedar `forbid` overrides `permit`).
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
 /// Outcome of [`GateConfig::oauth_exposure_posture`].
@@ -74,11 +101,143 @@ impl GateConfig {
         let introspect_guarded =
             !self.oauth.introspection_enabled || self.oauth.introspect_auth;
         let rate_limited = self.oauth.rate_limit.enabled;
-        if introspect_guarded && rate_limited {
+        // Strict cross-replica mode: when the operator demands a shared limiter
+        // (`oauth.rate_limit.require_shared_backend`) but none is configured, the
+        // per-replica governor cannot deliver the cross-replica ceiling they asked
+        // for — refuse rather than silently under-enforce.
+        let shared_backend_ok = !self.oauth.rate_limit.require_shared_backend
+            || self.has_shared_ratelimit_backend();
+        if introspect_guarded && rate_limited && shared_backend_ok {
             OAuthExposurePosture::Enforce
         } else {
             OAuthExposurePosture::RefuseStart
         }
+    }
+
+    /// Whether a **shared, cross-replica** rate-limit backend is actually
+    /// available: an enabled L2 cache with a Redis URL **and** the `redis-l2`
+    /// build feature that provides the live limiter. Both are required — a config
+    /// that names Redis in a binary compiled *without* `redis-l2` has no shared
+    /// limiter at runtime, so this returns `false` there and strict mode
+    /// (`require_shared_backend`) genuinely refuses to start rather than falsely
+    /// reporting a cross-replica limit that does not exist.
+    pub fn has_shared_ratelimit_backend(&self) -> bool {
+        cfg!(feature = "redis-l2")
+            && self.cache.l2.enabled
+            && self.cache.l2.redis_url.is_some()
+    }
+
+    /// Lint the config for **under-governed agent surfaces** — operator
+    /// misconfigurations that leave an agent principal insufficiently governed.
+    /// Pure and side-effect free so it is unit-testable; `main.rs` decides WARN
+    /// vs refuse-start (`server.strict_agent_governance`).
+    ///
+    /// A route is **agent-reachable** iff its effective auth provider
+    /// (`route.auth`, else the site's `default_auth`) is a **JWKS-backed** type
+    /// (`jwt` or `mcp`) — those can carry an RFC 8693 `act`/agent token. Kratos is
+    /// human, `api_key` is a Service credential, `anonymous` carries no principal.
+    /// For each agent-reachable enabled route it flags:
+    /// - a `MaxTokenBudget` left at a non-`agent` scope (agent spend accounted in
+    ///   the user/team keyspace);
+    /// - no `Authorize` hook at all (tool calls ungoverned by policy);
+    /// - any `MaxTokenBudget` with `scope: agent` + `window: lifetime` (cannot fail
+    ///   closed on a backend outage).
+    ///
+    /// NOTE: this convenience wrapper lints the **YAML** route set
+    /// (`self.routes`). The gateway itself lints the **merged (YAML + database)**
+    /// route set via [`Self::agent_governance_lint_routes`] on the
+    /// [`crate::proxy::merge_routes`] output — at startup (`main.rs` step 8b) and
+    /// on every route hot-reload (`rebuild_router_from_db`) — so DB-sourced and
+    /// hot-reloaded routes are covered. Use this wrapper only when YAML-only
+    /// linting is what you want.
+    pub fn agent_governance_lint(&self) -> Vec<GovernanceFinding> {
+        self.agent_governance_lint_routes(&self.routes)
+    }
+
+    /// Lint an explicit route set against this config's sites + providers. Pure;
+    /// deduplicates findings per `(route_id, reason)`.
+    pub fn agent_governance_lint_routes(
+        &self,
+        routes: &[RouteConfig],
+    ) -> Vec<GovernanceFinding> {
+        use std::collections::{HashMap, HashSet};
+        let site_default: HashMap<&str, Option<&str>> = self
+            .sites
+            .iter()
+            .map(|s| (s.id.as_str(), s.default_auth.as_deref()))
+            .collect();
+
+        let mut findings = Vec::new();
+        let mut seen: HashSet<(String, GovernanceReason)> = HashSet::new();
+        let mut push = |findings: &mut Vec<GovernanceFinding>,
+                        route_id: &str,
+                        reason: GovernanceReason| {
+            if seen.insert((route_id.to_string(), reason)) {
+                findings.push(GovernanceFinding {
+                    route_id: route_id.to_string(),
+                    reason,
+                });
+            }
+        };
+
+        for route in routes.iter().filter(|r| r.enabled) {
+            // Effective provider name: route.auth, else the site's default_auth.
+            let provider_name = route
+                .auth
+                .as_deref()
+                .or_else(|| site_default.get(route.site.as_str()).copied().flatten());
+            // A named-but-undefined provider is a config error (the route 500s).
+            if let Some(name) = provider_name {
+                if !self.auth_providers.contains_key(name) {
+                    push(
+                        &mut findings,
+                        &route.id,
+                        GovernanceReason::UnresolvableAuthProvider,
+                    );
+                }
+            }
+            let agent_reachable = provider_name
+                .and_then(|n| self.auth_providers.get(n))
+                .is_some_and(|p| {
+                    matches!(
+                        p,
+                        AuthProviderConfig::Jwt(_) | AuthProviderConfig::Mcp(_)
+                    )
+                });
+
+            // The Lifetime+Agent finding is independent of reachability — it is
+            // always un-fail-closeable — but the other two only matter when the
+            // route can actually be reached by an agent.
+            let mut has_authorize = false;
+            for hook in &route.hooks.pre_request {
+                match hook {
+                    PreRequestHook::MaxTokenBudget { config } => {
+                        if config.scope == BudgetScope::Agent
+                            && config.window == BudgetWindow::Lifetime
+                        {
+                            push(
+                                &mut findings,
+                                &route.id,
+                                GovernanceReason::LifetimeAgentBudget,
+                            );
+                        }
+                        if agent_reachable && config.scope != BudgetScope::Agent {
+                            push(
+                                &mut findings,
+                                &route.id,
+                                GovernanceReason::NonAgentScopedBudget,
+                            );
+                        }
+                    }
+                    PreRequestHook::Authorize { .. } => has_authorize = true,
+                    _ => {}
+                }
+            }
+            if agent_reachable && !has_authorize {
+                push(&mut findings, &route.id, GovernanceReason::NoAuthorizeHook);
+            }
+        }
+        findings
     }
 }
 
@@ -233,6 +392,66 @@ pub struct ServerConfig {
     /// against an `http://` Hydra; a loud WARN is emitted when enabled.
     #[serde(default)]
     pub allow_insecure_upstream: bool,
+    /// Promote agent-governance lint findings from a startup WARN to a
+    /// **refuse-to-start**. Off by default (a WARN is non-breaking on upgrade);
+    /// set true to make an under-governed agent surface a hard startup error —
+    /// e.g. an agent-reachable route with a non-agent-scoped budget or no
+    /// authorization hook. See [`GateConfig::agent_governance_lint`].
+    #[serde(default)]
+    pub strict_agent_governance: bool,
+}
+
+/// One agent-governance lint finding — an operator misconfiguration that leaves
+/// an agent surface under-governed. Reported at startup (WARN by default, or a
+/// refuse-to-start under `server.strict_agent_governance`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernanceFinding {
+    /// The route the finding is about.
+    pub route_id: String,
+    /// A stable, human-readable reason.
+    pub reason: GovernanceReason,
+}
+
+/// The kind of agent-governance gap a [`GovernanceFinding`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GovernanceReason {
+    /// An agent-reachable route has a `MaxTokenBudget` left at a non-agent scope
+    /// (agent spend is accounted in the user/team keyspace, not the agent's).
+    NonAgentScopedBudget,
+    /// An agent-reachable route has no `Authorize` hook — tool calls are
+    /// ungoverned by policy.
+    NoAuthorizeHook,
+    /// A budget is `scope: agent` + `window: lifetime`, which cannot fail closed
+    /// on a backend outage (fail-closed agent budgets require a fixed window).
+    LifetimeAgentBudget,
+    /// A route names an auth provider that is not defined in `auth_providers`
+    /// (typo / deleted provider) — the route 500s at runtime and can't be
+    /// classified for governance.
+    UnresolvableAuthProvider,
+}
+
+impl GovernanceReason {
+    /// A stable one-line description for logs / the strict-mode error.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GovernanceReason::NonAgentScopedBudget => {
+                "agent-reachable route has a non-agent-scoped token budget \
+                 (agent spend is not counted under the Agent scope)"
+            }
+            GovernanceReason::NoAuthorizeHook => {
+                "agent-reachable route has no Authorize hook (tool calls are \
+                 ungoverned by policy)"
+            }
+            GovernanceReason::LifetimeAgentBudget => {
+                "scope: agent + window: lifetime cannot fail closed on a backend \
+                 outage (use a fixed window)"
+            }
+            GovernanceReason::UnresolvableAuthProvider => {
+                "route names an auth provider that is not defined in \
+                 auth_providers (typo or deleted provider) — the route will 500"
+            }
+        }
+    }
 }
 
 /// Validate that an operator-configured upstream URL uses `https://` unless
@@ -354,6 +573,16 @@ pub struct RateLimitConfig {
     /// Maximum burst size (bucket capacity) per key.
     #[serde(default = "default_rate_burst")]
     pub burst: u32,
+    /// **OAuth strict mode (off by default).** Only meaningful on
+    /// `oauth.rate_limit`. When true, the gateway refuses to start if the OAuth
+    /// surface is exposed on a non-loopback bind but no **shared** (cross-replica)
+    /// Redis limiter is configured (`cache.l2.enabled` + `cache.l2.redis_url`) —
+    /// without one, each replica limits independently and the effective ceiling
+    /// scales with the replica count. Turns "I need cross-replica-accurate limits"
+    /// into an enforced invariant. Ignored on `server.rate_limit` (the in-process
+    /// burst shield is per-replica by design).
+    #[serde(default)]
+    pub require_shared_backend: bool,
 }
 
 fn default_rate_per_second() -> u64 {
@@ -369,6 +598,7 @@ impl Default for RateLimitConfig {
             enabled: false,
             per_second: default_rate_per_second(),
             burst: default_rate_burst(),
+            require_shared_backend: false,
         }
     }
 }
@@ -396,6 +626,7 @@ impl Default for ServerConfig {
             rate_limit: RateLimitConfig::default(),
             admin_auth: None,
             allow_insecure_upstream: false,
+            strict_agent_governance: false,
         }
     }
 }
@@ -1470,5 +1701,264 @@ config:
         c.token_exchange.enabled = true;
         c.oauth.rate_limit.enabled = true;
         assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::Enforce);
+    }
+
+    // ── require_shared_backend strict cross-replica mode ─────────────────────
+
+    #[test]
+    fn require_shared_backend_defaults_false() {
+        assert!(!RateLimitConfig::default().require_shared_backend);
+        assert!(!GateConfig::default().oauth.rate_limit.require_shared_backend);
+    }
+
+    #[test]
+    fn strict_shared_backend_refuses_non_loopback_without_shared_limiter() {
+        // Exposed, both base guards satisfied, but require_shared_backend is set
+        // and no L2/Redis limiter is configured → refuse to start.
+        let mut c = exposure_cfg("0.0.0.0:4456", true, true, true);
+        c.oauth.rate_limit.require_shared_backend = true;
+        assert!(!c.has_shared_ratelimit_backend());
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+    }
+
+    #[cfg(feature = "redis-l2")]
+    #[test]
+    fn strict_shared_backend_enforces_when_shared_limiter_configured() {
+        // With the redis-l2 feature, a configured L2/Redis backend satisfies the
+        // strict requirement → Enforce.
+        let mut c = exposure_cfg("0.0.0.0:4456", true, true, true);
+        c.oauth.rate_limit.require_shared_backend = true;
+        c.cache.l2.enabled = true;
+        c.cache.l2.redis_url = Some("redis://localhost:6379".into());
+        assert!(c.has_shared_ratelimit_backend());
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::Enforce);
+    }
+
+    #[cfg(not(feature = "redis-l2"))]
+    #[test]
+    fn strict_shared_backend_refuses_without_redis_l2_feature_even_if_configured() {
+        // Without the redis-l2 feature there is NO live shared limiter, so even a
+        // fully-configured L2/Redis block cannot satisfy the requirement → refuse.
+        let mut c = exposure_cfg("0.0.0.0:4456", true, true, true);
+        c.oauth.rate_limit.require_shared_backend = true;
+        c.cache.l2.enabled = true;
+        c.cache.l2.redis_url = Some("redis://localhost:6379".into());
+        assert!(!c.has_shared_ratelimit_backend());
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+    }
+
+    #[test]
+    fn strict_shared_backend_ignored_on_loopback() {
+        // On a loopback bind the exposure guardrails (incl. this one) are not
+        // enforced — local dev must still start.
+        let mut c = exposure_cfg("127.0.0.1:4456", true, true, true);
+        c.oauth.rate_limit.require_shared_backend = true;
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::AllowLoopback);
+    }
+
+    #[test]
+    fn non_strict_starts_non_loopback_without_shared_limiter() {
+        // require_shared_backend off (default) → the per-replica governor is
+        // acceptable; both base guards present → Enforce (no shared limiter needed).
+        let c = exposure_cfg("0.0.0.0:4456", true, true, true);
+        assert!(!c.oauth.rate_limit.require_shared_backend);
+        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::Enforce);
+    }
+
+    #[test]
+    fn has_shared_ratelimit_backend_needs_both_enabled_and_url() {
+        let mut c = GateConfig::default();
+        assert!(!c.has_shared_ratelimit_backend());
+        c.cache.l2.enabled = true;
+        assert!(!c.has_shared_ratelimit_backend()); // enabled but no URL
+        c.cache.l2.redis_url = Some("redis://localhost:6379".into());
+        // The fully-configured case additionally requires the redis-l2 feature
+        // (the live limiter); the predicate honors that so strict mode cannot be
+        // satisfied by config alone in a feature-less build.
+        assert_eq!(c.has_shared_ratelimit_backend(), cfg!(feature = "redis-l2"));
+        c.cache.l2.enabled = false;
+        assert!(!c.has_shared_ratelimit_backend()); // URL but disabled
+    }
+
+    #[test]
+    fn require_shared_backend_parses_from_yaml() {
+        let cfg: RateLimitConfig =
+            serde_yaml::from_str("enabled: true\nrequire_shared_backend: true")
+                .expect("parses");
+        assert!(cfg.require_shared_backend);
+        // Absent key → false (non-breaking default).
+        let d: RateLimitConfig = serde_yaml::from_str("enabled: true").expect("parses");
+        assert!(!d.require_shared_backend);
+    }
+
+    // ── agent_tool_policies sugar (config schema) ────────────────────────────
+
+    #[test]
+    fn agent_tool_policies_default_empty() {
+        assert!(GateConfig::default().agent_tool_policies.is_empty());
+    }
+
+    #[test]
+    fn agent_tool_policies_parse_from_yaml() {
+        let cfg: GateConfig = serde_yaml::from_str(
+            "agent_tool_policies:\n  - agent: ci-bot\n    allow: [deploy, run_tests]\n    deny: [\"delete_*\"]\n",
+        )
+        .expect("parses");
+        assert_eq!(cfg.agent_tool_policies.len(), 1);
+        let p = &cfg.agent_tool_policies[0];
+        assert_eq!(p.agent, "ci-bot");
+        assert_eq!(p.allow, vec!["deploy", "run_tests"]);
+        assert_eq!(p.deny, vec!["delete_*"]);
+    }
+
+    #[test]
+    fn agent_tool_policies_allow_and_deny_default_empty() {
+        // An entry may omit allow or deny — both default to empty.
+        let cfg: GateConfig =
+            serde_yaml::from_str("agent_tool_policies:\n  - agent: reader\n    allow: [read]\n")
+                .expect("parses");
+        assert_eq!(cfg.agent_tool_policies[0].allow, vec!["read"]);
+        assert!(cfg.agent_tool_policies[0].deny.is_empty());
+    }
+
+    // ── agent_governance_lint ────────────────────────────────────────────────
+
+    /// Build a GateConfig from YAML: one site + one route with the given auth
+    /// provider type and pre_request hooks. `provider` is a serde tag
+    /// (jwt|mcp|kratos|api_key|anonymous). `hooks_yaml` is the route's
+    /// `pre_request` list (may be empty).
+    fn lint_cfg(provider: &str, hooks_yaml: &str) -> GateConfig {
+        let provider_body = match provider {
+            "jwt" => "jwks_url: \"https://idp/jwks\"\n    issuer: \"https://idp\"",
+            "mcp" => {
+                "jwks_url: \"https://idp/jwks\"\n    issuer: \"https://idp\"\n    resource: \"https://rs/mcp\""
+            }
+            "kratos" => "base_url: \"http://kratos:4433\"",
+            "api_key" => "header: \"X-API-Key\"",
+            "anonymous" => "default_subject: \"anon\"",
+            _ => unreachable!(),
+        };
+        let yaml = format!(
+            "auth_providers:\n  p:\n    type: {provider}\n    {provider_body}\n\
+             sites:\n  - id: s\n    default_auth: p\n\
+             routes:\n  - id: r\n    site: s\n    match:\n      path: /x\n    auth: p\n\
+             {hooks_yaml}\n"
+        );
+        serde_yaml::from_str(&yaml).unwrap_or_else(|e| panic!("bad fixture: {e}\n{yaml}"))
+    }
+
+    const BUDGET_USER: &str = "    hooks:\n      pre_request:\n        - type: max_token_budget\n          config: { limit: 100, window: hour, scope: user }";
+    const BUDGET_AGENT: &str = "    hooks:\n      pre_request:\n        - type: max_token_budget\n          config: { limit: 100, window: hour, scope: agent }\n        - type: authorize\n          config: {}";
+    const AUTHORIZE_ONLY: &str = "    hooks:\n      pre_request:\n        - type: authorize\n          config: {}";
+
+    fn reasons(c: &GateConfig) -> Vec<GovernanceReason> {
+        c.agent_governance_lint().into_iter().map(|f| f.reason).collect()
+    }
+
+    #[test]
+    fn lint_flags_agent_reachable_route_with_non_agent_budget() {
+        let c = lint_cfg("jwt", BUDGET_USER);
+        // jwt route with a user-scoped budget AND no Authorize -> two findings.
+        let r = reasons(&c);
+        assert!(r.contains(&GovernanceReason::NonAgentScopedBudget));
+        assert!(r.contains(&GovernanceReason::NoAuthorizeHook));
+    }
+
+    #[test]
+    fn lint_flags_agent_reachable_route_with_no_authorize_hook() {
+        // mcp route with only a budget (user) -> no-authorize finding present.
+        let c = lint_cfg("mcp", BUDGET_USER);
+        assert!(reasons(&c).contains(&GovernanceReason::NoAuthorizeHook));
+    }
+
+    #[test]
+    fn lint_clean_agent_route_has_no_findings() {
+        // jwt route with an AGENT-scoped budget + an Authorize hook -> clean.
+        let c = lint_cfg("jwt", BUDGET_AGENT);
+        assert!(c.agent_governance_lint().is_empty(), "{:?}", reasons(&c));
+    }
+
+    #[test]
+    fn lint_ignores_non_agent_reachable_providers() {
+        // Kratos / api_key / anonymous routes are NOT agent-reachable — even a
+        // user-scoped budget with no Authorize yields nothing.
+        for provider in ["kratos", "api_key", "anonymous"] {
+            let c = lint_cfg(provider, BUDGET_USER);
+            assert!(
+                c.agent_governance_lint().is_empty(),
+                "{provider} must not be agent-reachable: {:?}",
+                reasons(&c)
+            );
+        }
+    }
+
+    #[test]
+    fn lint_flags_lifetime_agent_budget_regardless_of_reachability() {
+        // scope: agent + window: lifetime is un-fail-closeable — flagged even on a
+        // non-agent-reachable (kratos) route.
+        let hooks = "    hooks:\n      pre_request:\n        - type: max_token_budget\n          config: { limit: 100, window: lifetime, scope: agent }";
+        let c = lint_cfg("kratos", hooks);
+        assert!(reasons(&c).contains(&GovernanceReason::LifetimeAgentBudget));
+    }
+
+    #[test]
+    fn lint_agent_route_with_only_authorize_is_clean() {
+        // An agent-reachable route with an Authorize hook and no budget is fine
+        // (a budget is optional; the lint only flags a MIS-scoped one).
+        let c = lint_cfg("jwt", AUTHORIZE_ONLY);
+        assert!(c.agent_governance_lint().is_empty(), "{:?}", reasons(&c));
+    }
+
+    #[test]
+    fn strict_agent_governance_defaults_false() {
+        assert!(!ServerConfig::default().strict_agent_governance);
+    }
+
+    #[test]
+    fn lint_flags_unresolvable_auth_provider() {
+        // A route naming a provider that isn't defined -> UnresolvableAuthProvider.
+        let yaml = "auth_providers:\n  p:\n    type: jwt\n    jwks_url: \"https://idp/jwks\"\n    issuer: \"https://idp\"\n\
+                    sites:\n  - id: s\n    default_auth: p\n\
+                    routes:\n  - id: r\n    site: s\n    match:\n      path: /x\n    auth: typo-provider\n";
+        let c: GateConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(reasons(&c).contains(&GovernanceReason::UnresolvableAuthProvider));
+    }
+
+    #[test]
+    fn lint_deduplicates_findings_per_route_and_reason() {
+        // Two non-agent budgets on one agent-reachable route -> a SINGLE
+        // NonAgentScopedBudget finding (deduped), not two.
+        let hooks = "    hooks:\n      pre_request:\n\
+                     \x20       - type: max_token_budget\n          config: { limit: 100, window: hour, scope: user }\n\
+                     \x20       - type: max_token_budget\n          config: { limit: 200, window: day, scope: user }";
+        let c = lint_cfg("jwt", hooks);
+        let n = c
+            .agent_governance_lint()
+            .iter()
+            .filter(|f| f.reason == GovernanceReason::NonAgentScopedBudget)
+            .count();
+        assert_eq!(n, 1, "duplicate non-agent-budget findings must be deduped");
+    }
+
+    #[test]
+    fn lint_routes_helper_lints_an_explicit_route_set() {
+        // agent_governance_lint_routes lets a caller lint DB-sourced routes too.
+        let base = lint_cfg("jwt", BUDGET_AGENT); // clean YAML route set
+        assert!(base.agent_governance_lint().is_empty());
+        // A separately-supplied (e.g. DB) route with a user budget is flagged.
+        let mut extra = base.routes[0].clone();
+        extra.id = "db-route".into();
+        extra.hooks.pre_request = vec![PreRequestHook::MaxTokenBudget {
+            config: MaxTokenBudgetConfig {
+                limit: 10,
+                user_id_expr: "identity.id".into(),
+                error_message: None,
+                window: BudgetWindow::Hour,
+                scope: BudgetScope::User,
+            },
+        }];
+        let f = base.agent_governance_lint_routes(&[extra]);
+        assert!(f.iter().any(|x| x.route_id == "db-route"
+            && x.reason == GovernanceReason::NonAgentScopedBudget));
     }
 }

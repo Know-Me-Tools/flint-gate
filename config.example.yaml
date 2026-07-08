@@ -30,6 +30,17 @@ server:
   # credentials and must not travel in cleartext. Set true ONLY for local dev
   # against an http:// Hydra (a loud WARN is logged when enabled).
   allow_insecure_upstream: false
+  # Agent-governance lint. flint-gate WARNs when an AGENT-REACHABLE route (its auth
+  # provider is `jwt` or `mcp` — JWKS-backed, can carry an agent token) is
+  # under-governed: a token budget left at a non-agent scope (agent spend not
+  # counted under the Agent scope), no `authorize` hook (ungoverned tool calls), or
+  # a scope:agent + window:lifetime budget (can't fail closed). The lint covers the
+  # MERGED (YAML + database) route set actually served — including DB routes added
+  # via database.override_yaml and hot-reload, not just YAML. Set true to promote
+  # WARNs to enforcement: at STARTUP -> refuse-to-start; on a route HOT-RELOAD ->
+  # reject the reload and retain the last-good router (a live process can't exit).
+  # Off by default (non-breaking).
+  strict_agent_governance: false
   tls:
     enabled: false
     # cert_path: "/etc/flint-gate/tls/cert.pem"
@@ -140,6 +151,13 @@ oauth:
     enabled: false
     per_second: 5
     burst: 10
+    # Strict cross-replica mode (off by default). When true, flint-gate REFUSES to
+    # start if the OAuth surface is exposed on a non-loopback bind but no SHARED
+    # limiter is configured (cache.l2.enabled + cache.l2.redis_url). Without a
+    # shared limiter each replica limits independently, so the effective ceiling
+    # scales with the replica count — set this when you need a cross-replica-accurate
+    # limit to be an enforced invariant rather than a silent per-replica degrade.
+    require_shared_backend: false
   # What to do if the shared Redis limiter is unreachable mid-request:
   #   deny    — fail closed (default; REQUIRED posture for the introspection oracle)
   #   degrade — fall back to the in-process governor + WARN (token endpoint only;
@@ -150,6 +168,27 @@ oauth:
   # service_token_ttl_seconds: 300
   # introspection_delegate:  # only reachable AFTER introspect client-auth
   #   hydra_admin_url: "https://hydra-admin.example.com"
+
+# ─── Agent tool-scope sugar ───────────────────────────────────────────────────
+# Ergonomic per-agent tool scoping that COMPILES to Cedar permit/forbid policies
+# on Action::"call_tool" for the Agent::"<agent>" principal — a validated
+# front-end over the policy engine, not a second authority. Each `allow` tool
+# becomes a permit; each `deny` becomes a forbid (deny WINS — Cedar forbid
+# overrides permit). A value with `*` is a glob matched against the tool name;
+# otherwise it is an exact tool match. Compiled policies are validated at startup:
+# an entry that produces invalid Cedar, or names an agent/tool with illegal
+# characters, REFUSES to start (fail-closed). Empty by default.
+#
+# The compiled sugar is carried as an immutable overlay on the authorization engine
+# and enforced ALONGSIDE any database policies (the live bundle is DB rows ++ sugar,
+# and the overlay is re-applied on every reload — a policies reload never drops it).
+# Cross-source conflicts resolve by Cedar forbid-overrides-permit. The overlay is
+# fixed at startup from this file; changing it at runtime needs a restart (a
+# config-sugar hot-reload is a follow-up).
+agent_tool_policies: []
+  # - agent: "ci-bot"
+  #   allow: ["deploy", "run_tests"]
+  #   deny:  ["delete_*"]
 
 # ─── Sites ────────────────────────────────────────────────────────────────────
 # A site maps one or more domains to a default auth provider and upstream.

@@ -16,6 +16,9 @@ import type {
   RouteConfig,
   RouteListResponse,
   TokenAnalyticsResponse,
+  ToolScopeListResponse,
+  ToolScopeRequest,
+  ToolScopeUpsertResponse,
   UsageSummaryResponse,
 } from './types';
 
@@ -112,6 +115,21 @@ export async function upsertPolicy(policy: PolicyRow): Promise<{ status: string;
 
 export async function deletePolicy(id: string): Promise<{ status: string; id: string; reloaded?: boolean }> {
   return adminRequest(`/policies/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function listToolScopes(): Promise<ToolScopeListResponse> {
+  return adminRequest('/tool-scopes');
+}
+
+export async function upsertToolScope(scope: ToolScopeRequest): Promise<ToolScopeUpsertResponse> {
+  return adminRequest('/tool-scopes', {
+    method: 'POST',
+    body: JSON.stringify(scope),
+  });
+}
+
+export async function deleteToolScope(agent: string): Promise<{ status: string; agent: string; reloaded?: boolean }> {
+  return adminRequest(`/tool-scopes/${encodeURIComponent(agent)}`, { method: 'DELETE' });
 }
 
 export async function listApiKeys(): Promise<ApiKeyListResponse> {

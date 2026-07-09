@@ -1,7 +1,7 @@
 {
   "name": "flint-gate",
   "description": "AI-native auth proxy and API gateway \u2014 Flint brand by KnowMe, LLC",
-  "active_phase": "agent-governance-completeness-and-policy-authoring",
+  "active_phase": "approval-full-flow-integration",
   "focus_project_path": "/Users/gqadonis/Projects/prometheus/flint-gate",
   "spec_paths": [
     "openspec/specs/*.md"

@@ -1,13 +1,12 @@
 {
-  "phase": "agent-governance-completeness-and-policy-authoring",
-  "change": "add-actor-token-and-hydra-delegate",
+  "phase": "approval-full-flow-integration",
+  "previousPhase": "sdk-integration-test-expansion",
   "exactNextCommand": "/kbd-next-phase",
-  "status": "executing",
-  "seeded_from_phase": "agent-identity-and-delegation",
-  "note": "add-identity-classification-edges archived (5/5; PASS; api-key->Service, Kratos act-gate, transactional NHI audit). Final change: add-actor-token-and-hydra-delegate.",
+  "status": "reflect_complete",
   "stage": "reflect_complete",
   "changes_completed": 3,
   "changes_total": 3,
   "activeChange": null,
+  "note": "New phase seeded from sdk-integration-test-expansion/reflection.md Option A. Goal: full end-to-end approval flow integration test (stub upstream + approve/deny cycle).",
   "next": "/kbd-next-phase"
 }

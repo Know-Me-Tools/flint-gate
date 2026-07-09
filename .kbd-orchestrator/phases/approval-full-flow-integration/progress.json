@@ -1,0 +1,43 @@
+{
+  "phase": "approval-full-flow-integration",
+  "status": "reflect_complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": null,
+  "updated_at": "2026-07-09T23:15:00Z",
+  "changes_total": 3,
+  "changes_completed": 3,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/sdk-integration-test-expansion/reflection.md",
+  "seeded_from_phase": "sdk-integration-test-expansion",
+  "changes": [
+    {
+      "id": "add-mock-upstream-stub",
+      "status": "done",
+      "order": 1
+    },
+    {
+      "id": "add-go-approval-flow-test",
+      "status": "done",
+      "order": 2
+    },
+    {
+      "id": "add-ts-approval-flow-test",
+      "status": "done",
+      "order": 3
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md",
+    "reflection.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

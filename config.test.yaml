@@ -1,0 +1,72 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Flint Gate — SDK Integration-Test Configuration (docker-compose.test.yml)
+# ─────────────────────────────────────────────────────────────────────────────
+# Used exclusively for Go/TypeScript SDK integration tests against the
+# docker-compose.test.yml fixture. Uses a static admin token so test clients
+# authenticate without requiring a Hydra OAuth2 client-credentials flow.
+# NOT for production — plaintext token, insecure upstreams, isolated network.
+# ─────────────────────────────────────────────────────────────────────────────
+
+server:
+  listen: "0.0.0.0:4456"
+  # Loopback bind → AllowLoopback posture → no admin_auth required.
+  # The docker port mapping "4457:4457" still exposes it to the test host.
+  admin_listen: "127.0.0.1:4457"
+  allow_insecure_upstream: true
+  tls:
+    enabled: false
+
+database:
+  url: "postgres://flintgate:flintgate@postgres:5432/flintgate"
+  max_connections: 10
+
+cache:
+  l1:
+    max_capacity: 1000
+    ttl_seconds: 60
+  l2:
+    enabled: false
+
+auth_providers:
+  hydra_jwt:
+    type: jwt
+    jwks_url: "http://hydra:4444/.well-known/jwks.json"
+    issuer: "http://hydra:4444"
+    leeway_seconds: 5
+
+jwt:
+  signing_algorithm: "HS256"
+  signing_key_secret: "test-jwt-secret"
+  issuer: "http://flint-gate:4456"
+  default_ttl_seconds: 300
+
+token_exchange:
+  enabled: false
+
+oauth:
+  client_credentials_enabled: false
+  introspection_enabled: false
+
+sites:
+  - id: "test"
+    domains: ["localhost:4456"]
+    default_auth: hydra_jwt
+    default_upstream: "http://flint-gate:4457/health"
+
+routes:
+  # ── Streaming approval-flow integration test route ─────────────────────────
+  # Used exclusively by TestIntegration_ApprovalFlow.
+  # The Cedar @require_approval policy is created at test runtime via Admin API.
+  - id: "stream-test"
+    site: "test"
+    match:
+      path: "/stream-test"
+      methods: ["POST"]
+    upstream: "http://mock-upstream:9999"
+    stream:
+      enabled: true
+      protocol: ndjson
+    hooks:
+      pre_request:
+        - type: authorize
+          config: {}

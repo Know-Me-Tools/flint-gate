@@ -34,11 +34,18 @@ CREATE TABLE IF NOT EXISTS api_keys (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     key_hash    TEXT NOT NULL UNIQUE,
     client_id   TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT 'service_role',
+    principal_type TEXT NOT NULL DEFAULT 'Service',
+    key_prefix  TEXT,
     scopes      JSONB NOT NULL DEFAULT '[]',
     active      BOOLEAN NOT NULL DEFAULT true,
     expires_at  TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'service_role';
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS principal_type TEXT NOT NULL DEFAULT 'Service';
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_prefix TEXT;
 
 CREATE TABLE IF NOT EXISTS usage_events (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -105,6 +112,21 @@ CREATE TABLE IF NOT EXISTS agent_identities (
 );
 
 CREATE INDEX IF NOT EXISTS agent_identities_status_idx ON agent_identities (status);
+
+CREATE TABLE IF NOT EXISTS cedar_policy_versions (
+    id            SERIAL PRIMARY KEY,
+    policy_id     TEXT NOT NULL REFERENCES authz_policies(id) ON DELETE CASCADE,
+    version_num   INT  NOT NULL,
+    policy_text   TEXT NOT NULL,
+    schema_json   JSONB,
+    entities_json JSONB,
+    written_by    TEXT,
+    written_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (policy_id, version_num)
+);
+
+CREATE INDEX IF NOT EXISTS cedar_policy_versions_policy_id_idx
+    ON cedar_policy_versions (policy_id, version_num DESC);
 "#;
 
 /// SHA-256 of `input`, hex-encoded. Used to store API-key hashes so raw secrets
@@ -502,7 +524,7 @@ impl Database {
     /// Returns the associated `ApiKeyRecord` if found and active.
     pub async fn validate_api_key(&self, key_hash: &str) -> Result<Option<ApiKeyRecord>> {
         let row = sqlx::query(
-            "SELECT id, client_id, scopes, expires_at FROM api_keys
+            "SELECT id, client_id, role, principal_type, scopes, expires_at FROM api_keys
              WHERE key_hash = $1 AND active = true AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(key_hash)
@@ -515,6 +537,8 @@ impl Database {
             Some(r) => {
                 let id: Uuid = r.try_get("id")?;
                 let client_id: String = r.try_get("client_id")?;
+                let role: String = r.try_get("role")?;
+                let principal_type: String = r.try_get("principal_type")?;
                 let scopes: serde_json::Value = r.try_get("scopes")?;
                 let expires_at: Option<DateTime<Utc>> = r.try_get("expires_at")?;
 
@@ -530,6 +554,8 @@ impl Database {
                 Ok(Some(ApiKeyRecord {
                     id,
                     client_id,
+                    role,
+                    principal_type,
                     scopes,
                     expires_at,
                 }))
@@ -575,7 +601,7 @@ impl Database {
     /// List all active API keys (metadata only — never returns key hashes).
     pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>> {
         let rows = sqlx::query(
-            "SELECT id, client_id, scopes, expires_at FROM api_keys WHERE active = true ORDER BY created_at DESC",
+            "SELECT id, client_id, role, principal_type, scopes, expires_at FROM api_keys WHERE active = true ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
         .await
@@ -585,6 +611,8 @@ impl Database {
         for r in rows {
             let id: Uuid = r.try_get("id")?;
             let client_id: String = r.try_get("client_id")?;
+            let role: String = r.try_get("role")?;
+            let principal_type: String = r.try_get("principal_type")?;
             let scopes: serde_json::Value = r.try_get("scopes")?;
             let expires_at: Option<DateTime<Utc>> = r.try_get("expires_at")?;
             let scopes: Vec<String> = scopes
@@ -598,6 +626,8 @@ impl Database {
             keys.push(ApiKeyRecord {
                 id,
                 client_id,
+                role,
+                principal_type,
                 scopes,
                 expires_at,
             });
@@ -1074,6 +1104,11 @@ impl Database {
     /// The caller MUST have validated `policy_text` (and `schema_json`) with the
     /// Cedar validator before calling this — the store is not a validation
     /// boundary. Emits a `policies` NOTIFY so peers reload.
+    ///
+    /// Every successful upsert atomically writes a `cedar_policy_versions` row so
+    /// the full edit history is preserved. `written_by` is nullable; caller
+    /// identity wiring is deferred — pass `None` until attribution is threaded
+    /// through the admin handler stack.
     pub async fn upsert_policy(
         &self,
         id: &str,
@@ -1081,7 +1116,10 @@ impl Database {
         schema_json: Option<&serde_json::Value>,
         entities_json: Option<&serde_json::Value>,
         enabled: bool,
+        written_by: Option<&str>,
     ) -> Result<()> {
+        let mut tx = self.pool.begin().await.context("beginning upsert_policy transaction")?;
+
         sqlx::query(
             "INSERT INTO authz_policies (id, policy_text, schema_json, entities_json, enabled, updated_at) \
              VALUES ($1, $2, $3, $4, $5, NOW()) \
@@ -1093,12 +1131,37 @@ impl Database {
         .bind(schema_json)
         .bind(entities_json)
         .bind(enabled)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("upserting authz policy")?;
 
+        let next_version: i32 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(version_num), 0) + 1 FROM cedar_policy_versions WHERE policy_id = $1",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("computing next policy version_num")?;
+
+        sqlx::query(
+            "INSERT INTO cedar_policy_versions \
+             (policy_id, version_num, policy_text, schema_json, entities_json, written_by) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(id)
+        .bind(next_version)
+        .bind(policy_text)
+        .bind(schema_json)
+        .bind(entities_json)
+        .bind(written_by)
+        .execute(&mut *tx)
+        .await
+        .context("inserting policy version row")?;
+
+        tx.commit().await.context("committing upsert_policy transaction")?;
+
         self.notify("policies").await?;
-        info!(policy_id = id, enabled, "authz policy upserted");
+        info!(policy_id = id, enabled, version = next_version, "authz policy upserted");
         Ok(())
     }
 
@@ -1187,6 +1250,65 @@ impl Database {
         }
         Ok(out)
     }
+
+    // ── Policy version history ────────────────────────────────────────────────
+
+    /// List version rows for a policy, newest-first, with pagination.
+    ///
+    /// Returns an empty `Vec` when the policy has no version history yet (e.g.
+    /// it was created before versioning was introduced). `limit` is expected to
+    /// be pre-clamped by the caller (admin handler clamps to 100).
+    pub async fn list_policy_versions(
+        &self,
+        policy_id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<PolicyVersionRow>> {
+        let rows = sqlx::query(
+            "SELECT id, policy_id, version_num, policy_text, schema_json, entities_json, written_by, written_at \
+             FROM cedar_policy_versions \
+             WHERE policy_id = $1 \
+             ORDER BY version_num DESC \
+             LIMIT $2 OFFSET $3",
+        )
+        .bind(policy_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("listing policy versions")?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(PolicyVersionRow::from_row(&r)?);
+        }
+        Ok(out)
+    }
+
+    /// Fetch a single version row by `(policy_id, version_num)`.
+    ///
+    /// Returns `None` when the version does not exist (caller returns 404).
+    pub async fn get_policy_version(
+        &self,
+        policy_id: &str,
+        version_num: i32,
+    ) -> Result<Option<PolicyVersionRow>> {
+        let row = sqlx::query(
+            "SELECT id, policy_id, version_num, policy_text, schema_json, entities_json, written_by, written_at \
+             FROM cedar_policy_versions \
+             WHERE policy_id = $1 AND version_num = $2",
+        )
+        .bind(policy_id)
+        .bind(version_num)
+        .fetch_optional(&self.pool)
+        .await
+        .context("fetching policy version")?;
+
+        match row {
+            None => Ok(None),
+            Some(r) => Ok(Some(PolicyVersionRow::from_row(&r)?)),
+        }
+    }
 }
 
 /// A route row from the `gate_routes` table.
@@ -1196,6 +1318,37 @@ pub struct DbRoute {
     pub config: serde_json::Value,
     pub priority: i32,
     pub enabled: bool,
+}
+
+/// A version row from the `cedar_policy_versions` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyVersionRow {
+    pub id: i32,
+    pub policy_id: String,
+    pub version_num: i32,
+    pub policy_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_json: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entities_json: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub written_by: Option<String>,
+    pub written_at: DateTime<Utc>,
+}
+
+impl PolicyVersionRow {
+    fn from_row(r: &sqlx::postgres::PgRow) -> Result<Self> {
+        Ok(Self {
+            id: r.try_get("id")?,
+            policy_id: r.try_get("policy_id")?,
+            version_num: r.try_get("version_num")?,
+            policy_text: r.try_get("policy_text")?,
+            schema_json: r.try_get("schema_json")?,
+            entities_json: r.try_get("entities_json")?,
+            written_by: r.try_get("written_by")?,
+            written_at: r.try_get("written_at")?,
+        })
+    }
 }
 
 /// An authorization policy row from the `authz_policies` table.
@@ -1348,6 +1501,8 @@ impl AuditRow {
 pub struct ApiKeyRecord {
     pub id: Uuid,
     pub client_id: String,
+    pub role: String,
+    pub principal_type: String,
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -1750,5 +1905,94 @@ mod tests {
                 "nhi_revoke".to_string()
             ]
         );
+    }
+
+    /// Policy version history: first write → version_num 1; second write →
+    /// version_num 2; `get_policy_version` returns the correct row.
+    /// Requires a live Postgres at `DATABASE_URL`.
+    ///   DATABASE_URL=postgres://... cargo test -p flint-gate-core --all-features -- --ignored
+    #[tokio::test]
+    #[ignore = "requires a live Postgres via DATABASE_URL"]
+    async fn policy_version_history_increments_and_fetches() {
+        use super::Database;
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let db = Database::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+
+        let policy_id = format!("ver-test-{}", uuid::Uuid::new_v4());
+        let text_v1 = "permit(principal, action, resource);";
+        let text_v2 = "forbid(principal, action, resource);";
+
+        // First upsert → version_num = 1
+        db.upsert_policy(&policy_id, text_v1, None, None, true, None)
+            .await
+            .unwrap();
+
+        let versions = db.list_policy_versions(&policy_id, 0, 10).await.unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version_num, 1);
+        assert_eq!(versions[0].policy_text, text_v1);
+        assert!(versions[0].written_by.is_none());
+
+        // Second upsert → version_num = 2
+        db.upsert_policy(&policy_id, text_v2, None, None, true, Some("test-user"))
+            .await
+            .unwrap();
+
+        let versions2 = db.list_policy_versions(&policy_id, 0, 10).await.unwrap();
+        assert_eq!(versions2.len(), 2);
+        // Newest first
+        assert_eq!(versions2[0].version_num, 2);
+        assert_eq!(versions2[0].policy_text, text_v2);
+        assert_eq!(versions2[0].written_by.as_deref(), Some("test-user"));
+        assert_eq!(versions2[1].version_num, 1);
+
+        // get_policy_version returns the correct row
+        let v1 = db.get_policy_version(&policy_id, 1).await.unwrap().unwrap();
+        assert_eq!(v1.policy_text, text_v1);
+        assert_eq!(v1.version_num, 1);
+
+        let v2 = db.get_policy_version(&policy_id, 2).await.unwrap().unwrap();
+        assert_eq!(v2.policy_text, text_v2);
+        assert_eq!(v2.written_by.as_deref(), Some("test-user"));
+
+        // Unknown version returns None
+        assert!(db.get_policy_version(&policy_id, 99).await.unwrap().is_none());
+    }
+
+    /// ON DELETE CASCADE: deleting a policy removes all its version rows.
+    /// Requires a live Postgres at `DATABASE_URL`.
+    #[tokio::test]
+    #[ignore = "requires a live Postgres via DATABASE_URL"]
+    async fn policy_version_cascade_delete() {
+        use super::Database;
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+        let db = Database::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+
+        let policy_id = format!("cascade-test-{}", uuid::Uuid::new_v4());
+        db.upsert_policy(&policy_id, "permit(principal, action, resource);", None, None, true, None)
+            .await
+            .unwrap();
+        db.upsert_policy(&policy_id, "forbid(principal, action, resource);", None, None, true, None)
+            .await
+            .unwrap();
+
+        // Two version rows exist before delete
+        let before = db.list_policy_versions(&policy_id, 0, 10).await.unwrap();
+        assert_eq!(before.len(), 2);
+
+        // Delete the policy — cascade should remove version rows
+        assert!(db.delete_policy(&policy_id).await.unwrap());
+
+        // Version rows are gone (ON DELETE CASCADE)
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cedar_policy_versions WHERE policy_id = $1",
+        )
+        .bind(&policy_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "cascade delete must remove all version rows");
     }
 }

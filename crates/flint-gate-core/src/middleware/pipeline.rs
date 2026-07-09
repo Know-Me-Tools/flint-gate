@@ -594,7 +594,7 @@ async fn handle_request(
     let mut fwd_headers = reqwest::header::HeaderMap::new();
     for (name, value) in &headers {
         let name_str = name.as_str().to_lowercase();
-        if HOP_BY_HOP.contains(&name_str.as_str()) {
+        if HOP_BY_HOP.contains(&name_str.as_str()) || name_str.starts_with("x-flint-") {
             continue;
         }
         // Confused-deputy guard (RFC 8707 §3, MCP auth spec): the inbound MCP
@@ -619,6 +619,17 @@ async fn handle_request(
         if let (Ok(n), Ok(v)) = (
             reqwest::header::HeaderName::from_str(name),
             reqwest::header::HeaderValue::from_str(value),
+        ) {
+            fwd_headers.insert(n, v);
+        }
+    }
+
+    // Inject trusted Flint identity headers after stripping any client-supplied
+    // `X-Flint-*` headers above. Downstream services treat these as gateway-owned.
+    for (name, value) in trusted_flint_headers(&identity) {
+        if let (Ok(n), Ok(v)) = (
+            reqwest::header::HeaderName::from_str(name),
+            reqwest::header::HeaderValue::from_str(&value),
         ) {
             fwd_headers.insert(n, v);
         }
@@ -706,9 +717,26 @@ async fn handle_request(
         // channel. The shared ApprovalManager routes Admin API decisions back
         // to this task using the channel; the task then asks the processor to
         // release the buffered call.
+        //
+        // Fail-closed disable: when `approval.enabled` is false the handle is
+        // `None`, so a `RequireApproval` decision hits the processors' no-handle
+        // path — which DENIES the call (never pauses, never allows). An operator
+        // who cannot service approvals denies rather than hangs.
+        let approval_cfg = state.config.read().await.approval.clone();
         let (approval_tx, mut approval_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, crate::approval::ApprovalDecision)>();
-        let approval_handle = Some((state.approval_manager.clone(), approval_tx));
+        let approval_ttl_override = approval_cfg
+            .ttl_seconds
+            .map(std::time::Duration::from_secs);
+        let approval_handle = if approval_cfg.enabled {
+            Some((
+                state.approval_manager.clone(),
+                approval_tx,
+                approval_ttl_override,
+            ))
+        } else {
+            None
+        };
 
         // Protocol dispatch: create the appropriate processor
         let processor: Box<dyn StreamProcessor> = match stream_config.protocol.as_str() {
@@ -812,6 +840,22 @@ async fn handle_request(
                         }
                     }
                 } else {
+                    // Bound the wait by the nearest pending approval's expiry. An
+                    // undecided approval that reaches its TTL is AUTO-DENIED (never
+                    // hangs, never silently allows) — the held call is resolved as
+                    // Deny, its deny event is emitted, and the loop resumes to a
+                    // clean termination. `sleep_until` far in the future when no
+                    // expiry is known keeps the select! well-formed.
+                    // Use the processor's own stored deadline — independent of
+                    // the shared ApprovalManager — to avoid a race where the
+                    // janitor purges an entry and causes the select! to fall
+                    // back to the 3600 s sentinel (M1 fix).
+                    let deadline = processor
+                        .earliest_pending_deadline()
+                        .map(tokio::time::Instant::from)
+                        .unwrap_or_else(|| {
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(3600)
+                        });
                     tokio::select! {
                         biased;
                         _ = stream_cancel.cancelled() => {
@@ -828,6 +872,26 @@ async fn handle_request(
                                     }
                                 }
                                 None => break,
+                            }
+                        }
+                        _ = tokio::time::sleep_until(deadline) => {
+                            // TTL elapsed with no decision — fail closed: DENY every
+                            // still-pending held call and emit its deny event, then
+                            // let the loop re-evaluate (pending now drained → resume
+                            // to termination). Never a silent drop, never half-open.
+                            let mut send_failed = false;
+                            for approval_id in processor.pending_approvals() {
+                                if let Some(bytes) = processor
+                                    .resolve_approval(&approval_id, crate::approval::ApprovalDecision::Deny)
+                                {
+                                    if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
+                                        send_failed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if send_failed {
+                                break;
                             }
                         }
                     }
@@ -1081,6 +1145,53 @@ fn build_authz_context(identity: &Identity, route_id: &str, method: &str, path: 
         "principal_id": identity.id,
         "identity": identity.traits,
     })
+}
+
+fn trusted_flint_headers(identity: &Identity) -> Vec<(&'static str, String)> {
+    let role = identity
+        .metadata_public
+        .get("role")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| match identity.derived_kind() {
+            crate::auth::identity::IdentityKind::User => "authenticated".to_owned(),
+            crate::auth::identity::IdentityKind::Agent => "agent".to_owned(),
+            crate::auth::identity::IdentityKind::Service => "service_role".to_owned(),
+        });
+    let principal_type = identity
+        .metadata_public
+        .get("principal_type")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| match identity.derived_kind() {
+            crate::auth::identity::IdentityKind::User => "User".to_owned(),
+            crate::auth::identity::IdentityKind::Agent => "Agent".to_owned(),
+            crate::auth::identity::IdentityKind::Service => "Service".to_owned(),
+        });
+
+    let mut headers = vec![
+        ("x-flint-user-id", identity.id.clone()),
+        ("x-flint-role", role),
+        ("x-flint-principal-type", principal_type),
+        ("x-flint-verified-by", "flint-gate".to_owned()),
+    ];
+    for (claim, header) in [
+        ("tenant_id", "x-flint-tenant-id"),
+        ("jti", "x-flint-jti"),
+        ("agent_id", "x-flint-agent-id"),
+        ("workflow_id", "x-flint-workflow-id"),
+        ("scope", "x-flint-scope"),
+    ] {
+        if let Some(value) = identity
+            .metadata_public
+            .get(claim)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            headers.push((header, value.to_owned()));
+        }
+    }
+    headers
 }
 
 /// Build a [`ToolAuthzContext`](crate::authz::ToolAuthzContext) for the stream

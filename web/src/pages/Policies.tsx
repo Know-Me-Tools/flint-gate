@@ -33,7 +33,6 @@ import {
   useCreatePolicy,
   useDeletePolicy,
   usePolicies,
-  usePolicyHistory,
   useUpdatePolicy,
   useValidatePolicy,
 } from '@/hooks/useAdmin';

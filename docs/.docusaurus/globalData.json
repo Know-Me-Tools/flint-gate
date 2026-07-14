@@ -16,6 +16,10 @@
               "sidebar": "docsSidebar"
             },
             {
+              "id": "cedar-policies",
+              "path": "/flint-gate/docs/cedar-policies"
+            },
+            {
               "id": "configuration",
               "path": "/flint-gate/docs/configuration",
               "sidebar": "docsSidebar"
@@ -29,6 +33,14 @@
               "id": "intro",
               "path": "/flint-gate/docs/intro",
               "sidebar": "docsSidebar"
+            },
+            {
+              "id": "metrics",
+              "path": "/flint-gate/docs/metrics"
+            },
+            {
+              "id": "operations",
+              "path": "/flint-gate/docs/operations"
             },
             {
               "id": "sdks/flutter",

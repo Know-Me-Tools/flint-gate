@@ -1,0 +1,15 @@
+{
+  "id": "cedar-policies",
+  "title": "Cedar Policies Reference",
+  "description": "Flint Gate uses Cedar as its authorization",
+  "source": "@site/docs/cedar-policies.md",
+  "sourceDirName": ".",
+  "slug": "/cedar-policies",
+  "permalink": "/flint-gate/docs/cedar-policies",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/cedar-policies.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {}
+}

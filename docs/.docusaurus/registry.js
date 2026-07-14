@@ -1,8 +1,11 @@
 export default {
   "0e384e19": [() => import(/* webpackChunkName: "0e384e19" */ "@site/docs/intro.md"), "@site/docs/intro.md", require.resolveWeak("@site/docs/intro.md")],
   "17896441": [() => import(/* webpackChunkName: "17896441" */ "@theme/DocItem"), "@theme/DocItem", require.resolveWeak("@theme/DocItem")],
+  "1da5c188": [() => import(/* webpackChunkName: "1da5c188" */ "@site/docs/cedar-policies.md"), "@site/docs/cedar-policies.md", require.resolveWeak("@site/docs/cedar-policies.md")],
+  "1dba1ecf": [() => import(/* webpackChunkName: "1dba1ecf" */ "@site/docs/metrics.md"), "@site/docs/metrics.md", require.resolveWeak("@site/docs/metrics.md")],
   "1df93b7f": [() => import(/* webpackChunkName: "1df93b7f" */ "@site/src/pages/index.tsx"), "@site/src/pages/index.tsx", require.resolveWeak("@site/src/pages/index.tsx")],
   "24a39250": [() => import(/* webpackChunkName: "24a39250" */ "@site/docs/admin-api.md"), "@site/docs/admin-api.md", require.resolveWeak("@site/docs/admin-api.md")],
+  "4de154ba": [() => import(/* webpackChunkName: "4de154ba" */ "@site/docs/operations.md"), "@site/docs/operations.md", require.resolveWeak("@site/docs/operations.md")],
   "5e95c892": [() => import(/* webpackChunkName: "5e95c892" */ "@theme/DocsRoot"), "@theme/DocsRoot", require.resolveWeak("@theme/DocsRoot")],
   "5e9f5e1a": [() => import(/* webpackChunkName: "5e9f5e1a" */ "@generated/docusaurus.config"), "@generated/docusaurus.config", require.resolveWeak("@generated/docusaurus.config")],
   "9a5f2424": [() => import(/* webpackChunkName: "9a5f2424" */ "@site/docs/sdks/index.md"), "@site/docs/sdks/index.md", require.resolveWeak("@site/docs/sdks/index.md")],

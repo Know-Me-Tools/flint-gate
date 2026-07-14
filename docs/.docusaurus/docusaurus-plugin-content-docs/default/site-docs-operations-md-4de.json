@@ -1,0 +1,15 @@
+{
+  "id": "operations",
+  "title": "Operations Runbook",
+  "description": "Practical guidance for operators running flint-gate in production or staging",
+  "source": "@site/docs/operations.md",
+  "sourceDirName": ".",
+  "slug": "/operations",
+  "permalink": "/flint-gate/docs/operations",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/operations.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {}
+}

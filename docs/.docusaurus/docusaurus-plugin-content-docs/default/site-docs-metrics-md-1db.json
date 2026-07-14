@@ -1,0 +1,15 @@
+{
+  "id": "metrics",
+  "title": "Metrics Reference",
+  "description": "Flint Gate exposes Prometheus metrics on the admin port (default 4457) at:",
+  "source": "@site/docs/metrics.md",
+  "sourceDirName": ".",
+  "slug": "/metrics",
+  "permalink": "/flint-gate/docs/metrics",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/metrics.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {}
+}

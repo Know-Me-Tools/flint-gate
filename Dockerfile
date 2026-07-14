@@ -15,17 +15,19 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Cache dependencies separately from source
+# Cache dependency fetch separately from compilation
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-RUN mkdir -p crates/flint-gate/src && echo 'fn main() {}' > crates/flint-gate/src/main.rs
-RUN mkdir -p crates/flint-gate-core/src && echo '' > crates/flint-gate-core/src/lib.rs
-RUN mkdir -p crates/flint-gate-client/src && echo '' > crates/flint-gate-client/src/lib.rs
-RUN cargo build --release 2>/dev/null || true
+RUN mkdir -p crates/flint-gate/src \
+        crates/flint-gate-core/src \
+        crates/flint-gate-client/src \
+    && echo 'fn main() {}' > crates/flint-gate/src/main.rs \
+    && touch crates/flint-gate-core/src/lib.rs \
+    && touch crates/flint-gate-client/src/lib.rs \
+    && cargo fetch
 
 # Build the actual source
 COPY crates ./crates
-RUN touch crates/flint-gate/src/main.rs && cargo build --release
+RUN cargo build --release
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim

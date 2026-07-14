@@ -122,9 +122,8 @@ impl ApprovalStore for PostgresApprovalStore {
         match row {
             None => Ok(None),
             Some(r) => {
-                let decision_str: Option<String> = r
-                    .try_get("decision")
-                    .context("reading decision column")?;
+                let decision_str: Option<String> =
+                    r.try_get("decision").context("reading decision column")?;
                 Ok(Some(ApprovalStatus {
                     id: r.try_get("id").context("reading id")?,
                     decision: parse_decision(decision_str.as_deref()),
@@ -157,9 +156,8 @@ impl ApprovalStore for PostgresApprovalStore {
         .await
         .context("querying earliest expiry")?;
 
-        let earliest: Option<DateTime<Utc>> = row
-            .try_get("earliest")
-            .context("reading earliest column")?;
+        let earliest: Option<DateTime<Utc>> =
+            row.try_get("earliest").context("reading earliest column")?;
         Ok(earliest)
     }
 }

@@ -61,7 +61,7 @@ pub fn admin_router(state: AdminState) -> Router {
             description = "Admin API for Flint Gate — AI-native auth proxy and API gateway",
             license(name = "MIT"),
         ),
-        paths(health_handler, ready_handler),
+        paths(health_handler, ready_handler)
     )]
     struct AdminApiDoc;
 

@@ -82,10 +82,7 @@ impl SseAccumulator {
 ///
 /// Returns the events emitted in this pass; the unconsumed tail is written
 /// back into `pending` so the caller can prepend it to the next chunk.
-pub(crate) fn parse_chunk(
-    chunk: &mut Bytes,
-    pending: &mut String,
-) -> Vec<SseEvent> {
+pub(crate) fn parse_chunk(chunk: &mut Bytes, pending: &mut String) -> Vec<SseEvent> {
     // Append decoded text to the pending buffer.
     pending.push_str(&String::from_utf8_lossy(chunk.as_ref()));
     chunk.advance(chunk.remaining());

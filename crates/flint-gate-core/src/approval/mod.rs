@@ -222,10 +222,7 @@ mod tests {
             .register("agent-1", "send_email", "reason", future_expiry())
             .await
             .unwrap();
-        let found = store
-            .decide(id, ApprovalDecision::Approved)
-            .await
-            .unwrap();
+        let found = store.decide(id, ApprovalDecision::Approved).await.unwrap();
         assert!(found);
         let s = store.status(id).await.unwrap().unwrap();
         assert_eq!(s.decision, Some(ApprovalDecision::Approved));
@@ -253,10 +250,7 @@ mod tests {
             .register("b", "tool", "r", future_expiry())
             .await
             .unwrap();
-        store
-            .decide(id1, ApprovalDecision::Rejected)
-            .await
-            .unwrap();
+        store.decide(id1, ApprovalDecision::Rejected).await.unwrap();
         let list = store.list().await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, id2);
@@ -295,14 +289,8 @@ mod tests {
         let store = MemoryApprovalStore::new();
         let soon = Utc::now() + Duration::minutes(10);
         let later = Utc::now() + Duration::hours(2);
-        store
-            .register("a", "t", "r", later)
-            .await
-            .unwrap();
-        store
-            .register("b", "t", "r", soon)
-            .await
-            .unwrap();
+        store.register("a", "t", "r", later).await.unwrap();
+        store.register("b", "t", "r", soon).await.unwrap();
         let earliest = store.earliest_expiry().await.unwrap().unwrap();
         assert!((earliest - soon).num_seconds().abs() < 2);
     }
@@ -316,6 +304,9 @@ mod tests {
             .decide(missing_id, ApprovalDecision::Approved)
             .await
             .unwrap();
-        assert!(!found, "cross-replica decision on unknown id must return false");
+        assert!(
+            !found,
+            "cross-replica decision on unknown id must return false"
+        );
     }
 }

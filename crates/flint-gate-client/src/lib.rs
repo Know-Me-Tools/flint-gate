@@ -61,9 +61,7 @@ pub mod types;
 
 pub use client::FlintGateClient;
 pub use error::{FlintClientError, Result};
-pub use types::{
-    ApiKey, CreateApiKeyRequest, CreatedApiKey, HealthStatus, RouteConfig, SseEvent,
-};
+pub use types::{ApiKey, CreateApiKeyRequest, CreatedApiKey, HealthStatus, RouteConfig, SseEvent};
 
 /// Crate version, mirroring `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

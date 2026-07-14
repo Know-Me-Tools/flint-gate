@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flint-gate-deny-admin-ingress
+  labels:
+    app: flint-gate
+spec:
+  podSelector:
+    matchLabels:
+      app: flint-gate
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow proxy traffic (4456) from any source inside the cluster
+    - ports:
+        - port: 4456
+          protocol: TCP
+    # Admin port (4457) is NOT listed — all ingress to 4457 is denied by default.
+    # To allow specific in-cluster access (e.g. from an ops pod), add a rule like:
+    #
+    # - from:
+    #     - podSelector:
+    #         matchLabels:
+    #           role: ops
+    #   ports:
+    #     - port: 4457
+    #       protocol: TCP

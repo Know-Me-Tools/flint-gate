@@ -4,6 +4,7 @@
 //!   CLI flags  >  environment variables  >  config.yaml
 
 use flint_gate_core::admin::{admin_router, AdminState};
+use flint_gate_core::approval::MemoryApprovalStore;
 use flint_gate_core::auth::{build_authenticators, JwtMinter, SharedJwtMinter};
 use flint_gate_core::cache::{start_cache_invalidation_listener, GateCache};
 use flint_gate_core::config::{load_config, GateConfig, LookupRegistry};
@@ -262,6 +263,7 @@ async fn main() -> Result<()> {
     let lookup_registry = Arc::new(LookupRegistry::new(db.clone()));
 
     // 11. Assemble AppState
+    let approval_store = MemoryApprovalStore::new();
     let app_state = Arc::new(AppState {
         config: Arc::clone(&shared_config),
         router: Arc::clone(&shared_router),
@@ -271,6 +273,7 @@ async fn main() -> Result<()> {
         db: db.clone(),
         http_client: http_client.clone(),
         lookup_registry: Arc::clone(&lookup_registry),
+        approval_store,
     });
 
     let shutdown_timeout = initial_config.server.shutdown_timeout_secs;

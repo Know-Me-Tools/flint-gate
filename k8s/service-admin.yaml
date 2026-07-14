@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flint-gate-admin
+  labels:
+    app: flint-gate
+    component: admin
+spec:
+  type: ClusterIP
+  selector:
+    app: flint-gate
+  # sessionAffinity pins each admin client to one replica so that approval
+  # decisions reach the same in-process ApprovalManager that holds the paused
+  # stream. Without this, roughly 1/N decisions land on the wrong replica and
+  # return 404.
+  #
+  # Known limitation: if the pinned pod restarts, session affinity is lost and
+  # any pending approval stream on that pod is also lost. A shared Postgres-backed
+  # approval store (future work) will remove this constraint.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours — covers typical approval review windows
+  ports:
+    - name: admin
+      port: 4457
+      targetPort: admin

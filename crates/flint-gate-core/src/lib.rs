@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod approval;
 pub mod auth;
 pub mod cache;
 pub mod config;

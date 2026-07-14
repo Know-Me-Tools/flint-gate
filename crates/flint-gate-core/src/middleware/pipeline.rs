@@ -8,6 +8,7 @@
 /// 5. Pre-request hook execution
 /// 6. Upstream proxying (streaming or buffered)
 /// 7. Response forwarding + post-response usage logging
+use crate::approval::ApprovalStore;
 use crate::auth::{AuthError, AuthMethod, Authenticator, Identity, SharedJwtMinter};
 use crate::cache::GateCache;
 use crate::config::{
@@ -58,6 +59,7 @@ pub struct AppState {
     pub db: Option<Arc<Database>>,
     pub http_client: reqwest::Client,
     pub lookup_registry: Arc<LookupRegistry>,
+    pub approval_store: Arc<dyn ApprovalStore + Send + Sync>,
 }
 
 /// The main proxy handler — catches all requests on the proxy port.

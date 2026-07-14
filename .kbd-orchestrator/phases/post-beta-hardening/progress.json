@@ -7,7 +7,7 @@
   "started_at": "2026-07-10T00:00:00Z",
   "updated_at": "2026-07-10T00:00:00Z",
   "changes_total": 8,
-  "changes_completed": 4,
+  "changes_completed": 7,
   "assessment_complete": true,
   "analysis_complete": false,
   "plan_complete": true,
@@ -29,7 +29,10 @@
     "add-metrics-docs",
     "fix-approval-expiry-ci",
     "add-approval-store-trait",
-    "add-postgres-approval-store"
+    "add-postgres-approval-store",
+    "wire-postgres-approval-config",
+    "harden-go-sdk",
+    "harden-ts-sdk"
   ],
   "artifacts": [
     "goals.md",

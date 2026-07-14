@@ -15,18 +15,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Cache dependency fetch separately from compilation
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p crates/flint-gate/src \
-        crates/flint-gate-core/src \
-        crates/flint-gate-client/src \
-    && echo 'fn main() {}' > crates/flint-gate/src/main.rs \
-    && touch crates/flint-gate-core/src/lib.rs \
-    && touch crates/flint-gate-client/src/lib.rs \
-    && cargo fetch
-
-# Build the actual source
-COPY crates ./crates
+# Copy everything and build
+COPY . .
 RUN cargo build --release
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────

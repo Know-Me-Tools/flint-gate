@@ -4,7 +4,7 @@
 //!   CLI flags  >  environment variables  >  config.yaml
 
 use flint_gate_core::admin::{admin_router, AdminState};
-use flint_gate_core::approval::MemoryApprovalStore;
+use flint_gate_core::approval::{ApprovalStore, MemoryApprovalStore, PostgresApprovalStore};
 use flint_gate_core::auth::{build_authenticators, JwtMinter, SharedJwtMinter};
 use flint_gate_core::cache::{start_cache_invalidation_listener, GateCache};
 use flint_gate_core::config::{load_config, GateConfig, LookupRegistry};
@@ -79,6 +79,10 @@ struct Cli {
     /// Path to PEM private key for RS256/ES256 JWT signing. Overrides jwt.signing_key_path.
     #[arg(long, env = "FLINT_GATE_JWT_KEY_PATH", value_name = "PATH")]
     jwt_key_path: Option<String>,
+
+    /// Approval store backend: `memory` or `postgres`. Overrides approval.backend in config.yaml.
+    #[arg(long, env = "FLINT_APPROVAL_BACKEND", value_name = "BACKEND")]
+    approval_backend: Option<String>,
 }
 
 /// Apply CLI / env-var overrides onto a loaded [`GateConfig`].
@@ -100,6 +104,9 @@ fn apply_overrides(mut cfg: GateConfig, cli: &Cli) -> GateConfig {
     }
     if let Some(v) = &cli.jwt_key_path {
         cfg.jwt.signing_key_path = Some(v.clone());
+    }
+    if let Some(v) = &cli.approval_backend {
+        cfg.approval.backend = v.clone();
     }
     cfg
 }
@@ -262,8 +269,28 @@ async fn main() -> Result<()> {
     // 10. Build lookup registry
     let lookup_registry = Arc::new(LookupRegistry::new(db.clone()));
 
-    // 11. Assemble AppState
-    let approval_store = MemoryApprovalStore::new();
+    // 11. Build approval store (backend selected by config / env)
+    let approval_store: Arc<dyn ApprovalStore + Send + Sync> =
+        match initial_config.approval.backend.as_str() {
+            "postgres" => {
+                if let Some(ref d) = db {
+                    info!("approval store: postgres (durable, cross-replica)");
+                    Arc::new(PostgresApprovalStore::new(d.pool()))
+                } else {
+                    warn!(
+                        "approval.backend=postgres requested but no database URL configured; \
+                         falling back to memory store"
+                    );
+                    MemoryApprovalStore::new()
+                }
+            }
+            _ => {
+                info!("approval store: memory (single-replica)");
+                MemoryApprovalStore::new()
+            }
+        };
+
+    // 11b. Assemble AppState
     let app_state = Arc::new(AppState {
         config: Arc::clone(&shared_config),
         router: Arc::clone(&shared_router),
@@ -273,7 +300,7 @@ async fn main() -> Result<()> {
         db: db.clone(),
         http_client: http_client.clone(),
         lookup_registry: Arc::clone(&lookup_registry),
-        approval_store,
+        approval_store: Arc::clone(&approval_store),
     });
 
     let shutdown_timeout = initial_config.server.shutdown_timeout_secs;
@@ -372,6 +399,7 @@ async fn main() -> Result<()> {
         db: db.clone(),
         router: Arc::clone(&shared_router),
         config: Arc::clone(&shared_config),
+        approval_store: Arc::clone(&approval_store),
     };
     let admin_app = admin_router(admin_state).layer(TraceLayer::new_for_http());
     let admin_listener = tokio::net::TcpListener::bind(&admin_listen)
@@ -479,6 +507,7 @@ mod tests {
             log: "info".to_string(),
             jwt_secret: secret.map(str::to_string),
             jwt_key_path: None,
+            approval_backend: None,
         }
     }
 

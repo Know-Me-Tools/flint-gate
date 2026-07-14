@@ -9,14 +9,14 @@ spec:
   type: ClusterIP
   selector:
     app: flint-gate
-  # sessionAffinity pins each admin client to one replica so that approval
-  # decisions reach the same in-process ApprovalManager that holds the paused
-  # stream. Without this, roughly 1/N decisions land on the wrong replica and
-  # return 404.
+  # sessionAffinity pins each admin client to one replica when running with the
+  # memory approval backend (approval.backend: memory). Without this, roughly
+  # 1/N decisions land on the wrong replica and return 404.
   #
-  # Known limitation: if the pinned pod restarts, session affinity is lost and
-  # any pending approval stream on that pod is also lost. A shared Postgres-backed
-  # approval store (future work) will remove this constraint.
+  # This constraint is removed by switching to the Postgres approval backend
+  # (approval.backend: postgres) — all replicas share the same durable store and
+  # pg_notify wakes whichever replica holds the paused stream. In that case this
+  # sessionAffinity entry can be removed or set to "None".
   sessionAffinity: ClientIP
   sessionAffinityConfig:
     clientIP:

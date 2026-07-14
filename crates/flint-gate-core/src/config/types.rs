@@ -14,6 +14,8 @@ pub struct GateConfig {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub cache: CacheConfig,
+    #[serde(default)]
+    pub approval: ApprovalConfig,
     /// Named auth provider configurations keyed by provider ID.
     #[serde(default)]
     pub auth_providers: HashMap<String, AuthProviderConfig>,
@@ -23,6 +25,22 @@ pub struct GateConfig {
     pub sites: Vec<SiteConfig>,
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
+}
+
+/// Approval store backend selection.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ApprovalConfig {
+    /// Which backend to use: `"memory"` (default) or `"postgres"`.
+    ///
+    /// Use `"postgres"` in multi-replica production deployments for
+    /// durability and cross-replica correctness. Requires a configured
+    /// `database.url`.
+    #[serde(default = "default_approval_backend")]
+    pub backend: String,
+}
+
+fn default_approval_backend() -> String {
+    "memory".to_string()
 }
 
 /// HTTP server bind configuration.

@@ -13,6 +13,11 @@
 /// - `GET  /api-keys` — list active API keys (metadata only)
 /// - `POST /api-keys` — create a new API key (returns raw key once)
 /// - `DELETE /api-keys/:id` — revoke an API key
+/// - `GET  /approvals` — list pending approvals
+/// - `POST /approvals` — register a new approval request
+/// - `GET  /approvals/:id` — approval status
+/// - `POST /approvals/:id/decide` — record a decision (approved/rejected)
+use crate::approval::{ApprovalDecision, ApprovalStore};
 use crate::cache::GateCache;
 use crate::config::SharedConfig;
 use crate::db::Database;
@@ -40,6 +45,7 @@ pub struct AdminState {
     pub db: Option<Arc<Database>>,
     pub router: SharedRouter,
     pub config: SharedConfig,
+    pub approval_store: Arc<dyn ApprovalStore + Send + Sync>,
 }
 
 /// Build the admin Axum router.
@@ -90,6 +96,12 @@ pub fn admin_router(state: AdminState) -> Router {
             "/signing-keys/:id",
             axum::routing::delete(deactivate_signing_key_handler),
         )
+        .route(
+            "/approvals",
+            get(list_approvals_handler).post(register_approval_handler),
+        )
+        .route("/approvals/:id", get(approval_status_handler))
+        .route("/approvals/:id/decide", post(decide_approval_handler))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", AdminApiDoc::openapi()))
         .with_state(state)
 }
@@ -457,5 +469,114 @@ async fn deactivate_signing_key_handler(
             Json(json!({"error": "database not configured"})),
         )
             .into_response()
+    }
+}
+
+// ── Approval endpoints ────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct RegisterApprovalRequest {
+    agent_sub: String,
+    tool_name: String,
+    #[serde(default)]
+    reason: String,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecideApprovalRequest {
+    decision: String,
+}
+
+/// `GET /approvals` — list pending (undecided, non-expired) approvals.
+async fn list_approvals_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.approval_store.list().await {
+        Ok(approvals) => Json(json!({"approvals": approvals})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /approvals` — register a new approval request from an agent.
+async fn register_approval_handler(
+    State(state): State<AdminState>,
+    Json(payload): Json<RegisterApprovalRequest>,
+) -> impl IntoResponse {
+    match state
+        .approval_store
+        .register(
+            &payload.agent_sub,
+            &payload.tool_name,
+            &payload.reason,
+            payload.expires_at,
+        )
+        .await
+    {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(json!({"id": id, "status": "pending"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /approvals/:id` — get the status of a single approval.
+async fn approval_status_handler(
+    Path(id): Path<Uuid>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    match state.approval_store.status(id).await {
+        Ok(Some(status)) => Json(json!(status)).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "approval not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /approvals/:id/decide` — record an approved/rejected decision.
+async fn decide_approval_handler(
+    Path(id): Path<Uuid>,
+    State(state): State<AdminState>,
+    Json(payload): Json<DecideApprovalRequest>,
+) -> impl IntoResponse {
+    let decision = match payload.decision.as_str() {
+        "approved" => ApprovalDecision::Approved,
+        "rejected" => ApprovalDecision::Rejected,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("unknown decision '{other}'; expected 'approved' or 'rejected'")})),
+            )
+                .into_response();
+        }
+    };
+
+    match state.approval_store.decide(id, decision).await {
+        Ok(true) => Json(json!({"id": id, "decision": payload.decision})).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "approval not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }

@@ -1,0 +1,41 @@
+{
+  "phase": "post-beta-hardening",
+  "status": "execute_pending",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": "2026-07-10T00:00:00Z",
+  "updated_at": "2026-07-10T00:00:00Z",
+  "changes_total": 8,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": false,
+  "seed": "beta-release-readiness",
+  "seeded_from_phase": "beta-release-readiness",
+  "changes": [
+    "add-metrics-docs",
+    "fix-approval-expiry-ci",
+    "add-approval-store-trait",
+    "add-postgres-approval-store",
+    "wire-postgres-approval-config",
+    "harden-go-sdk",
+    "harden-ts-sdk",
+    "add-policy-editor-ux"
+  ],
+  "changes_done": [
+    "add-metrics-docs",
+    "fix-approval-expiry-ci",
+    "add-approval-store-trait",
+    "add-postgres-approval-store"
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

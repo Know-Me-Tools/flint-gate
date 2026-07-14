@@ -5,6 +5,7 @@
 /// `AppState` holds `Arc<dyn ApprovalStore + Send + Sync>` so the backend can be
 /// selected at startup without touching any request-handling code.
 pub mod postgres;
+pub use postgres::PostgresApprovalStore;
 
 use anyhow::Result;
 use async_trait::async_trait;

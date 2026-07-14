@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+const (
+	sseReconnectMax     = 5
+	sseReconnectInitial = 250 * time.Millisecond
+	sseReconnectCap     = 8 * time.Second
+)
+
 // Event is a single Server-Sent Event frame parsed from a Flint Gate
 // (or upstream LLM) SSE stream. See https://html.spec.whatwg.org/#server-sent-events.
 type Event struct {
@@ -57,10 +63,13 @@ type StreamOptions struct {
 // returns a receive-only channel of parsed SSE events. The channel is closed
 // when the stream ends (clean EOF, server-side close, or non-retryable error).
 //
-// The first error encountered (transport, HTTP status >= 400, or parse error)
-// is delivered as an Event with Event == "error" and Data containing a JSON
-// object {"error": "..."} and then the channel is closed. Cancellation via
-// ctx closes the channel without emitting an error.
+// Network drops and HTTP 5xx responses are retried up to 5 times with
+// exponential backoff (250ms base, cap 8s). HTTP 4xx responses are fatal and
+// not retried. The Last-Event-ID header is forwarded on reconnect.
+//
+// The first non-retryable error is delivered as an Event with Event == "error"
+// and Data containing a JSON object {"error": "..."} and then the channel is
+// closed. Cancellation via ctx closes the channel without emitting an error.
 //
 // The caller MUST drain the returned channel to release resources.
 func StreamSSE(
@@ -83,41 +92,189 @@ func StreamSSE(
 	go func() {
 		defer close(out)
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-		if err != nil {
-			emitError(out, fmt.Sprintf(`{"error":%q}`, "build request: "+err.Error()))
-			return
-		}
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Cache-Control", "no-cache")
-		if bearerToken != "" {
-			req.Header.Set("Authorization", "Bearer "+bearerToken)
-		}
-		for k, vs := range opts.Headers {
-			for _, v := range vs {
-				req.Header.Add(k, v)
-			}
-		}
+		var lastEventID string
+		delay := sseReconnectInitial
 
-		resp, err := httpClient.Do(req)
-		if err != nil {
+		for attempt := 0; attempt <= sseReconnectMax; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(delay):
+				}
+				if delay *= 2; delay > sseReconnectCap {
+					delay = sseReconnectCap
+				}
+			}
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+			if err != nil {
+				emitError(out, fmt.Sprintf(`{"error":%q}`, "build request: "+err.Error()))
+				return
+			}
+			req.Header.Set("Accept", "text/event-stream")
+			req.Header.Set("Cache-Control", "no-cache")
+			if bearerToken != "" {
+				req.Header.Set("Authorization", "Bearer "+bearerToken)
+			}
+			if lastEventID != "" {
+				req.Header.Set("Last-Event-ID", lastEventID)
+			}
+			for k, vs := range opts.Headers {
+				for _, v := range vs {
+					req.Header.Add(k, v)
+				}
+			}
+
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				if ctx.Err() != nil {
+					return // cancellation, not an error
+				}
+				// Transport error — retryable
+				continue
+			}
+
+			// 4xx — fatal, do not retry
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				resp.Body.Close()
+				emitError(out, fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("upstream status %d", resp.StatusCode)))
+				return
+			}
+
+			// 5xx — retryable
+			if resp.StatusCode >= 500 {
+				resp.Body.Close()
+				continue
+			}
+
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				resp.Body.Close()
+				emitError(out, fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("upstream status %d", resp.StatusCode)))
+				return
+			}
+
+			// Track the last event ID for reconnect.
+			reconnectTracker := &reconnectTrackingWriter{
+				ch:          out,
+				maxBytes:    maxBytes,
+				lastEventID: &lastEventID,
+			}
+			cleanEOF := parseSSETracked(ctx, resp.Body, maxBytes, reconnectTracker)
+			resp.Body.Close()
+
+			// If context cancelled, stop without error.
 			if ctx.Err() != nil {
-				return // cancellation, not an error
+				return
 			}
-			emitError(out, fmt.Sprintf(`{"error":%q}`, "http: "+err.Error()))
-			return
-		}
-		defer resp.Body.Close()
 
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			emitError(out, fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("upstream status %d", resp.StatusCode)))
-			return
+			// Clean EOF: the server gracefully closed the stream. This is a
+			// normal termination — do not reconnect.
+			if cleanEOF {
+				return
+			}
+
+			// Transport error mid-stream — reset delay and reconnect.
+			delay = sseReconnectInitial
 		}
 
-		parseSSE(ctx, resp.Body, maxBytes, out)
+		emitError(out, fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("stream failed after %d reconnect attempts", sseReconnectMax)))
 	}()
 
 	return out
+}
+
+// reconnectTrackingWriter wraps the output channel and updates lastEventID
+// as events are delivered, enabling correct Last-Event-ID on reconnect.
+type reconnectTrackingWriter struct {
+	ch          chan<- Event
+	maxBytes    int64
+	lastEventID *string
+}
+
+func (r *reconnectTrackingWriter) emit(ctx context.Context, ev Event) bool {
+	if ev.ID != "" {
+		*r.lastEventID = ev.ID
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case r.ch <- ev:
+		return true
+	}
+}
+
+// parseSSETracked is like parseSSE but routes events through the tracker and
+// returns true if the stream ended with a clean EOF (server closed normally),
+// or false if there was a scanner/transport error (candidate for reconnect).
+func parseSSETracked(ctx context.Context, body interface{ Read(p []byte) (int, error) }, maxBytes int64, tracker *reconnectTrackingWriter) bool {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), int(maxBytes))
+
+	var (
+		cur       Event
+		dataLines []string
+		dataBytes int64
+	)
+
+	dispatch := func() {
+		if len(dataLines) > 0 {
+			cur.Data = strings.Join(dataLines, "\n")
+		}
+		if cur.HasData() || cur.ID != "" || cur.Event != "" || cur.Retry > 0 {
+			tracker.emit(ctx, cur)
+		}
+		cur = Event{}
+		dataLines = dataLines[:0]
+		dataBytes = 0
+	}
+
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if line == "" {
+			dispatch()
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		field, value, hadColon := splitField(line)
+		if hadColon {
+			value = strings.TrimPrefix(value, " ")
+		}
+		switch field {
+		case "event":
+			cur.Event = value
+		case "id":
+			cur.ID = value
+		case "retry":
+			if n, ok := atoi(value); ok {
+				cur.Retry = n
+			}
+		case "data":
+			dataLines = append(dataLines, value)
+			dataBytes += int64(len(value)) + 1
+			if dataBytes > maxBytes {
+				emitError(tracker.ch, fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("event exceeded %d bytes", maxBytes)))
+				return false
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			// Transport/scan error — retryable, signal false
+			return false
+		}
+		return false
+	}
+	// Flush any final buffered event.
+	dispatch()
+	// Clean EOF — server closed gracefully.
+	return true
 }
 
 // emitError delivers a synthetic error event. Best-effort: if the channel is

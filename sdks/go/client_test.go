@@ -468,3 +468,157 @@ func TestRequireScope(t *testing.T) {
 // Compile-time guard: ensure *bytes.Reader satisfies the reader interface
 // parseSSE expects.
 var _ interface{ Read(p []byte) (int, error) } = (*bytes.Reader)(nil)
+
+// TestClient_Retry429 verifies that doJSON retries on 429 and succeeds once
+// the server returns 200.
+func TestClient_Retry429(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":"rate limited"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok","uptime_seconds":0,"checked_at":"2026-01-01T00:00:00Z"}`)
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Options{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := c.GetHealth(context.Background())
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if h.Status != "ok" {
+		t.Errorf("Status = %q, want ok", h.Status)
+	}
+	if callCount != 4 {
+		t.Errorf("callCount = %d, want 4 (3 × 429 then 1 × 200)", callCount)
+	}
+}
+
+// TestClient_Retry429_ExhaustedReturnsError verifies that after max retries
+// the last 429 error is returned.
+func TestClient_Retry429_ExhaustedReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":"always rate limited"}`)
+	}))
+	defer srv.Close()
+
+	c, _ := NewClient(Options{BaseURL: srv.URL})
+	_, err := c.GetHealth(context.Background())
+	if err == nil {
+		t.Fatal("expected error after all retries exhausted")
+	}
+	if !IsRateLimited(err) {
+		t.Errorf("expected IsRateLimited(err)=true, got err=%v", err)
+	}
+}
+
+// TestClient_ErrorHelpers verifies IsRateLimited, IsUnauthorized, IsApprovalRequired.
+func TestClient_ErrorHelpers(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		check  func(error) bool
+		want   bool
+	}{
+		{"IsRateLimited_429", 429, IsRateLimited, true},
+		{"IsRateLimited_200", 200, IsRateLimited, false},
+		{"IsUnauthorized_401", 401, IsUnauthorized, true},
+		{"IsUnauthorized_403", 403, IsUnauthorized, false},
+		{"IsApprovalRequired_403", 403, IsApprovalRequired, true},
+		{"IsApprovalRequired_401", 401, IsApprovalRequired, false},
+		{"IsNotFound_404", 404, IsNotFound, true},
+		{"IsNotFound_403", 403, IsNotFound, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := &APIError{StatusCode: c.status, Body: ""}
+			if got := c.check(err); got != c.want {
+				t.Errorf("%s(APIError{%d}) = %v, want %v", c.name, c.status, got, c.want)
+			}
+		})
+	}
+}
+
+// TestClient_StaticTokenSource verifies that Options.TokenSource is used and
+// sets the Authorization header correctly.
+func TestClient_StaticTokenSource(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok","uptime_seconds":0,"checked_at":"2026-01-01T00:00:00Z"}`)
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Options{
+		BaseURL:     srv.URL,
+		TokenSource: StaticTokenSource{Token: "my-dynamic-token"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer my-dynamic-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer my-dynamic-token")
+	}
+}
+
+// TestClient_AdminToken_BackwardsCompat verifies that Options.AdminToken still
+// sets the Authorization header (via the implicit StaticTokenSource).
+func TestClient_AdminToken_BackwardsCompat(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok","uptime_seconds":0,"checked_at":"2026-01-01T00:00:00Z"}`)
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Options{BaseURL: srv.URL, AdminToken: "legacy-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer legacy-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer legacy-token")
+	}
+}
+
+// TestClient_TokenSource_Precedence verifies that TokenSource takes precedence
+// over AdminToken when both are set.
+func TestClient_TokenSource_Precedence(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok","uptime_seconds":0,"checked_at":"2026-01-01T00:00:00Z"}`)
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Options{
+		BaseURL:     srv.URL,
+		AdminToken:  "should-be-ignored",
+		TokenSource: StaticTokenSource{Token: "token-source-wins"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer token-source-wins" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer token-source-wins")
+	}
+}

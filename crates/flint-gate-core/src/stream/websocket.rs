@@ -1,24 +1,47 @@
 /// WebSocket upstream bridge — connects to an upstream WS endpoint and
-/// pipes frames bidirectionally, applying AG-UI/A2UI filtering on text frames.
+/// pipes frames bidirectionally, applying AG-UI/A2UI/Cedar filtering on text frames.
 ///
 /// Uses `tokio-tungstenite` for the upstream connection (already in the
 /// dependency tree via axum's `ws` feature) and axum's built-in WS for
 /// the client-facing side.
+///
+/// When `tool_authz` is `Some`, Cedar policy is evaluated on every
+/// `TOOL_CALL_START` frame received from the upstream (same semantics as
+/// the SSE/NDJSON processors). Tool calls denied by Cedar are dropped and
+/// a `RUN_ERROR` frame is sent to the client instead.
+///
+/// When `approval_handle` is `Some`, `RequireApproval` Cedar decisions
+/// cause the WS bridge to register the pending tool call with the
+/// `ApprovalManager` and await a human decision before forwarding. This
+/// requires the caller to also process `approval_rx` (the decision channel)
+/// and call `AgUiProcessor::resolve_approval` to unblock the held frame.
+use crate::approval::ApprovalManager;
 use crate::config::types::StreamConfig;
 use crate::stream::a2ui::{A2UiEvent, A2UiProcessor};
 use crate::stream::ag_ui::{AgUiEvent, AgUiProcessor, AgUiTokenCounter};
-use crate::stream::StreamMetrics;
+use crate::stream::{ApprovalHandleParts, StreamMetrics};
 use axum::extract::ws::{Message, WebSocket};
 use futures::SinkExt;
 use futures::StreamExt;
 use std::time::Instant;
 
+#[derive(Clone)]
+struct WsBridgeApprovalHandle {
+    manager: ApprovalManager,
+    decision_tx: tokio::sync::mpsc::UnboundedSender<(String, crate::approval::ApprovalDecision)>,
+    ttl_override: Option<std::time::Duration>,
+}
+
 /// Bridge a client WebSocket to an upstream WebSocket endpoint.
 ///
 /// 1. Connects to `upstream_url` via `tokio_tungstenite::connect_async`.
 /// 2. Pipes frames bidirectionally.
-/// 3. On upstream→client text frames, applies AG-UI/A2UI filtering.
+/// 3. On upstream→client text frames, applies Cedar/AG-UI/A2UI filtering.
 /// 4. Enforces backpressure (duration + event count).
+///
+/// `tool_authz` — when `Some`, Cedar policy is evaluated per tool call.
+/// `approval_handle` — when `Some`, `RequireApproval` Cedar decisions pause
+/// the stream until a human decision arrives via the shared `ApprovalManager`.
 pub async fn ws_bridge(
     client_socket: WebSocket,
     upstream_url: &str,
@@ -26,6 +49,8 @@ pub async fn ws_bridge(
     user_scopes: Vec<String>,
     metadata: serde_json::Map<String, serde_json::Value>,
     theme: Option<serde_json::Value>,
+    tool_authz: Option<crate::authz::ToolAuthzContext>,
+    approval_handle: Option<ApprovalHandleParts>,
 ) -> StreamMetrics {
     let metrics = StreamMetrics::default();
     let started_at = Instant::now();
@@ -46,12 +71,36 @@ pub async fn ws_bridge(
     let (mut client_tx, mut client_rx) = client_socket.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
 
-    // Set up AG-UI/A2UI processors
+    // Wire approval handle parts into a typed struct for the AG-UI processor.
+    let approval_handle = approval_handle.map(|(manager, decision_tx, ttl_override)| {
+        WsBridgeApprovalHandle {
+            manager,
+            decision_tx,
+            ttl_override,
+        }
+    });
+
+    // Set up AG-UI/A2UI processors, threading Cedar authz and approval routing.
     let ag_ui_processor = if config.ai.ag_ui.enabled {
-        Some(AgUiProcessor::new(
+        let max_tool_args_bytes = config
+            .ai
+            .backpressure
+            .max_tool_args_bytes
+            .unwrap_or(crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES);
+        let mut proc = AgUiProcessor::new(
             config.ai.ag_ui.validate_events,
             config.ai.ag_ui.allowed_events.clone(),
-        ))
+        )
+        .with_tool_authz(tool_authz)
+        .with_max_tool_args_bytes(max_tool_args_bytes);
+        if let Some(ref handle) = approval_handle {
+            proc = proc.with_approval_handle(
+                handle.manager.clone(),
+                handle.decision_tx.clone(),
+                handle.ttl_override,
+            );
+        }
+        Some(proc)
     } else {
         None
     };
@@ -266,3 +315,97 @@ async fn filter_ws_text(
 }
 
 use std::sync::Arc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authz::{AuthzEngine, PolicyRecord, PrincipalKind, ToolAuthzContext};
+
+    fn tool_authz_ctx(policy: &str) -> ToolAuthzContext {
+        let engine = AuthzEngine::from_records(&[PolicyRecord {
+            id: "test".to_string(),
+            policy_text: policy.to_string(),
+            schema_json: None,
+            entities_json: None,
+        }])
+        .expect("valid policy");
+        ToolAuthzContext {
+            engine: Arc::new(engine),
+            principal_kind: PrincipalKind::User,
+            principal_id: "test-user".to_string(),
+            route_id: "ws-route".to_string(),
+            revoked: false,
+            audit: None,
+        }
+    }
+
+    /// Verify that the ws_bridge AgUiProcessor construction path accepts None
+    /// for both new params without panicking (backward-compatible call site).
+    #[test]
+    fn ws_bridge_none_tool_authz_builds_without_panic() {
+        let proc = AgUiProcessor::new(false, vec![])
+            .with_tool_authz(None::<ToolAuthzContext>)
+            .with_max_tool_args_bytes(1024 * 1024);
+        drop(proc);
+    }
+
+    /// Verify that a Cedar deny-all policy, threaded via the same path as
+    /// ws_bridge, replaces the TOOL_CALL_START with a RUN_ERROR (not forwarded).
+    #[test]
+    fn ws_bridge_cedar_deny_emits_run_error_for_tool_call() {
+        let ctx = tool_authz_ctx("forbid(principal, action, resource);");
+        let proc = AgUiProcessor::new(false, vec![])
+            .with_tool_authz(Some(ctx))
+            .with_max_tool_args_bytes(1024 * 1024);
+
+        let start_json = r#"{"type":"TOOL_CALL_START","toolCallId":"tc1","toolCallName":"read_file"}"#;
+        let event = AgUiEvent::from_json(start_json).expect("valid event");
+        let released = proc.process_multi(event, serde_json::Map::new());
+        // Cedar deny → START is replaced by a RUN_ERROR (not forwarded as-is)
+        assert!(
+            !released.is_empty(),
+            "Cedar deny should produce a RUN_ERROR frame, not silence"
+        );
+        assert_eq!(
+            released[0].event_type, "RUN_ERROR",
+            "Cedar deny should produce RUN_ERROR, got {:?}",
+            released[0].event_type
+        );
+    }
+
+    /// Verify that a Cedar permit-all policy allows tool call frames through.
+    #[test]
+    fn ws_bridge_cedar_permit_releases_tool_call_on_end() {
+        let ctx = tool_authz_ctx("permit(principal, action, resource);");
+        let proc = AgUiProcessor::new(false, vec![])
+            .with_tool_authz(Some(ctx))
+            .with_max_tool_args_bytes(1024 * 1024);
+
+        // START is buffered — not released until END is seen
+        let start_json = r#"{"type":"TOOL_CALL_START","toolCallId":"tc1","toolCallName":"read_file"}"#;
+        let start_ev = AgUiEvent::from_json(start_json).expect("valid");
+        let held = proc.process_multi(start_ev, serde_json::Map::new());
+        assert!(held.is_empty(), "START frame is held pending END");
+
+        // END releases the buffered START + END pair
+        let end_json = r#"{"type":"TOOL_CALL_END","toolCallId":"tc1"}"#;
+        let end_ev = AgUiEvent::from_json(end_json).expect("valid");
+        let released = proc.process_multi(end_ev, serde_json::Map::new());
+        assert!(!released.is_empty(), "Cedar permit should release buffered events on END");
+    }
+
+    /// Verify that the ws_bridge approval-handle wiring path compiles with a
+    /// real ApprovalManager (construction-level coverage for task 3).
+    #[test]
+    fn ws_bridge_approval_handle_wires_into_ag_ui() {
+        use crate::approval::ApprovalManager;
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = tool_authz_ctx("permit(principal, action, resource);");
+        let proc = AgUiProcessor::new(false, vec![])
+            .with_tool_authz(Some(ctx))
+            .with_max_tool_args_bytes(1024 * 1024)
+            .with_approval_handle(manager, tx, None);
+        drop(proc);
+    }
+}

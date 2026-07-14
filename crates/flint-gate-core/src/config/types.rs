@@ -36,6 +36,57 @@ pub struct GateConfig {
     /// load, never a second authority). Empty by default.
     #[serde(default)]
     pub agent_tool_policies: Vec<AgentToolPolicy>,
+    /// Human-in-the-loop tool-call approval (`RequireApproval`) settings.
+    #[serde(default)]
+    pub approval: ApprovalConfig,
+}
+
+/// Human-in-the-loop approval settings.
+///
+/// When a Cedar policy evaluates to `RequireApproval`, a streaming tool call is
+/// paused until a human decides (via the admin API / UI). This governs the TTL of
+/// that pause and whether the feature is enabled at all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalConfig {
+    /// Whether human-in-the-loop approval is enabled. When **false**, a
+    /// `RequireApproval` decision **fails closed to Deny** — the tool call is NOT
+    /// paused (an operator who cannot service approvals denies rather than hangs).
+    /// Defaults to true (behavior unchanged).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// TTL (seconds) for a pending approval before it auto-**denies**. Overrides
+    /// the built-in default (300s). An undecided approval that reaches this
+    /// deadline is denied (fail-closed) and the paused stream resumes to
+    /// termination — it never hangs forever.
+    #[serde(default)]
+    pub ttl_seconds: Option<u64>,
+    /// Maximum number of concurrent pending approvals. When the table is full,
+    /// new `RequireApproval` decisions fail-closed to Deny rather than growing
+    /// the in-memory DashMap without bound. Defaults to 1 000.
+    #[serde(default = "default_approval_max_pending")]
+    pub max_pending: Option<usize>,
+    /// Override the background janitor interval (seconds). The janitor sweeps
+    /// expired entries from the DashMap. When `None`, the interval is derived
+    /// from `ttl_seconds / 2` (clamped to [10, 300]); a built-in fallback of
+    /// 60 s applies when no TTL is set. Set this to tune the sweep frequency
+    /// independently of the TTL.
+    #[serde(default)]
+    pub janitor_interval_seconds: Option<u64>,
+}
+
+fn default_approval_max_pending() -> Option<usize> {
+    Some(1000)
+}
+
+impl Default for ApprovalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl_seconds: None,
+            max_pending: default_approval_max_pending(),
+            janitor_interval_seconds: None,
+        }
+    }
 }
 
 /// Per-agent tool-scope sugar (`agent_tool_policies` entry).
@@ -381,6 +432,17 @@ pub struct ServerConfig {
     /// In-process per-replica request-rate limiter (coarse burst shield).
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// In-process per-replica rate limiter for the **admin** router's protected
+    /// endpoints. When `Some`, the governor is layered over the protected
+    /// sub-router (all routes except `/health`, `/ready`, `/metrics`); probes
+    /// stay unrestricted. When `None` (the default), the admin router is
+    /// unlimited — suitable for loopback-dev deployments. For production
+    /// non-loopback admin binds, setting this is strongly recommended.
+    ///
+    /// **Per-replica only.** `require_shared_backend` in [`RateLimitConfig`]
+    /// is ignored here (it applies to `oauth.rate_limit` only).
+    #[serde(default)]
+    pub admin_rate_limit: Option<RateLimitConfig>,
     /// Authentication for the admin API. When `None`, the admin API is
     /// unauthenticated and only permitted on a loopback `admin_listen` — binding
     /// a non-loopback address without `admin_auth` is refused at startup.
@@ -393,12 +455,22 @@ pub struct ServerConfig {
     #[serde(default)]
     pub allow_insecure_upstream: bool,
     /// Promote agent-governance lint findings from a startup WARN to a
-    /// **refuse-to-start**. Off by default (a WARN is non-breaking on upgrade);
-    /// set true to make an under-governed agent surface a hard startup error —
-    /// e.g. an agent-reachable route with a non-agent-scoped budget or no
-    /// authorization hook. See [`GateConfig::agent_governance_lint`].
-    #[serde(default)]
+    /// **refuse-to-start**. On by default (fail-closed for beta deployments);
+    /// set false only for legacy routes that cannot yet add an authorization hook.
+    /// Any agent-reachable route without an `authorize` hook will produce a hard
+    /// startup error when this is `true`. See [`GateConfig::agent_governance_lint`].
+    #[serde(default = "default_strict_agent_governance")]
     pub strict_agent_governance: bool,
+    /// Refuse to start when the initial Cedar policy set is empty (no policies
+    /// loaded from the database or config). Disabled by default: the empty
+    /// set is a valid fail-closed (default-deny) posture. Enable to enforce
+    /// a non-empty policy set at startup — useful when the auth proxy MUST
+    /// have explicit policies before accepting traffic.
+    ///
+    /// Has no effect when no database is configured (config-only deployments
+    /// do not query the DB at startup so the count is always the sugar count).
+    #[serde(default)]
+    pub require_policies_at_startup: bool,
 }
 
 /// One agent-governance lint finding — an operator misconfiguration that leaves
@@ -624,9 +696,11 @@ impl Default for ServerConfig {
             tls: TlsConfig::default(),
             shutdown_timeout_secs: default_shutdown_timeout(),
             rate_limit: RateLimitConfig::default(),
+            admin_rate_limit: None,
             admin_auth: None,
             allow_insecure_upstream: false,
-            strict_agent_governance: false,
+            strict_agent_governance: true,
+            require_policies_at_startup: false,
         }
     }
 }
@@ -638,6 +712,10 @@ pub struct TlsConfig {
     pub enabled: bool,
     pub cert_path: Option<String>,
     pub key_path: Option<String>,
+    /// When false (default), a cert load failure aborts startup.
+    /// Set to true only in development; never in production.
+    #[serde(default)]
+    pub fail_open: bool,
 }
 
 /// Postgres database connection settings.
@@ -754,6 +832,10 @@ fn default_session_cookie() -> String {
     "ory_kratos_session".to_string()
 }
 fn default_true() -> bool {
+    true
+}
+
+fn default_strict_agent_governance() -> bool {
     true
 }
 
@@ -1791,6 +1873,36 @@ config:
         assert!(!d.require_shared_backend);
     }
 
+    // ── approval config ──────────────────────────────────────────────────────
+
+    #[test]
+    fn approval_config_defaults_enabled_no_ttl() {
+        let a = ApprovalConfig::default();
+        assert!(a.enabled);
+        assert_eq!(a.ttl_seconds, None);
+        // And on a GateConfig with no approval block.
+        let cfg = GateConfig::default();
+        assert!(cfg.approval.enabled);
+        assert_eq!(cfg.approval.ttl_seconds, None);
+    }
+
+    #[test]
+    fn approval_config_parses_from_yaml() {
+        let cfg: GateConfig =
+            serde_yaml::from_str("approval:\n  enabled: false\n  ttl_seconds: 120\n")
+                .expect("parses");
+        assert!(!cfg.approval.enabled);
+        assert_eq!(cfg.approval.ttl_seconds, Some(120));
+    }
+
+    #[test]
+    fn approval_config_absent_key_defaults_enabled() {
+        // An `approval: {}` block (no keys) must default to enabled with no TTL.
+        let cfg: GateConfig = serde_yaml::from_str("approval: {}\n").expect("parses");
+        assert!(cfg.approval.enabled);
+        assert_eq!(cfg.approval.ttl_seconds, None);
+    }
+
     // ── agent_tool_policies sugar (config schema) ────────────────────────────
 
     #[test]
@@ -1910,8 +2022,8 @@ config:
     }
 
     #[test]
-    fn strict_agent_governance_defaults_false() {
-        assert!(!ServerConfig::default().strict_agent_governance);
+    fn strict_agent_governance_defaults_true() {
+        assert!(ServerConfig::default().strict_agent_governance);
     }
 
     #[test]
@@ -1938,6 +2050,40 @@ config:
             .filter(|f| f.reason == GovernanceReason::NonAgentScopedBudget)
             .count();
         assert_eq!(n, 1, "duplicate non-agent-budget findings must be deduped");
+    }
+
+    /// task 4: strict mode on + agent-reachable route without authorize hook → findings non-empty.
+    /// The startup path converts non-empty findings to a hard error when strict=true.
+    #[test]
+    fn strict_mode_on_with_ungoverned_agent_route_produces_findings() {
+        // jwt route with no hooks at all — no authorize, no budget
+        let c = lint_cfg("jwt", "");
+        // Strict mode on (the new default)
+        let findings = c.agent_governance_lint();
+        assert!(
+            !findings.is_empty(),
+            "agent-reachable route with no authorize hook must produce governance findings"
+        );
+        assert!(
+            findings.iter().any(|f| f.reason == GovernanceReason::NoAuthorizeHook),
+            "missing authorize hook must surface as NoAuthorizeHook finding"
+        );
+        // Confirm: with strict=true and findings, startup should refuse.
+        // (The actual bail! is in main.rs; here we assert the condition is met.)
+        assert!(c.server.strict_agent_governance, "strict mode should default to true");
+    }
+
+    /// task 5: strict mode on + agent-reachable route WITH authorize hook → no findings.
+    #[test]
+    fn strict_mode_on_with_governed_agent_route_produces_no_findings() {
+        let c = lint_cfg("jwt", AUTHORIZE_ONLY);
+        let findings = c.agent_governance_lint();
+        assert!(
+            findings.is_empty(),
+            "agent-reachable route WITH authorize hook must produce no governance findings: {:?}",
+            findings
+        );
+        assert!(c.server.strict_agent_governance, "strict mode should default to true");
     }
 
     #[test]

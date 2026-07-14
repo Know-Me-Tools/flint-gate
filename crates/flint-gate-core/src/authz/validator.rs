@@ -1,9 +1,10 @@
 //! Write-time policy validation.
 //!
-//! The admin CRUD path calls [`validate_policy`] BEFORE persisting a policy so
-//! that malformed or schema-incoherent policy text never reaches the database
-//! or the hot path. This is the single gate: if it returns `Ok`, the policy is
-//! parseable and (when a schema is supplied) type-checks against that schema.
+//! The admin CRUD path calls [`validate_policy_for_gateway`] BEFORE persisting a
+//! policy so that malformed, schema-incoherent, or annotation-typo'd policy text
+//! never reaches the database or the hot path. This is the single gate: if it
+//! returns `Ok`, the policy is parseable, type-checks against the gateway schema,
+//! and uses only known annotation keys.
 
 use std::str::FromStr;
 
@@ -13,7 +14,8 @@ use cedar_policy::{
 };
 
 use super::bundle::PolicyRecord;
-use super::error::AuthzError;
+use super::error::{AuthzError, PolicyParseError};
+use super::schema::{validate_annotations, GATEWAY_CEDAR_SCHEMA};
 
 /// Warning message emitted when a policy grants broad, unconditional access.
 pub const ALLOW_ALL_WARNING: &str = "policy grants broad/unconditional access";
@@ -28,8 +30,13 @@ pub const ALLOW_ALL_WARNING: &str = "policy grants broad/unconditional access";
 /// to the admin caller (it is policy/schema text they authored, not internal
 /// state).
 pub fn validate_policy(record: &PolicyRecord) -> Result<(), AuthzError> {
-    let policy_set = PolicySet::from_str(&record.policy_text)
-        .map_err(|e| AuthzError::PolicyParse(e.to_string()))?;
+    let policy_set = PolicySet::from_str(&record.policy_text).map_err(|e| {
+        let errors: Vec<PolicyParseError> = e
+            .iter()
+            .map(|pe| PolicyParseError::from_parse_error(&record.policy_text, pe))
+            .collect();
+        AuthzError::PolicyParse(errors)
+    })?;
 
     // Parse the schema up front (if any) so it can be applied to BOTH the policy
     // validator and the entities parse — the loader parses entities against the
@@ -64,9 +71,46 @@ pub fn validate_policy(record: &PolicyRecord) -> Result<(), AuthzError> {
     if result.validation_passed() {
         Ok(())
     } else {
-        let messages: Vec<String> = result.validation_errors().map(|e| e.to_string()).collect();
-        Err(AuthzError::Validation(messages.join("; ")))
+        let errors: Vec<PolicyParseError> = result
+            .validation_errors()
+            .map(|e| PolicyParseError::from_validation_error(&record.policy_text, e))
+            .collect();
+        Err(AuthzError::Validation(errors))
     }
+}
+
+/// Write-time validation for policies stored via the admin API.
+///
+/// Extends [`validate_policy`] with two additional gateway-specific checks:
+///
+/// 1. **Gateway entity schema**: the policy is type-checked against the gateway's
+///    canonical Cedar schema (entity types `User`/`Agent`/`Service`/`Route`,
+///    action `call_tool`). A policy that references undefined entity types or
+///    unknown actions is rejected with HTTP 422.
+/// 2. **Annotation vocabulary**: only the gateway's known annotation keys
+///    (currently `@require_approval`) are accepted. A typo like `@require_apporval`
+///    would silently behave as a plain `permit` without this check.
+///
+/// When the caller supplies their own `schema_json` in the record, that schema
+/// is used INSTEAD of the gateway schema (escape hatch for advanced users who
+/// bring their own entity model).
+pub fn validate_policy_for_gateway(record: &PolicyRecord) -> Result<(), AuthzError> {
+    // 1. Annotation vocabulary check — runs before schema validation so the
+    //    error message names the bad annotation key, not a generic schema error.
+    validate_annotations(&record.policy_text)
+        .map_err(|msg| AuthzError::Validation(vec![PolicyParseError::without_location(msg)]))?;
+
+    // 2. Schema validation: inject the gateway schema when the caller did not
+    //    supply one, so entity types and actions are always type-checked.
+    let effective_record = if record.schema_json.is_none() {
+        PolicyRecord {
+            schema_json: Some(serde_json::Value::String(GATEWAY_CEDAR_SCHEMA.to_string())),
+            ..record.clone()
+        }
+    } else {
+        record.clone()
+    };
+    validate_policy(&effective_record)
 }
 
 /// Non-blocking guardrail: collect advisory warnings about a policy's breadth.
@@ -234,5 +278,69 @@ mod tests {
             None,
         );
         assert_eq!(policy_warnings(&rec), vec![ALLOW_ALL_WARNING.to_string()]);
+    }
+
+    // ── Gateway schema validation (validate_policy_for_gateway) ─────────────
+
+    /// task 5: @require_apporval (typo) must be rejected at write time.
+    #[test]
+    fn typo_annotation_require_apporval_is_rejected_at_write_time() {
+        let rec = record(
+            r#"@require_apporval("needs human review")
+permit(principal, action, resource);"#,
+            None,
+        );
+        let err = validate_policy_for_gateway(&rec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            matches!(err, AuthzError::Validation(_)),
+            "annotation typo must fail as Validation error, got: {msg}"
+        );
+        assert!(
+            msg.contains("require_apporval"),
+            "error must name the typo'd annotation: {msg}"
+        );
+    }
+
+    /// task 6: @require_approval (correct spelling) must be accepted.
+    #[test]
+    fn correct_require_approval_annotation_is_accepted_at_write_time() {
+        let rec = record(
+            r#"@require_approval("sensitive operation requires human review")
+permit(principal, action == Action::"call_tool", resource);"#,
+            None,
+        );
+        assert!(
+            validate_policy_for_gateway(&rec).is_ok(),
+            "correctly spelled @require_approval must be accepted"
+        );
+    }
+
+    /// task 7: policy referencing undefined entity type → rejected with gateway schema.
+    #[test]
+    fn undefined_entity_type_in_policy_is_rejected_at_write_time() {
+        // "Organization" is not a defined entity type in the gateway schema.
+        let rec = record(
+            r#"permit(principal == Organization::"acme", action, resource);"#,
+            None,
+        );
+        let err = validate_policy_for_gateway(&rec).unwrap_err();
+        assert!(
+            matches!(err, AuthzError::Validation(_)),
+            "policy with undefined entity type must fail schema validation, got: {err:?}"
+        );
+    }
+
+    /// Permit-all without annotations is accepted (annotations are optional).
+    #[test]
+    fn permit_all_without_annotations_accepted_by_gateway_validator() {
+        let rec = record(
+            r#"permit(principal, action == Action::"call_tool", resource);"#,
+            None,
+        );
+        assert!(
+            validate_policy_for_gateway(&rec).is_ok(),
+            "valid permit with correct action should pass gateway validation"
+        );
     }
 }

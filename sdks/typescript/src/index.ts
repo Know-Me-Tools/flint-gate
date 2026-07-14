@@ -84,4 +84,12 @@ export type {
   HealthStatus,
   ReadyStatus,
   FlintGateClientConfig,
+  PolicyRow,
+  PolicyVersionRow,
+  PolicyHistoryResponse,
+  RollbackResponse,
+  UpsertPolicyInput,
+  UpsertPolicyResponse,
+  ApprovalStatus,
+  ApprovalDecision,
 } from "./types";

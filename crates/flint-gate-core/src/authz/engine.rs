@@ -1,7 +1,7 @@
 //! The shared authorization engine: a lock-free-on-read Cedar evaluator.
 
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use cedar_policy::{
@@ -157,11 +157,58 @@ impl AuthzDecision {
     }
 }
 
+/// The last-known result of a Cedar policy reload, stored inside `AuthzEngine`
+/// so it can be queried via `GET /policies/reload-status` without a DB round-trip.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReloadStatus {
+    /// `true` after a successful reload; `false` after a failure.
+    pub ok: bool,
+    /// Number of active policies in the live bundle after the last successful reload.
+    pub policy_count: usize,
+    /// Human-readable summary of the last reload error (None when last reload succeeded).
+    pub last_error: Option<String>,
+    /// Timestamp of the most recent reload attempt (set on both success and failure).
+    pub last_reload_at: Option<DateTime<Utc>>,
+}
+
+impl Default for ReloadStatus {
+    fn default() -> Self {
+        Self {
+            ok: true,
+            policy_count: 0,
+            last_error: None,
+            last_reload_at: None,
+        }
+    }
+}
+
 /// The embedded authorization engine.
 ///
 /// Holds the live [`CedarBundle`] behind an [`ArcSwap`] so readers on the
 /// request path load a consistent snapshot without a lock, while a background
 /// reload can atomically replace it.
+///
+/// ## Hot-reload atomicity guarantee
+///
+/// All reload paths — [`Self::reload_from_records`] (strict) and
+/// [`Self::reload_from_records_lenient`] (lenient / NOTIFY-driven) — share
+/// the same atomic-swap contract:
+///
+/// 1. **Parse before swap**: the new [`CedarBundle`] is compiled entirely in a
+///    local value *before* the live pointer is touched. If compilation fails,
+///    the swap never occurs and the previous bundle remains authoritative.
+/// 2. **Atomic swap**: on success, `ArcSwap::store` replaces the live pointer
+///    in a single sequentially-consistent atomic operation. Readers see either
+///    the old bundle or the new bundle — never a mixture of the two (no partial
+///    state).
+/// 3. **Fail-closed on error**: a failed reload retains the last-known-good
+///    bundle and logs a `WARN`. The engine never falls back to the "empty =
+///    deny-all" base; it keeps serving the previously valid policy set.
+///
+/// This means a truncated or syntactically invalid policy file written by a
+/// concurrent process cannot produce a partial-apply security incident: the
+/// engine continues making correct decisions against the last good policy set
+/// until a valid new one is available.
 pub struct AuthzEngine {
     bundle: ArcSwap<CedarBundle>,
     authorizer: Authorizer,
@@ -170,6 +217,9 @@ pub struct AuthzEngine {
     /// bundle build/reload, so config tool-scopes enforce alongside DB policies and
     /// are never dropped by a DB-only reload. Empty for engines built without sugar.
     sugar: Vec<PolicyRecord>,
+    /// Last-known reload outcome. Updated after every reload attempt (both lenient
+    /// and strict paths). Readable via `GET /policies/reload-status` on the admin server.
+    pub last_reload_status: Arc<Mutex<ReloadStatus>>,
 }
 
 impl std::fmt::Debug for AuthzEngine {
@@ -187,6 +237,7 @@ impl AuthzEngine {
             bundle: ArcSwap::from_pointee(bundle),
             authorizer: Authorizer::new(),
             sugar: Vec::new(),
+            last_reload_status: Arc::new(Mutex::new(ReloadStatus::default())),
         }
     }
 
@@ -214,6 +265,7 @@ impl AuthzEngine {
             bundle: ArcSwap::from_pointee(CedarBundle::from_records(&combined)?),
             authorizer: Authorizer::new(),
             sugar,
+            last_reload_status: Arc::new(Mutex::new(ReloadStatus::default())),
         })
     }
 
@@ -253,6 +305,7 @@ impl AuthzEngine {
                     bundle: ArcSwap::from_pointee(CedarBundle::from_records_lenient(&combined)),
                     authorizer: Authorizer::new(),
                     sugar,
+                    last_reload_status: Arc::new(Mutex::new(ReloadStatus::default())),
                 }
             }
             Err(e) => {
@@ -263,6 +316,7 @@ impl AuthzEngine {
                     bundle: ArcSwap::from_pointee(CedarBundle::from_records_lenient(&sugar)),
                     authorizer: Authorizer::new(),
                     sugar,
+                    last_reload_status: Arc::new(Mutex::new(ReloadStatus::default())),
                 }
             }
         }
@@ -294,7 +348,14 @@ impl AuthzEngine {
         // DB-only reload would drop the config tool-scopes.
         let combined = concat_records(records, &self.sugar);
         let new_bundle = CedarBundle::from_records_lenient(&combined);
+        let policy_count = new_bundle.policies().policies().count();
         self.bundle.store(Arc::new(new_bundle));
+        if let Ok(mut status) = self.last_reload_status.lock() {
+            status.ok = true;
+            status.policy_count = policy_count;
+            status.last_error = None;
+            status.last_reload_at = Some(Utc::now());
+        }
     }
 
     /// Parse-before-swap reload. The new bundle is compiled FIRST; only if that

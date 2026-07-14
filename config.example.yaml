@@ -36,15 +36,46 @@ server:
   # counted under the Agent scope), no `authorize` hook (ungoverned tool calls), or
   # a scope:agent + window:lifetime budget (can't fail closed). The lint covers the
   # MERGED (YAML + database) route set actually served — including DB routes added
-  # via database.override_yaml and hot-reload, not just YAML. Set true to promote
-  # WARNs to enforcement: at STARTUP -> refuse-to-start; on a route HOT-RELOAD ->
-  # reject the reload and retain the last-good router (a live process can't exit).
-  # Off by default (non-breaking).
-  strict_agent_governance: false
+  # via database.override_yaml and hot-reload, not just YAML. When true (the
+  # default), any agent-reachable route (JWT/MCP auth) without an `authorize`
+  # hook causes a hard startup error, or a hot-reload rejection that retains the
+  # last-good router. Set false ONLY for legacy routes that cannot yet add an
+  # authorization hook — understand you are running without Cedar evaluation for
+  # those routes.
+  # Default: true (fail-closed).
+  strict_agent_governance: true
+  # To disable for a legacy deployment that has not yet added authorize hooks:
+  # strict_agent_governance: false
+  # Refuse to start when the initial Cedar policy set is empty (no policies
+  # loaded from the DB). Off by default: an empty set is a valid fail-closed
+  # (default-deny) posture. Enable only when you REQUIRE explicit Cedar
+  # policies before the proxy accepts any traffic.
+  # Has no effect when `database:` is not configured.
+  require_policies_at_startup: false
+  # Per-credential rate limiting for the admin router's PROTECTED endpoints
+  # (everything except /health, /ready, and /metrics). Uses tower-governor with
+  # the same CredentialKeyExtractor as the proxy surface — rate-limits are keyed
+  # by the caller's credential (Bearer token, session cookie), not by IP, so a
+  # shared ingress/NAT does not let one admin credential starve others.
+  #
+  # Recommended for any admin bind reachable beyond localhost. For a loopback-only
+  # admin bind this is defense-in-depth against local scripted abuse.
+  #
+  # Note: this limiter is per-replica in-process (no shared Redis backend).
+  # In a multi-replica deployment each replica limits independently. Use a
+  # network ingress rate-limiter (e.g. Nginx, Envoy, or cloud WAF) for a
+  # cross-replica accurate ceiling on the admin surface.
+  #
+  # admin_rate_limit:
+  #   enabled: true
+  #   per_second: 5     # sustained token refill rate (requests / second)
+  #   burst: 10         # burst capacity on top of the sustained rate
   tls:
     enabled: false
     # cert_path: "/etc/flint-gate/tls/cert.pem"
     # key_path: "/etc/flint-gate/tls/key.pem"
+    # fail_open: false   # PRODUCTION: keep false (default). A cert load failure aborts startup.
+    #                    # Set to true ONLY in development to fall back to plain TCP on cert errors.
 
 database:
   url: "postgres://flintgate:secret@localhost:5432/flintgate"
@@ -59,6 +90,11 @@ cache:
   l2:
     enabled: false
     # redis_url: "redis://localhost:6379"
+    # IMPORTANT (multi-replica): when server.rate_limit.enabled is true and
+    # you run more than one replica (e.g. a Kubernetes Deployment with replicas > 1),
+    # each pod maintains its own in-memory counter. Agents can bypass limits by
+    # spreading requests across replicas. Set redis_url here to share counters
+    # across all replicas and enforce a true per-identity budget.
   # Postgres LISTEN channel for real-time cache invalidation
   invalidation_channel: "flintgate_config_changed"
 
@@ -189,6 +225,34 @@ agent_tool_policies: []
   # - agent: "ci-bot"
   #   allow: ["deploy", "run_tests"]
   #   deny:  ["delete_*"]
+
+# ─── Human-in-the-loop approval ───────────────────────────────────────────────
+# When a Cedar policy marks a tool call for approval (@require_approval on a
+# permit), the streaming call PAUSES until a human approves/denies it via the
+# admin API/UI. Fail-closed at every edge: an undecided approval AUTO-DENIES at
+# `ttl_seconds` (the call is dropped, the stream resumes to termination — never
+# hangs); `enabled: false` denies a RequireApproval outright (never pauses); a
+# background janitor reaps expired entries.
+#
+# MULTI-REPLICA CONSTRAINT: The pending-approval table is in-memory PER REPLICA.
+# A POST /approvals/:id/decision that reaches the wrong replica returns 404.
+# Beta mitigation: apply k8s/service-admin.yaml (sessionAffinity: ClientIP) to
+# pin each admin client to one replica. Known limitation: sticky session is lost
+# on pod restart — any pending stream on the restarted pod is abandoned.
+# Long-term fix (post-beta): Postgres-backed shared approval store.
+approval:
+  enabled: true
+  # ttl_seconds: 300   # override the built-in default (300s)
+  # max_pending: 1000  # cap on concurrent pending approvals; new RequireApproval
+  #                    # decisions fail-closed to Deny when the table is full.
+  #                    # Defaults to 1 000. Set to a smaller value in memory-constrained
+  #                    # environments; raise it if you expect many concurrent approvals.
+  # janitor_interval_seconds: 60   # how often the background janitor sweeps expired
+  #                                # entries from the approval table. When unset,
+  #                                # derived from ttl_seconds / 2 (clamped to [10, 300]),
+  #                                # with a fallback of 60 s. Tune this independently
+  #                                # when your TTL is very long and you want faster
+  #                                # reclaim without shortening the approval window.
 
 # ─── Sites ────────────────────────────────────────────────────────────────────
 # A site maps one or more domains to a default auth provider and upstream.

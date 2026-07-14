@@ -323,6 +323,9 @@ pub(crate) fn classify_notification(payload: &str) -> NotifyAction {
 /// shared authorization engine is reloaded from the database (parse-before-swap,
 /// retain last-good) so peer replicas pick up policy edits WITHOUT a restart.
 /// This is best-effort — errors are logged, not fatal.
+///
+/// When `event_tx` is `Some`, an `AdminEvent` is broadcast after every reload
+/// attempt so admin SSE subscribers receive real-time reload status.
 pub async fn start_cache_invalidation_listener(
     pool: sqlx::PgPool,
     cache: Arc<GateCache>,
@@ -333,6 +336,7 @@ pub async fn start_cache_invalidation_listener(
         Arc<crate::db::Database>,
     )>,
     authz: Option<(Arc<crate::authz::AuthzEngine>, Arc<crate::db::Database>)>,
+    event_tx: Option<tokio::sync::broadcast::Sender<crate::admin::AdminEvent>>,
 ) {
     tokio::spawn(async move {
         let mut listener = match sqlx::postgres::PgListener::connect_with(&pool).await {
@@ -369,8 +373,22 @@ pub async fn start_cache_invalidation_listener(
                             // poisoned remote row can neither blank nor over-open
                             // this replica's policy bundle.
                             if let Some((ref authz, ref db)) = authz {
-                                if let Err(e) = authz.reload_from_database(db).await {
-                                    error!(error = %e, "policy reload from NOTIFY failed — retaining last-good");
+                                match authz.reload_from_database(db).await {
+                                    Ok(()) => {
+                                        let policy_count = authz.snapshot().policies().policies().count();
+                                        if let Some(ref tx) = event_tx {
+                                            let _ = tx.send(crate::admin::AdminEvent::PolicyReloadOk { policy_count });
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, "policy reload from NOTIFY failed — retaining last-good");
+                                        if let Some(ref tx) = event_tx {
+                                            let _ = tx.send(crate::admin::AdminEvent::PolicyReloadError {
+                                                skipped_count: 0,
+                                                db_error: Some(e.to_string()),
+                                            });
+                                        }
+                                    }
                                 }
                             } else {
                                 // No engine wired (no DB / authz on this replica);

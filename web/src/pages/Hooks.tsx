@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useRoutes } from '@/hooks/useAdmin';
 import type { DbRoute, PreRequestHook, PostResponseHook } from '@/api/types';
+import { ReadOnlyBanner } from '@/components/ReadOnlyBanner';
 
 export default function Hooks() {
   const { data, isLoading, error } = useRoutes();
@@ -22,6 +23,7 @@ export default function Hooks() {
 
   return (
     <div className="space-y-6">
+      <ReadOnlyBanner />
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Hooks</h1>
         <p className="text-muted-foreground">Pre-request and post-response hooks configured on routes.</p>

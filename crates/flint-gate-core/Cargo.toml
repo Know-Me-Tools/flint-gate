@@ -19,7 +19,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "compression-full"]
 http = "1"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
 moka = { version = "0.12", features = ["future"] }
 jsonwebtoken = "9"
 serde = { version = "1", features = ["derive"] }
@@ -50,6 +50,7 @@ redis = { version = "1", features = ["tokio-comp", "connection-manager"], option
 governor = "0.10"
 tower_governor = "0.8"
 cedar-policy = "4"
+miette = "7"
 arc-swap = "1"
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }

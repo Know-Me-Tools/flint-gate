@@ -738,7 +738,16 @@ async fn handle_request(
             None
         };
 
-        // Protocol dispatch: create the appropriate processor
+        // Protocol dispatch: create the appropriate processor.
+        //
+        // NOTE: "websocket" is intentionally absent here. WebSocket upgrades
+        // cannot use the streaming-body response path — they require an HTTP
+        // 101 Switching Protocols response via axum's WebSocketUpgrade extractor.
+        // A dedicated WS handler must call `crate::stream::websocket::ws_bridge`
+        // directly, passing `tool_authz_ctx` and `approval_handle` as the last
+        // two arguments. This wiring is tracked as a future enhancement; for now,
+        // WS routes that are proxied as plain HTTP fall through to SSE processing
+        // (frames are forwarded unfiltered since no AG-UI parsing applies).
         let processor: Box<dyn StreamProcessor> = match stream_config.protocol.as_str() {
             "ndjson" => Box::new(NdjsonStreamProcessor::with_tool_authz_and_approval(
                 stream_config.clone(),

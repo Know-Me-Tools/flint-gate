@@ -9,126 +9,6 @@ use sqlx::{PgPool, Row};
 use tracing::{debug, info};
 use uuid::Uuid;
 
-/// DDL for the Flint Gate schema. Applied at startup via `migrate()`.
-const SCHEMA_SQL: &str = r#"
-CREATE TABLE IF NOT EXISTS gate_routes (
-    id          TEXT PRIMARY KEY,
-    config      JSONB NOT NULL,
-    priority    INTEGER NOT NULL DEFAULT 0,
-    enabled     BOOLEAN NOT NULL DEFAULT true,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS gate_sites (
-    id              TEXT PRIMARY KEY,
-    domains         JSONB NOT NULL DEFAULT '[]',
-    default_auth    TEXT,
-    default_upstream TEXT,
-    config          JSONB NOT NULL DEFAULT '{}',
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS api_keys (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    key_hash    TEXT NOT NULL UNIQUE,
-    client_id   TEXT NOT NULL,
-    role        TEXT NOT NULL DEFAULT 'service_role',
-    principal_type TEXT NOT NULL DEFAULT 'Service',
-    key_prefix  TEXT,
-    scopes      JSONB NOT NULL DEFAULT '[]',
-    active      BOOLEAN NOT NULL DEFAULT true,
-    expires_at  TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'service_role';
-ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS principal_type TEXT NOT NULL DEFAULT 'Service';
-ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_prefix TEXT;
-
-CREATE TABLE IF NOT EXISTS usage_events (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    request_id  TEXT NOT NULL,
-    user_id     TEXT NOT NULL,
-    route_id    TEXT NOT NULL,
-    tokens      BIGINT NOT NULL DEFAULT 0,
-    duration_ms BIGINT NOT NULL DEFAULT 0,
-    metadata    JSONB NOT NULL DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS jwt_signing_keys (
-    id          TEXT PRIMARY KEY,
-    algorithm   TEXT NOT NULL,
-    public_key  TEXT NOT NULL,
-    private_key TEXT NOT NULL,
-    active      BOOLEAN NOT NULL DEFAULT true,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS authz_policies (
-    id            TEXT PRIMARY KEY,
-    policy_text   TEXT NOT NULL,
-    schema_json   JSONB,
-    entities_json JSONB,
-    enabled       BOOLEAN NOT NULL DEFAULT true,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS authz_audit (
-    id          UUID PRIMARY KEY,
-    request_id  TEXT,
-    principal   TEXT NOT NULL,
-    action      TEXT NOT NULL,
-    resource    TEXT NOT NULL,
-    decision    TEXT NOT NULL,
-    reason      TEXT,
-    context     JSONB,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS authz_audit_created_at_idx ON authz_audit (created_at DESC);
-CREATE INDEX IF NOT EXISTS authz_audit_principal_idx ON authz_audit (principal);
-
-CREATE TABLE IF NOT EXISTS oauth_clients (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    client_id      TEXT NOT NULL UNIQUE,
-    secret_hash    TEXT NOT NULL,
-    scopes         JSONB NOT NULL DEFAULT '[]',
-    audience       TEXT,
-    active         BOOLEAN NOT NULL DEFAULT true,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS agent_identities (
-    id             TEXT PRIMARY KEY,
-    kind           TEXT NOT NULL,          -- 'agent' | 'service'
-    status         TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'revoked'
-    label          TEXT,
-    rotated_at     TIMESTAMPTZ,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS agent_identities_status_idx ON agent_identities (status);
-
-CREATE TABLE IF NOT EXISTS cedar_policy_versions (
-    id            SERIAL PRIMARY KEY,
-    policy_id     TEXT NOT NULL REFERENCES authz_policies(id) ON DELETE CASCADE,
-    version_num   INT  NOT NULL,
-    policy_text   TEXT NOT NULL,
-    schema_json   JSONB,
-    entities_json JSONB,
-    written_by    TEXT,
-    written_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (policy_id, version_num)
-);
-
-CREATE INDEX IF NOT EXISTS cedar_policy_versions_policy_id_idx
-    ON cedar_policy_versions (policy_id, version_num DESC);
-"#;
-
 /// SHA-256 of `input`, hex-encoded. Used to store API-key hashes so raw secrets
 /// are never persisted. (Client secrets now use [`SecretHash`] — bcrypt.)
 fn sha256_hex(input: &str) -> String {
@@ -407,13 +287,13 @@ impl Database {
         self.pool.clone()
     }
 
-    /// Apply the DDL schema (idempotent — uses `CREATE TABLE IF NOT EXISTS`).
+    /// Run all pending sqlx migrations from `migrations/`.
     pub async fn migrate(&self) -> Result<()> {
-        sqlx::raw_sql(SCHEMA_SQL)
-            .execute(&self.pool)
+        sqlx::migrate!()
+            .run(&self.pool)
             .await
-            .context("applying schema")?;
-        info!("database schema applied");
+            .context("running database migrations")?;
+        info!("database migrations applied");
         Ok(())
     }
 
@@ -1066,10 +946,18 @@ impl Database {
     }
 
     /// List all authorization policies (enabled and disabled), newest first.
+    /// Includes `written_by` from the latest version row via LEFT JOIN.
     pub async fn list_policies(&self) -> Result<Vec<PolicyRow>> {
         let rows = sqlx::query(
-            "SELECT id, policy_text, schema_json, entities_json, enabled \
-             FROM authz_policies ORDER BY created_at DESC, id ASC",
+            "SELECT p.id, p.policy_text, p.schema_json, p.entities_json, p.enabled, \
+                    v.written_by \
+             FROM authz_policies p \
+             LEFT JOIN LATERAL ( \
+               SELECT written_by FROM cedar_policy_versions \
+               WHERE policy_id = p.id \
+               ORDER BY version_num DESC LIMIT 1 \
+             ) v ON true \
+             ORDER BY p.created_at DESC, p.id ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -1083,10 +971,18 @@ impl Database {
     }
 
     /// Fetch a single authorization policy by id.
+    /// Includes `written_by` from the latest version row via LEFT JOIN.
     pub async fn get_policy(&self, id: &str) -> Result<Option<PolicyRow>> {
         let row = sqlx::query(
-            "SELECT id, policy_text, schema_json, entities_json, enabled \
-             FROM authz_policies WHERE id = $1",
+            "SELECT p.id, p.policy_text, p.schema_json, p.entities_json, p.enabled, \
+                    v.written_by \
+             FROM authz_policies p \
+             LEFT JOIN LATERAL ( \
+               SELECT written_by FROM cedar_policy_versions \
+               WHERE policy_id = p.id \
+               ORDER BY version_num DESC LIMIT 1 \
+             ) v ON true \
+             WHERE p.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1361,6 +1257,8 @@ pub struct PolicyRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entities_json: Option<serde_json::Value>,
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub written_by: Option<String>,
 }
 
 impl PolicyRow {
@@ -1372,6 +1270,7 @@ impl PolicyRow {
             schema_json: r.try_get("schema_json")?,
             entities_json: r.try_get("entities_json")?,
             enabled: r.try_get("enabled")?,
+            written_by: r.try_get("written_by").unwrap_or(None),
         })
     }
 

@@ -12,16 +12,21 @@
   },
   "dependencies": {
     "@know-me/flint-gate": "file:../sdks/typescript",
+    "@prometheus-ags/prometheus-entity-management": "3.0.0-alpha.0",
     "@radix-ui/react-slot": "^1.2.0",
-    "@tanstack/react-query": "^5.74.0",
+    "@tanstack/react-table": "^8.0.0",
+    "@tanstack/react-virtual": "^3.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "diff": "^7.0.0",
+    "immer": "^10.0.0",
     "lucide-react": "^0.487.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.5.0",
     "recharts": "^2.15.2",
-    "tailwind-merge": "^3.2.0"
+    "tailwind-merge": "^3.2.0",
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

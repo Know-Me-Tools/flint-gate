@@ -86,6 +86,7 @@ pub struct SseStreamProcessor {
 struct ApprovalHandle {
     manager: ApprovalManager,
     decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+    ttl_override: Option<std::time::Duration>,
 }
 
 impl SseStreamProcessor {
@@ -120,7 +121,7 @@ impl SseStreamProcessor {
         metadata: serde_json::Map<String, serde_json::Value>,
         theme: Option<serde_json::Value>,
         tool_authz: Option<crate::authz::ToolAuthzContext>,
-        approval_handle: Option<(ApprovalManager, UnboundedSender<(String, ApprovalDecision)>)>,
+        approval_handle: Option<crate::stream::ApprovalHandleParts>,
     ) -> Self {
         let max_event_bytes = config
             .ai
@@ -133,10 +134,12 @@ impl SseStreamProcessor {
             .max_tool_args_bytes
             .unwrap_or(crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES);
 
-        let approval_handle = approval_handle.map(|(manager, decision_tx)| ApprovalHandle {
-            manager,
-            decision_tx,
-        });
+        let approval_handle =
+            approval_handle.map(|(manager, decision_tx, ttl_override)| ApprovalHandle {
+                manager,
+                decision_tx,
+                ttl_override,
+            });
 
         let ag_ui_processor = if config.ai.ag_ui.enabled {
             let mut proc = AgUiProcessor::new(
@@ -146,7 +149,7 @@ impl SseStreamProcessor {
             .with_tool_authz(tool_authz.clone())
             .with_max_tool_args_bytes(max_tool_args_bytes);
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
             }
             Some(proc)
         } else {
@@ -157,7 +160,7 @@ impl SseStreamProcessor {
             let mut proc = A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
                 .with_tool_authz(tool_authz.clone());
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
             }
             Some(proc)
         } else {
@@ -465,6 +468,22 @@ impl SseStreamProcessor {
                 .unwrap_or_default(),
         );
         ids
+    }
+
+    /// Earliest monotonic deadline across all pending approvals in both
+    /// processors, sourced from the processors' own state.
+    pub fn earliest_pending_deadline(&self) -> Option<std::time::Instant> {
+        [
+            self.ag_ui_processor
+                .as_ref()
+                .and_then(|p| p.earliest_pending_deadline()),
+            self.a2ui_processor
+                .as_ref()
+                .and_then(|p| p.earliest_pending_deadline()),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Resolve a pending approval, returning the SSE bytes to forward.
@@ -807,7 +826,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, _tx)),
+            Some((manager, _tx, None)),
         );
 
         let input = br#"data: {"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
@@ -838,7 +857,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -870,7 +889,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -898,7 +917,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -933,7 +952,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -967,7 +986,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -989,5 +1008,175 @@ mod tests {
             "denied AG-UI call must emit RUN_ERROR: {s}"
         );
         assert!(proc.pending_approvals().is_empty());
+    }
+
+    // ── End-to-end no-silent-allow invariant ─────────────────────────────────
+    //
+    // When no ApprovalHandle is configured, a RequireApproval Cedar decision
+    // must deny the call immediately — it must NEVER silently allow it through.
+    // These tests are the authoritative regression guard for the fail-closed
+    // invariant: any future code path that converts a RequireApproval into
+    // Allow without an explicit operator decision is a security regression.
+
+    #[test]
+    fn ag_ui_require_approval_without_handle_is_denied_not_silently_allowed() {
+        // Processor built without an approval handle: None passed as the last arg.
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            ag_ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            None, // ← no approval handle configured
+        );
+
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"c1\",\"toolCallName\":\"x\"}\n\n",
+        )
+        .unwrap();
+        proc.process_chunk(
+            b"data: {\"type\":\"TOOL_CALL_ARGS\",\"toolCallId\":\"c1\",\"delta\":\"{\\\"x\\\":1}\"}\n\n",
+        )
+        .unwrap();
+        let out = proc
+            .process_chunk(b"data: {\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"c1\"}\n\n")
+            .unwrap();
+
+        let s = std::str::from_utf8(&out).unwrap();
+
+        // MUST deny with RUN_ERROR — never emit TOOL_CALL_START (silent allow).
+        assert!(
+            s.contains("RUN_ERROR"),
+            "no-handle RequireApproval must emit RUN_ERROR (fail-closed), got: {s}"
+        );
+        assert!(
+            !s.contains("TOOL_CALL_START"),
+            "no-handle RequireApproval must NOT release the tool call (silent allow): {s}"
+        );
+        // No approval is registered — there is no channel to route a decision to.
+        assert!(
+            proc.pending_approvals().is_empty(),
+            "no-handle path must not register a pending approval"
+        );
+    }
+
+    #[test]
+    fn a2ui_require_approval_without_handle_is_denied_not_silently_allowed() {
+        // Same invariant for the A2UI protocol path.
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            None, // ← no approval handle configured
+        );
+
+        let out = proc
+            .process_chunk(
+                br#"data: {"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+
+"#,
+            )
+            .unwrap();
+
+        let s = std::str::from_utf8(&out).unwrap();
+
+        // MUST deny silently (A2UI denies are event-drops, not RUN_ERROR events).
+        // The key assertion is that the original event is NOT forwarded.
+        assert!(
+            !s.contains("invoke_tool"),
+            "no-handle RequireApproval must NOT forward the A2UI event (silent allow): {s}"
+        );
+        assert!(
+            proc.pending_approvals().is_empty(),
+            "no-handle path must not register a pending approval"
+        );
+    }
+
+    // ── CapExceeded pipeline tests ────────────────────────────────────────────
+
+    #[test]
+    fn pipeline_cap_exceeded_denies_not_panics() {
+        // Build a manager with cap=0 so the very first register call returns CapExceeded.
+        let manager = ApprovalManager::with_cap(0);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = SseStreamProcessor::with_tool_authz_and_approval(
+            a2ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(require_approval_at_end_engine())),
+            Some((manager, tx, None)),
+        );
+
+        let out = proc
+            .process_chunk(
+                br#"data: {"intent":"invoke_tool","tool_name":"danger","arguments":{"x":1}}
+
+"#,
+            )
+            .unwrap();
+
+        let s = std::str::from_utf8(&out).unwrap();
+
+        // A2UI CapExceeded → event silently dropped (fail-closed), no panic.
+        assert!(
+            !s.contains("invoke_tool"),
+            "cap-exceeded CapExceeded must NOT forward the A2UI event: {s}"
+        );
+        assert!(
+            proc.pending_approvals().is_empty(),
+            "cap-exceeded path must not leave a pending approval"
+        );
+    }
+
+    // ── Janitor interval config derivation ────────────────────────────────────
+
+    #[test]
+    fn janitor_interval_config_is_used_when_set() {
+        use crate::config::types::ApprovalConfig;
+
+        let cfg_explicit = ApprovalConfig {
+            janitor_interval_seconds: Some(42),
+            ttl_seconds: Some(300),
+            ..Default::default()
+        };
+        // Explicit value must win over the TTL/2 heuristic.
+        let interval = cfg_explicit.janitor_interval_seconds.unwrap_or_else(|| {
+            cfg_explicit
+                .ttl_seconds
+                .map(|t| (t / 2).max(10).min(300))
+                .unwrap_or(60)
+        });
+        assert_eq!(interval, 42, "explicit janitor_interval_seconds must override TTL heuristic");
+
+        // When no explicit value: derive from TTL/2 (clamped to [10, 300]).
+        let cfg_derived = ApprovalConfig {
+            janitor_interval_seconds: None,
+            ttl_seconds: Some(600),
+            ..Default::default()
+        };
+        let derived = cfg_derived.janitor_interval_seconds.unwrap_or_else(|| {
+            cfg_derived
+                .ttl_seconds
+                .map(|t| (t / 2).max(10).min(300))
+                .unwrap_or(60)
+        });
+        assert_eq!(derived, 300, "TTL=600 → janitor = min(600/2, 300) = 300");
+
+        // No TTL, no explicit → fallback of 60.
+        let cfg_fallback = ApprovalConfig {
+            janitor_interval_seconds: None,
+            ttl_seconds: None,
+            ..Default::default()
+        };
+        let fallback = cfg_fallback.janitor_interval_seconds.unwrap_or_else(|| {
+            cfg_fallback
+                .ttl_seconds
+                .map(|t| (t / 2).max(10).min(300))
+                .unwrap_or(60)
+        });
+        assert_eq!(fallback, 60, "no TTL, no explicit → default 60s");
     }
 }

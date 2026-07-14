@@ -218,6 +218,60 @@ describe.skipIf(!gatewayUrl)("FlintGateAdmin integration", () => {
     }
   });
 
+  // ── Approval expiry (TTL janitor) ─────────────────────────────────────────
+
+  it(
+    "approval expiry: janitor auto-denies and sweeps the pending approval after TTL",
+    async () => {
+      const policyId = uniqueId("integ-expiry-policy");
+      const policyText = [
+        `@require_approval("human review required — expiry test")`,
+        `permit(principal, action, resource == Route::"integ_test_tool");`,
+      ].join("\n");
+
+      const created = await admin.createPolicy({
+        id: policyId,
+        policy_text: policyText,
+        enabled: true,
+      });
+      expect(created.id).toBe(policyId);
+
+      try {
+        // Start a streaming request — the gateway will buffer the TOOL_CALL_START
+        // and create a pending approval.
+        const streamPromise = fetch(`${proxyUrl}/stream-test`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/x-ndjson",
+            authorization: `Bearer ${testJWT()}`,
+          },
+          body: "{}",
+        });
+
+        // Confirm the approval appeared before waiting for expiry.
+        await pollForApproval(admin, 10_000);
+
+        // Wait longer than ttl_seconds (5s) + janitor_interval_seconds (1s).
+        await new Promise((r) => setTimeout(r, 8_000));
+
+        // The janitor should have swept the expired approval.
+        const remaining = await admin.listApprovals();
+        expect(remaining).toHaveLength(0);
+
+        // The stream should have been closed by the auto-deny.
+        const resp = await streamPromise;
+        expect(resp.body).not.toBeNull();
+        await resp.body!.cancel(); // consume / close the now-terminated stream
+      } finally {
+        await admin.deletePolicy(policyId).catch(() => {
+          // best-effort cleanup
+        });
+      }
+    },
+    { timeout: 30_000 },
+  );
+
   // ── Approvals smoke ───────────────────────────────────────────────────────
 
   it("listApprovals returns without error (empty in a fresh fixture)", async () => {

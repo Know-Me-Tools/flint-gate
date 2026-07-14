@@ -13,6 +13,9 @@ server:
   # The docker port mapping "4457:4457" still exposes it to the test host.
   admin_listen: "127.0.0.1:4457"
   allow_insecure_upstream: true
+  # Strict agent governance is the default (true). All test routes must have
+  # an authorize hook — see the stream-test route below.
+  strict_agent_governance: true
   tls:
     enabled: false
 
@@ -52,6 +55,11 @@ sites:
     domains: ["localhost:4456"]
     default_auth: hydra_jwt
     default_upstream: "http://flint-gate:4457/health"
+
+approval:
+  enabled: true
+  ttl_seconds: 5
+  janitor_interval_seconds: 1
 
 routes:
   # ── Streaming approval-flow integration test route ─────────────────────────

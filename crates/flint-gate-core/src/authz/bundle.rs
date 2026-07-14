@@ -9,7 +9,7 @@ use std::str::FromStr;
 use cedar_policy::{Entities, Policy, PolicyId, PolicySet, Schema};
 use tracing::warn;
 
-use super::error::AuthzError;
+use super::error::{AuthzError, PolicyParseError};
 
 /// One authorization policy as loaded from the `authz_policies` table.
 ///
@@ -178,15 +178,24 @@ fn merge_record(
 ) -> Result<(), AuthzError> {
     // Parse this row's policy text as its own set so we can re-id each
     // statement deterministically and merge into the combined set.
-    let parsed = PolicySet::from_str(&record.policy_text)
-        .map_err(|e| AuthzError::PolicyParse(format!("row `{}`: {e}", record.id)))?;
+    let parsed = PolicySet::from_str(&record.policy_text).map_err(|e| {
+        let errors: Vec<PolicyParseError> = e
+            .iter()
+            .map(|pe| PolicyParseError::from_parse_error(&record.policy_text, pe))
+            .collect();
+        AuthzError::PolicyParse(errors)
+    })?;
 
     // Stage the re-id'd policies locally; only commit to `policy_set` once the
     // whole row (policies + schema) has parsed.
     let mut staged: Vec<Policy> = Vec::new();
     for (idx, policy) in parsed.policies().enumerate() {
-        let scoped_id = PolicyId::from_str(&format!("{}#{idx}", record.id))
-            .map_err(|e| AuthzError::PolicyParse(format!("row `{}`: {e}", record.id)))?;
+        let scoped_id = PolicyId::from_str(&format!("{}#{idx}", record.id)).map_err(|e| {
+            AuthzError::PolicyParse(vec![PolicyParseError::without_location(format!(
+                "row `{}`: {e}",
+                record.id
+            ))])
+        })?;
         staged.push(policy.new_id(scoped_id));
     }
 
@@ -208,9 +217,12 @@ fn merge_record(
 
     // Commit — all parsing for this row succeeded.
     for policy in staged {
-        policy_set
-            .add(policy)
-            .map_err(|e| AuthzError::PolicyParse(format!("row `{}`: {e}", record.id)))?;
+        policy_set.add(policy).map_err(|e| {
+            AuthzError::PolicyParse(vec![PolicyParseError::without_location(format!(
+                "row `{}`: {e}",
+                record.id
+            ))])
+        })?;
     }
     if let Some(s) = parsed_schema {
         *schema = Some(s);
@@ -243,7 +255,7 @@ fn parse_schema(value: &serde_json::Value) -> Result<Schema, AuthzError> {
         serde_json::Value::String(src) => {
             Schema::from_str(src).map_err(|e| AuthzError::SchemaParse(e.to_string()))
         }
-        // Cedar JSON schema object.
+        // Cedar JSON schema object — errors don't carry source locations.
         other => Schema::from_json_value(other.clone())
             .map_err(|e| AuthzError::SchemaParse(e.to_string())),
     }

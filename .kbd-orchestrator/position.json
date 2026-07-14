@@ -1,24 +1,18 @@
 {
   "schemaVersion": "1",
-  "updatedAt": "2026-07-06T00:00:00Z",
+  "updatedAt": "2026-07-09T11:07:56Z",
   "cursor": [
-    "agent-gateway-budget-and-policy-operability"
+    "cedar-policy-versioning-and-rollback"
   ],
   "root": {
     "type": "phase",
-    "id": "agent-gateway-hardening-and-exposure",
-    "status": "executing",
+    "id": "cedar-policy-versioning-and-rollback",
+    "status": "execute_in_progress",
     "progress": {
-      "done": 4,
+      "done": 3,
       "total": 4
     },
     "children": [],
     "annotations": []
-  },
-  "stage": "assess_pending",
-  "nextCommand": "/kbd-assess",
-  "progress": {
-    "done": 0,
-    "total": 0
   }
 }

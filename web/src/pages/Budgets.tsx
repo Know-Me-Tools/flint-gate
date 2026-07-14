@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useRoutes } from '@/hooks/useAdmin';
 import type { DbRoute } from '@/api/types';
+import { ReadOnlyBanner } from '@/components/ReadOnlyBanner';
 
 interface BudgetHook {
   route: DbRoute;
@@ -35,6 +36,7 @@ export default function Budgets() {
 
   return (
     <div className="space-y-6">
+      <ReadOnlyBanner />
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Token Budgets</h1>
         <p className="text-muted-foreground">Max-token-budget hooks across routes.</p>

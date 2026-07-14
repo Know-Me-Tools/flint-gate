@@ -131,6 +131,67 @@ export interface RawFrame {
 }
 
 // ---------------------------------------------------------------------------
+// Admin API — policies
+// ---------------------------------------------------------------------------
+
+/** A Cedar authorization policy stored in Flint Gate. */
+export interface PolicyRow {
+  readonly id: string;
+  readonly policy_text: string;
+  readonly schema_json?: Record<string, unknown> | null;
+  readonly entities_json?: Record<string, unknown> | null;
+  readonly enabled: boolean;
+  /** JWT `sub` of the operator who last modified this policy. */
+  readonly written_by?: string | null;
+}
+
+/** A single version snapshot in a policy's history. */
+export interface PolicyVersionRow {
+  readonly id: string;
+  readonly policy_id: string;
+  readonly version_num: number;
+  readonly policy_text: string;
+  readonly schema_json?: Record<string, unknown> | null;
+  readonly entities_json?: Record<string, unknown> | null;
+  readonly written_by?: string | null;
+  readonly written_at: string;
+}
+
+/** Response from GET /policies/{id}/history. */
+export interface PolicyHistoryResponse {
+  readonly policy_id: string;
+  /** Server-side row count hint. May be null when count is unavailable. */
+  readonly total_hint: number | null;
+  readonly versions: readonly PolicyVersionRow[];
+}
+
+/** Response from POST /policies/{id}/rollback. */
+export interface RollbackResponse {
+  readonly status: string;
+  readonly policy_id: string;
+  readonly from_version: number;
+  readonly to_version: number;
+}
+
+/** Input for creating or updating a Cedar policy. */
+export interface UpsertPolicyInput {
+  /** Policy id. Required on create; matched against path param on update. */
+  readonly id: string;
+  readonly policy_text: string;
+  readonly schema_json?: Record<string, unknown> | null;
+  readonly entities_json?: Record<string, unknown> | null;
+  readonly enabled?: boolean;
+}
+
+/** Response from POST /policies or PUT /policies/{id}. */
+export interface UpsertPolicyResponse {
+  readonly status: string;
+  readonly id: string;
+  readonly reloaded?: boolean;
+  readonly warnings?: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // Admin API — routes
 // ---------------------------------------------------------------------------
 
@@ -238,6 +299,34 @@ export interface CreateApiKeyResponse {
   /** Plaintext key — store this immediately; the server only keeps the hash. */
   readonly key: ApiKeyValue;
 }
+
+// ---------------------------------------------------------------------------
+// Admin API — approvals (human-in-the-loop tool-call flow)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only view of a pending human-in-the-loop approval returned by
+ * GET /approvals and GET /approvals/{id}.
+ */
+export interface ApprovalStatus {
+  /** Opaque approval request id. */
+  readonly approvalId: string;
+  /** Principal (agent / user) that triggered the tool call. */
+  readonly principalId: string;
+  /** Action string identifying the tool call (e.g. "tool:read_file"). */
+  readonly action: string;
+  /** Resource id the action targets. */
+  readonly resourceId: string;
+  /** Optional human-readable reason the call was flagged for approval. */
+  readonly reason?: string;
+  /** ISO-8601 timestamp after which the approval request expires. */
+  readonly expiresAt: string;
+  /** True when the request has already expired (included for polling convenience). */
+  readonly expired: boolean;
+}
+
+/** Decision value for POST /approvals/{id}/decision. */
+export type ApprovalDecision = "approve" | "deny";
 
 // ---------------------------------------------------------------------------
 // Admin API — health

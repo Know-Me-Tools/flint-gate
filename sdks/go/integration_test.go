@@ -368,6 +368,106 @@ func TestIntegration_PolicyCRUD(t *testing.T) {
 // Approval smoke test
 // ---------------------------------------------------------------------------
 
+// TestIntegration_ApprovalExpiry verifies the TTL janitor path:
+//
+//  1. Create a Cedar @require_approval policy.
+//  2. Send a streaming request → the buffered tool call creates an approval.
+//  3. Wait longer than the approval TTL (config.test.yaml: ttl_seconds = 5).
+//  4. Assert ListApprovals returns empty — janitor swept the expired entry.
+//  5. Assert the streaming response body is closed (stream terminated).
+//
+// This test requires the test fixture to be started with config.test.yaml
+// (ttl_seconds: 5, janitor_interval_seconds: 1) so TTL sweeps happen quickly.
+func TestIntegration_ApprovalExpiry(t *testing.T) {
+	ctx := context.Background()
+	c := integrationClient(t)
+	proxyBase := integrationProxyURL()
+
+	// ── 1. Seed the @require_approval Cedar policy ────────────────────────────
+	policyID := uniqueID("integ-expiry-policy")
+	policyText := `@require_approval("human review required — expiry test")
+permit(principal, action, resource == Route::"integ_test_tool");`
+
+	created, err := c.CreatePolicy(ctx, flintgate.UpsertPolicyInput{
+		ID:         policyID,
+		PolicyText: policyText,
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("CreatePolicy: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := c.DeletePolicy(cleanCtx, created.ID); err != nil {
+			t.Logf("cleanup DeletePolicy %q: %v", created.ID, err)
+		}
+	})
+
+	// ── 2. Send streaming request — approval is created by the gateway ────────
+	reqCtx, reqCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer reqCancel()
+
+	req, err := http.NewRequestWithContext(
+		reqCtx,
+		http.MethodPost,
+		proxyBase+"/stream-test",
+		bytes.NewBufferString("{}"),
+	)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("Authorization", "Bearer "+testJWT(t))
+
+	// Start reading the response body in the background so we can detect
+	// when the stream is terminated by the janitor.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy POST /stream-test: %v", err)
+	}
+
+	bodyDone := make(chan []string, 1)
+	go func() {
+		var lines []string
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line != "" {
+				lines = append(lines, line)
+			}
+		}
+		resp.Body.Close()
+		bodyDone <- lines
+	}()
+
+	// ── 3. Confirm the approval appeared before waiting for expiry ────────────
+	_ = pollForApproval(ctx, t, c, 10*time.Second)
+	t.Log("approval appeared — waiting for TTL expiry (config.test.yaml: ttl_seconds=5)")
+
+	// ── 4. Wait longer than the TTL + janitor interval (5s TTL + 1s sweep) ────
+	time.Sleep(8 * time.Second)
+
+	listCtx, listCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer listCancel()
+	remaining, err := c.ListApprovals(listCtx)
+	if err != nil {
+		t.Fatalf("ListApprovals after TTL: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 pending approvals after TTL expiry, got %d", len(remaining))
+	}
+
+	// ── 5. Assert the stream terminated after the approval was auto-denied ─────
+	select {
+	case lines := <-bodyDone:
+		t.Logf("stream closed with %d lines (expected — approval auto-denied by janitor)", len(lines))
+	case <-time.After(5 * time.Second):
+		t.Error("stream did not close within 5s after approval TTL expiry")
+	}
+}
+
 // TestIntegration_ApprovalSmoke verifies the approvals admin surface is
 // reachable. The test fixture does not inject in-flight requests, so we
 // cannot create a real approval — we only assert that ListApprovals returns

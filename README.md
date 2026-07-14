@@ -850,6 +850,51 @@ stage-appropriate because a running process cannot refuse-to-start:
   set is *not* applied; the gateway keeps serving the previous, governed routes and
   logs the rejection loudly). It never terminates a live process.
 
+### Human-in-the-loop approval (`RequireApproval`)
+
+A Cedar policy can mark a tool call for **human approval** with the
+`@require_approval("reason")` annotation on a `permit`. The end-to-end flow is:
+
+```
+1. Cedar evaluates to RequireApproval
+2. Gateway PAUSES the tool call — no events forwarded to the client yet
+3. Gateway emits gate:approval_request / GATE_APPROVAL_REQUEST on the stream
+   (approval_id, principal, action, resource, reason, expires_at)
+4. Operator sees the request in the Approvals UI or polls GET :4457/approvals
+5a. APPROVE → POST :4457/approvals/{id}/decision {"decision":"approve"}
+    → held call is released and streamed to the client; stream continues
+5b. DENY   → POST :4457/approvals/{id}/decision {"decision":"deny"}
+    → held call is dropped; a deny / RUN_ERROR event is emitted; stream ends
+6. Timeout (TTL) → auto-deny (fail-closed; same outcome as explicit deny)
+```
+
+**No-handle path (fail-closed):** when `approval.enabled: false` or no approval
+channel is configured for the route, a `RequireApproval` decision is denied
+**immediately** — it never pauses, never emits a request event, and never
+silently allows the call through.
+
+When such a call is evaluated on a streaming route, the gateway **pauses** it,
+emits an approval-request event on the stream (AG-UI `GATE_APPROVAL_REQUEST` /
+A2UI `gate:approval_request`), and resumes it only when a human **approves**
+(release the held call) or **denies** it (drop the call) via the admin API / UI.
+
+The pause is **fail-closed at every edge**:
+
+- **Undecided → auto-deny.** A pending approval that reaches its TTL with no
+  decision is **denied** (the held call is dropped with a deny event and the stream
+  resumes to a clean termination) — a tool call never hangs forever waiting on a
+  human. The TTL defaults to 300s and is set by **`approval.ttl_seconds`**.
+- **Disabled → deny.** With **`approval.enabled: false`**, a `RequireApproval`
+  decision is denied outright (never paused) — an operator who cannot service
+  approvals denies rather than hangs.
+- **Reaped.** A background per-replica janitor purges expired pending approvals so
+  ended streams' entries do not accumulate.
+
+**Single-replica constraint (this release):** the pending-approval table is
+in-memory **per replica**, so a decision must reach the replica holding the paused
+stream. In a multi-replica deployment, list/decide reflect the local replica only;
+cross-replica approval routing (a shared store + sticky routing) is a follow-up.
+
 ### Lifecycle (Admin API)
 
 ```bash
@@ -863,6 +908,55 @@ Every issue / rotate / revoke is written to the authz **audit trail**. **Revocat
 is fail-closed**: once revoked, the identity is denied on its **next authorize** —
 the check runs per request and denies on a lookup error rather than letting a
 revoked agent through. Manage identities from the **Agents** tab in the web UI.
+
+### Pending Approvals (Admin API + UI)
+
+When a Cedar policy evaluates to `RequireApproval`, the tool call is **paused** and
+an approval request is held in memory on the instance that received the request. The
+operator reviews and decides from the **Approvals** tab in the web UI or directly
+via the Admin API:
+
+```bash
+GET    :4457/approvals              # list all non-expired pending requests
+GET    :4457/approvals/{id}         # single pending request by id (404 if absent/resolved)
+POST   :4457/approvals/{id}/decision  # { "decision": "approve" | "deny" }
+                                    # → 200 OK | 404 not found | 410 expired (fail-closed)
+```
+
+Each request carries: `approval_id`, `principal_id`, `action` (tool name), `resource_id`,
+optional `reason` (from the policy annotation), and `expires_at`. Requests are filtered
+server-side — expired entries are never returned by `GET /approvals`.
+
+**Fail-closed**: an undecided request auto-denies when its deadline elapses (default
+300 s). The paused stream task's `select!` loop fires the deny arm at the earliest
+pending deadline, independent of the shared approval table (no janitor-race window).
+
+> **Single-replica constraint (current release)**: pending approvals live in-process
+> memory on the replica that received the original streaming request. A `POST
+> /approvals/{id}/decision` routed to a *different* replica returns `404 Not Found`
+> because that replica has no record of the request.
+
+#### Multi-replica deployment
+
+To run flint-gate at scale you must ensure approval decisions reach the correct replica:
+
+| Strategy | How |
+|---|---|
+| **Sticky sessions (recommended)** | Configure your load balancer / service mesh to pin the browser session — or the `POST .../decision` call — to the same replica that holds the paused stream. Most ingress controllers support cookie-based or header-based stickiness. |
+| **Shared external store (roadmap)** | Replace the in-process `DashMap` with a Redis-backed or Postgres-backed store so any replica can resolve any pending approval. Tracked as Option 3a/3b in the project roadmap. |
+
+**Startup hint**: when `admin_listen` is bound to a non-loopback address and the `REPLICA_COUNT`
+environment variable is set to a value greater than 1, flint-gate emits a structured `WARN` log
+at startup naming the constraint and suggesting sticky routing. Set `REPLICA_COUNT` in your
+deployment manifest so the hint fires at the right time:
+
+```yaml
+env:
+  - name: REPLICA_COUNT
+    value: "3"
+```
+
+The web UI's Approvals page also displays this note when the admin API is reachable from the browser.
 
 ### Hydra-delegate mode: tokens carry Hydra's claims (gateway relays, never rewrites)
 

@@ -3,7 +3,7 @@
 //! Configuration priority (highest → lowest):
 //!   CLI flags  >  environment variables  >  config.yaml
 
-use flint_gate_core::admin::AdminState;
+use flint_gate_core::admin::{AdminEvent, AdminState};
 use flint_gate_core::auth::{build_authenticators, JwtMinter, SharedJwtMinter};
 use flint_gate_core::authz::AuthzEngine;
 use flint_gate_core::cache::{start_cache_invalidation_listener, GateCache};
@@ -123,6 +123,45 @@ async fn shutdown_signal() {
         tokio::signal::ctrl_c().await.ok();
         info!("received SIGINT");
     }
+}
+
+// ── TLS config guard ──────────────────────────────────────────────────────────
+
+/// Returns `Ok(())` when the TLS config is coherent, or `Err` when `fail_open`
+/// is false and the config is misconfigured (no cert/key paths supplied).
+/// The actual cert load failure path is handled inline in the startup block;
+/// this covers the "TLS enabled but paths not set" case at config-validation time.
+fn check_tls_config(tls: &flint_gate_core::config::types::TlsConfig) -> Result<()> {
+    if tls.enabled && (tls.cert_path.is_none() || tls.key_path.is_none()) && !tls.fail_open {
+        anyhow::bail!(
+            "TLS is enabled but tls.cert_path/tls.key_path are not configured \
+             and tls.fail_open is false — refusing to start"
+        );
+    }
+    Ok(())
+}
+
+/// Returns `true` when flint-gate is running in Kubernetes without admin_auth —
+/// the condition that triggers the unauthenticated-admin-in-k8s warning.
+fn k8s_admin_unprotected(admin_auth_configured: bool) -> bool {
+    std::env::var("KUBERNETES_SERVICE_HOST").is_ok() && !admin_auth_configured
+}
+
+/// Returns the replica count from `REPLICA_COUNT` env var if set and parseable,
+/// and whether it exceeds 1 — the condition that triggers the sticky-session warning.
+fn multi_replica_count() -> Option<usize> {
+    std::env::var("REPLICA_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+}
+
+/// Returns `true` when rate limiting is enabled without Redis in a Kubernetes
+/// environment — the condition where per-replica counters diverge and agents
+/// can exceed the configured budget by issuing requests across replicas.
+fn rate_limit_needs_redis_warning(rate_limit_enabled: bool, redis_url_configured: bool) -> bool {
+    rate_limit_enabled
+        && !redis_url_configured
+        && std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -316,6 +355,24 @@ async fn main() -> Result<()> {
         None => Arc::new(AuthzEngine::empty()),
     };
 
+    // Fail-closed startup gate: when require_policies_at_startup is true and
+    // the loaded engine carries zero policies, refuse to start. This is only
+    // checked when a DB is configured (no-DB deployments load from config sugar
+    // alone; they should set sugar policies, not this flag).
+    if initial_config.server.require_policies_at_startup && db.is_some() {
+        let policy_count = authz.snapshot().policies().policies().count();
+        if policy_count == 0 {
+            tracing::error!(
+                "require_policies_at_startup is true but no policies are loaded — refusing to start"
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // Admin event broadcast channel — shared between the cache invalidation
+    // listener (emitter) and the admin SSE endpoint (subscriber).
+    let (admin_event_tx, _admin_event_rx) = tokio::sync::broadcast::channel::<AdminEvent>(256);
+
     if let Some(ref d) = db {
         let ch = initial_config.cache.invalidation_channel.clone();
         // When override_yaml is enabled, pass the router + config + DB so the
@@ -331,8 +388,15 @@ async fn main() -> Result<()> {
         };
         // Thread the authz engine + DB so a "policies" NOTIFY reloads it.
         let authz_ctx = Some((Arc::clone(&authz), Arc::clone(d)));
-        start_cache_invalidation_listener(d.pool(), Arc::clone(&cache), ch, router_ctx, authz_ctx)
-            .await;
+        start_cache_invalidation_listener(
+            d.pool(),
+            Arc::clone(&cache),
+            ch,
+            router_ctx,
+            authz_ctx,
+            Some(admin_event_tx.clone()),
+        )
+        .await;
     }
 
     // 10. Build lookup registry
@@ -352,8 +416,54 @@ async fn main() -> Result<()> {
     #[cfg(feature = "redis-l2")]
     let oauth_rate_limiter = rate_limiter.clone();
 
-    // 10c. Human-in-the-loop approval routing table (in-process default).
-    let approval_manager = flint_gate_core::approval::ApprovalManager::new();
+    // 10c. Human-in-the-loop approval routing table (in-process, per-replica).
+    //      Wire the configured capacity cap so register() fails-closed on overflow.
+    let approval_manager = {
+        let cap = initial_config.approval.max_pending;
+        match cap {
+            Some(n) => {
+                info!(cap = n, "approval manager: capacity cap enabled");
+                flint_gate_core::approval::ApprovalManager::with_cap(n)
+            }
+            None => {
+                warn!("approval manager: no capacity cap configured (unbounded); set approval.max_pending for production");
+                flint_gate_core::approval::ApprovalManager::new()
+            }
+        }
+    };
+
+    // 10d. Approval janitor: periodically reap expired pending approvals so
+    // entries whose streams have already ended do not accumulate in the DashMap.
+    // (The paused-stream task auto-denies an undecided approval on its own TTL —
+    // this is hygiene for the already-ended case.) Per-replica, like the manager.
+    {
+        let janitor_manager = approval_manager.clone();
+        let janitor_interval = {
+            // Use explicit config value when set; otherwise derive from TTL / 2
+            // (clamped to [10, 300]), with 60 s as the final fallback.
+            if let Some(explicit) = initial_config.approval.janitor_interval_seconds {
+                explicit
+            } else {
+                initial_config
+                    .approval
+                    .ttl_seconds
+                    .map(|t| (t / 2).clamp(10, 300))
+                    .unwrap_or(60)
+            }
+        };
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(janitor_interval));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let reaped = janitor_manager.purge_expired();
+                if reaped > 0 {
+                    tracing::debug!(reaped, "approval janitor purged expired pending approvals");
+                }
+            }
+        });
+    }
 
     // 11. Assemble AppState
     let app_state = Arc::new(AppState {
@@ -634,6 +744,14 @@ async fn main() -> Result<()> {
     // Redis window counters; this only clips bursts.
     let rate_cfg = &initial_config.server.rate_limit;
     if rate_cfg.enabled {
+        let redis_configured = initial_config.cache.l2.redis_url.is_some();
+        if rate_limit_needs_redis_warning(true, redis_configured) {
+            warn!(
+                "rate limiting enabled without Redis in a Kubernetes environment \
+                 — per-replica counters will not be shared; configure \
+                 cache.l2.redis_url for correct multi-replica behavior"
+            );
+        }
         match flint_gate_core::ratelimit::build_governor_layer(rate_cfg.per_second, rate_cfg.burst)
         {
             Some(layer) => {
@@ -677,7 +795,15 @@ async fn main() -> Result<()> {
                         })
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to load TLS cert/key — falling back to plain TCP");
+                        if !tls_cfg.fail_open {
+                            anyhow::bail!(
+                                "failed to load TLS cert/key and tls.fail_open is false: {e}"
+                            );
+                        }
+                        warn!(
+                            error = %e,
+                            "WARN: TLS fail-open enabled — falling back to plain TCP despite cert/key load failure"
+                        );
                         let listener = tokio::net::TcpListener::bind(&proxy_listen)
                             .await
                             .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
@@ -696,6 +822,12 @@ async fn main() -> Result<()> {
                 }
             }
             _ => {
+                if !tls_cfg.fail_open {
+                    anyhow::bail!(
+                        "TLS is enabled but tls.cert_path/tls.key_path are not configured, \
+                         and tls.fail_open is false"
+                    );
+                }
                 warn!("TLS enabled but cert_path/key_path not configured — using plain TCP");
                 let listener = tokio::net::TcpListener::bind(&proxy_listen)
                     .await
@@ -735,6 +867,7 @@ async fn main() -> Result<()> {
         config: Arc::clone(&shared_config),
         authz: Arc::clone(&authz),
         approval_manager: approval_manager.clone(),
+        admin_events: Some(admin_event_tx.clone()),
     };
 
     // Admin-auth posture: enforce when configured; refuse to start if a
@@ -773,8 +906,102 @@ async fn main() -> Result<()> {
         }
     };
 
-    let admin_app = flint_gate_core::admin::admin_router_with_auth(admin_state, admin_authenticator)
-        .layer(TraceLayer::new_for_http());
+    // Kubernetes admin-exposure guard: when running inside K8s and admin_auth
+    // is not configured, the admin API is reachable cluster-wide via the Service
+    // (before NetworkPolicy is applied) or via `kubectl port-forward`. Warn the
+    // operator to set server.admin_auth or apply k8s/network-policy.yaml.
+    if k8s_admin_unprotected(initial_config.server.admin_auth.is_some()) {
+        warn!(
+            admin_listen = %admin_listen,
+            "running in Kubernetes with no server.admin_auth configured. \
+             The admin API (port 4457) is unauthenticated. Apply k8s/network-policy.yaml \
+             to deny cluster-wide ingress to port 4457, or set server.admin_auth to \
+             require authentication."
+        );
+    }
+
+    // Derive once: is the admin bind exposed beyond localhost?
+    let admin_is_non_loopback = !{
+        // Mirror of the private listen_is_loopback() helper in config::types.
+        let host = if let Some(rest) = admin_listen.strip_prefix('[') {
+            rest.split_once(']').map(|(h, _)| h).unwrap_or("")
+        } else {
+            admin_listen.rsplit_once(':').map(|(h, _)| h).unwrap_or(admin_listen.as_str())
+        };
+        host.eq_ignore_ascii_case("localhost")
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host == "0:0:0:0:0:0:0:1"
+    };
+
+    // Multi-replica approval-store warning: the ApprovalManager is in-process
+    // (per-replica). A decision on the wrong replica returns 404, making
+    // approval requests appear permanently stuck. Mitigation: apply
+    // k8s/service-admin.yaml which sets sessionAffinity: ClientIP.
+    if admin_is_non_loopback {
+        let replica_count = multi_replica_count();
+        if replica_count.map(|n| n > 1).unwrap_or(false) {
+            warn!(
+                admin_listen = %admin_listen,
+                replica_count = replica_count.unwrap_or(0),
+                "MULTI-REPLICA WARNING: approval store is in-process PER REPLICA. \
+                 ~50% of approval decisions will land on the wrong replica and return 404. \
+                 REQUIRED MITIGATION: apply k8s/service-admin.yaml (sessionAffinity: ClientIP) \
+                 to pin each admin client to one replica. \
+                 KNOWN LIMITATION: sticky session is lost on pod restart — any pending \
+                 approval stream on the restarted pod will be abandoned."
+            );
+        } else {
+            warn!(
+                admin_listen = %admin_listen,
+                "admin API is bound to a non-loopback address with an in-process approval store. \
+                 Approval decisions will fail silently if you scale beyond one replica. \
+                 Set REPLICA_COUNT env var and apply k8s/service-admin.yaml \
+                 (sessionAffinity: ClientIP) before scaling."
+            );
+        }
+    }
+
+    // CORS warning: the admin router has no CORS config. When the bind is
+    // non-loopback, a browser-based operator dashboard hosted on a different
+    // origin will hit CORS preflight failures unless the deployment adds a
+    // reverse-proxy CORS header or the admin UI and admin API share an origin.
+    // The `server.admin_cors` config field is future work; emit an advisory
+    // warn now so operators know to handle it at the network layer.
+    if admin_is_non_loopback {
+        warn!(
+            admin_listen = %admin_listen,
+            "admin API has no CORS configuration. Browser-based dashboards on a \
+             different origin will fail preflight. Add `Access-Control-Allow-Origin` \
+             headers at your reverse proxy, or ensure the admin UI is served from \
+             the same origin as the admin API."
+        );
+    }
+
+    // Admin per-replica rate-limit (optional; disabled on loopback-dev by default).
+    let admin_rate_layer = initial_config.server.admin_rate_limit.as_ref().and_then(|rl| {
+        if !rl.enabled {
+            return None;
+        }
+        match flint_gate_core::ratelimit::build_governor_layer(rl.per_second, rl.burst) {
+            Some(layer) => {
+                info!(
+                    per_second = rl.per_second,
+                    burst = rl.burst,
+                    "admin in-process rate limiter enabled"
+                );
+                Some(layer)
+            }
+            None => {
+                warn!("admin_rate_limit enabled but config was degenerate — limiter not applied");
+                None
+            }
+        }
+    });
+
+    let admin_app =
+        flint_gate_core::admin::admin_router_with_auth(admin_state, admin_authenticator, admin_rate_layer)
+            .layer(TraceLayer::new_for_http());
     let admin_listener = tokio::net::TcpListener::bind(&admin_listen)
         .await
         .with_context(|| format!("binding admin server to {admin_listen}"))?;
@@ -924,6 +1151,10 @@ fn build_oauth_routes(
 mod tests {
     use super::*;
     use flint_gate_core::config::types::{DatabaseConfig, JwtConfig, ServerConfig};
+    use std::sync::Mutex;
+
+    // Env-var-touching tests must not run concurrently — process env is global state.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     fn base_config() -> GateConfig {
         GateConfig {
@@ -933,9 +1164,11 @@ mod tests {
                 tls: Default::default(),
                 shutdown_timeout_secs: 30,
                 rate_limit: Default::default(),
+                admin_rate_limit: None,
                 admin_auth: None,
                 allow_insecure_upstream: false,
                 strict_agent_governance: false,
+                require_policies_at_startup: false,
             },
             database: DatabaseConfig {
                 url: "postgres://original".to_string(),
@@ -983,5 +1216,182 @@ mod tests {
         let cfg = apply_overrides(base_config(), &cli(None, None, None));
         assert_eq!(cfg.server.listen, "0.0.0.0:4456");
         assert_eq!(cfg.database.url, "postgres://original");
+    }
+
+    // ── TLS fail_open guard tests ─────────────────────────────────────────────
+
+    #[test]
+    fn tls_missing_paths_fail_open_false_errors() {
+        use flint_gate_core::config::types::TlsConfig;
+        let tls = TlsConfig {
+            enabled: true,
+            cert_path: None,
+            key_path: None,
+            fail_open: false,
+        };
+        let result = check_tls_config(&tls);
+        assert!(result.is_err(), "expected error when fail_open=false and paths missing");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("tls.fail_open is false"),
+            "error message should mention fail_open: {msg}"
+        );
+    }
+
+    #[test]
+    fn tls_missing_paths_fail_open_true_succeeds() {
+        use flint_gate_core::config::types::TlsConfig;
+        let tls = TlsConfig {
+            enabled: true,
+            cert_path: None,
+            key_path: None,
+            fail_open: true,
+        };
+        assert!(
+            check_tls_config(&tls).is_ok(),
+            "fail_open=true should allow missing paths"
+        );
+    }
+
+    #[test]
+    fn tls_disabled_always_succeeds() {
+        use flint_gate_core::config::types::TlsConfig;
+        let tls = TlsConfig {
+            enabled: false,
+            cert_path: None,
+            key_path: None,
+            fail_open: false,
+        };
+        assert!(check_tls_config(&tls).is_ok());
+    }
+
+    #[test]
+    fn tls_enabled_with_paths_succeeds() {
+        use flint_gate_core::config::types::TlsConfig;
+        let tls = TlsConfig {
+            enabled: true,
+            cert_path: Some("/etc/cert.pem".to_string()),
+            key_path: Some("/etc/key.pem".to_string()),
+            fail_open: false,
+        };
+        assert!(check_tls_config(&tls).is_ok());
+    }
+
+    // ── K8s admin-exposure guard tests ───────────────────────────────────────
+
+    #[test]
+    fn k8s_unprotected_when_in_k8s_and_no_auth() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("KUBERNETES_SERVICE_HOST", "10.96.0.1");
+        let result = k8s_admin_unprotected(false);
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        assert!(result, "should warn when in K8s without admin_auth");
+    }
+
+    #[test]
+    fn k8s_protected_when_auth_configured() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("KUBERNETES_SERVICE_HOST", "10.96.0.1");
+        let result = k8s_admin_unprotected(true);
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        assert!(!result, "should not warn when admin_auth is configured");
+    }
+
+    #[test]
+    fn k8s_not_in_k8s_no_warning() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        assert!(
+            !k8s_admin_unprotected(false),
+            "should not warn when not in K8s"
+        );
+    }
+
+    // ── Multi-replica sticky-session warning tests ────────────────────────────
+
+    #[test]
+    fn multi_replica_count_returns_some_when_set() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("REPLICA_COUNT", "2");
+        let count = multi_replica_count();
+        std::env::remove_var("REPLICA_COUNT");
+        assert_eq!(count, Some(2), "should parse REPLICA_COUNT=2");
+    }
+
+    #[test]
+    fn multi_replica_count_returns_none_when_unset() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("REPLICA_COUNT");
+        assert_eq!(multi_replica_count(), None);
+    }
+
+    #[test]
+    fn multi_replica_count_returns_none_for_invalid() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("REPLICA_COUNT", "not-a-number");
+        let count = multi_replica_count();
+        std::env::remove_var("REPLICA_COUNT");
+        assert_eq!(count, None, "invalid REPLICA_COUNT should parse as None");
+    }
+
+    #[test]
+    fn multi_replica_triggers_warning_when_above_one() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("REPLICA_COUNT", "3");
+        let count = multi_replica_count();
+        std::env::remove_var("REPLICA_COUNT");
+        assert!(
+            count.map(|n| n > 1).unwrap_or(false),
+            "REPLICA_COUNT=3 should trigger multi-replica warning"
+        );
+    }
+
+    #[test]
+    fn single_replica_does_not_trigger_warning() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("REPLICA_COUNT", "1");
+        let count = multi_replica_count();
+        std::env::remove_var("REPLICA_COUNT");
+        assert!(
+            !count.map(|n| n > 1).unwrap_or(false),
+            "REPLICA_COUNT=1 should not trigger multi-replica warning"
+        );
+    }
+
+    // ── Rate-limit multi-replica Redis warning tests ──────────────────────────
+
+    #[test]
+    fn rate_limit_warning_when_enabled_no_redis_in_k8s() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("KUBERNETES_SERVICE_HOST", "10.96.0.1");
+        let result = rate_limit_needs_redis_warning(true, false);
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        assert!(result, "should warn when rate limiting enabled, no Redis, in K8s");
+    }
+
+    #[test]
+    fn rate_limit_no_warning_when_redis_configured() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("KUBERNETES_SERVICE_HOST", "10.96.0.1");
+        let result = rate_limit_needs_redis_warning(true, true);
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        assert!(!result, "should not warn when Redis is configured");
+    }
+
+    #[test]
+    fn rate_limit_no_warning_when_not_in_k8s() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        let result = rate_limit_needs_redis_warning(true, false);
+        assert!(!result, "should not warn when not in Kubernetes");
+    }
+
+    #[test]
+    fn rate_limit_no_warning_when_rate_limiting_disabled() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("KUBERNETES_SERVICE_HOST", "10.96.0.1");
+        let result = rate_limit_needs_redis_warning(false, false);
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        assert!(!result, "should not warn when rate limiting is disabled");
     }
 }

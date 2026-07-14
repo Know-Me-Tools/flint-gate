@@ -11,18 +11,30 @@ importers:
       '@know-me/flint-gate':
         specifier: file:../sdks/typescript
         version: file:../sdks/typescript
+      '@prometheus-ags/prometheus-entity-management':
+        specifier: 3.0.0-alpha.0
+        version: 3.0.0-alpha.0(@tanstack/react-table@8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@radix-ui/react-slot':
         specifier: ^1.2.0
         version: 1.3.0(@types/react@19.2.17)(react@19.2.7)
-      '@tanstack/react-query':
-        specifier: ^5.74.0
-        version: 5.101.2(react@19.2.7)
+      '@tanstack/react-table':
+        specifier: ^8.0.0
+        version: 8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@tanstack/react-virtual':
+        specifier: ^3.0.0
+        version: 3.14.5(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      diff:
+        specifier: ^7.0.0
+        version: 7.0.0
+      immer:
+        specifier: ^10.0.0
+        version: 10.2.0
       lucide-react:
         specifier: ^0.487.0
         version: 0.487.0(react@19.2.7)
@@ -41,6 +53,9 @@ importers:
       tailwind-merge:
         specifier: ^3.2.0
         version: 3.6.0
+      zustand:
+        specifier: ^5.0.0
+        version: 5.0.14(@types/react@19.2.17)(immer@10.2.0)(react@19.2.7)
     devDependencies:
       '@playwright/test':
         specifier: ^1.61.1
@@ -340,6 +355,39 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  '@prometheus-ags/entity-graph-core@3.0.0-alpha.0':
+    resolution: {integrity: sha512-lmtfHykvxuHCQVnzIQ7VuacEzGb5AA9DoH9YGoIhc5lngNcPK6lebuBISRs9HdDyY0ytUIw6NSONr+ZyAoP4NA==}
+    peerDependencies:
+      '@ag-ui/core': '>=0.0.30'
+      '@tauri-apps/plugin-sql': '>=2.0.0'
+      loro-crdt: '>=1.0.0'
+    peerDependenciesMeta:
+      '@ag-ui/core':
+        optional: true
+      '@tauri-apps/plugin-sql':
+        optional: true
+      loro-crdt:
+        optional: true
+
+  '@prometheus-ags/prometheus-entity-management@3.0.0-alpha.0':
+    resolution: {integrity: sha512-Ph7XAaO5sNsTKn0tNZV1OBqR0rtugyZQlY+gPFWReAasVS77NoYG42H2Op6zysbsOTF5MsqpRuKWrWCErHWbtg==}
+    peerDependencies:
+      '@ag-ui/core': '>=0.0.30'
+      '@tanstack/react-table': '>=8.0.0'
+      '@tauri-apps/plugin-sql': '>=2.0.0'
+      loro-crdt: '>=1.0.0'
+      react: '>=18.0.0'
+      react-dom: '>=18.0.0'
+    peerDependenciesMeta:
+      '@ag-ui/core':
+        optional: true
+      '@tanstack/react-table':
+        optional: true
+      '@tauri-apps/plugin-sql':
+        optional: true
+      loro-crdt:
+        optional: true
+
   '@radix-ui/react-compose-refs@1.1.3':
     resolution: {integrity: sha512-rYOP8OMnuuPMQF1uhPVlGNcCDlkokKqGFE3JcxFViIkAXP7EvFWUliJAstrapypaBLJNHbZL6jGhbVDGTwmVhA==}
     peerDependencies:
@@ -593,13 +641,25 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@tanstack/query-core@5.101.2':
-    resolution: {integrity: sha512-hH5MLoJhF7KaIGd7q3xTXGXvslI+GYlM1Z/35aSHHWaCJWB7XvTSHYuV3eM7tw+aE0mT/xMro4M4Q9rCGHT0lw==}
-
-  '@tanstack/react-query@5.101.2':
-    resolution: {integrity: sha512-seDkr6kzGzX1okaaTtZPtgA688CDPlXUz1C6xSg0ESqn04Vuc8tlrYms1s3de+znBqhPVxFRfpAfUf+6XvfPWg==}
+  '@tanstack/react-table@8.21.3':
+    resolution: {integrity: sha512-5nNMTSETP4ykGegmVkhjcS8tTLW6Vl4axfEGQN3v0zdHYbK4UfoqfPChclTrJ4EoK9QynqAu9oUf8VEmrpZ5Ww==}
+    engines: {node: '>=12'}
     peerDependencies:
-      react: ^18 || ^19
+      react: '>=16.8'
+      react-dom: '>=16.8'
+
+  '@tanstack/react-virtual@3.14.5':
+    resolution: {integrity: sha512-4EKRXh7zBLkbKbFmG3AUVkircuHd+7OdT1pocJSepxtfBd3qnrJgJ5rtPkRYyo9fmyVb2+pI2xPy5oYvMLQy6A==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  '@tanstack/table-core@8.21.3':
+    resolution: {integrity: sha512-ldZXEhOBb8Is7xLs01fR3YEc3DERiz5silj8tnGkFZytt1abEvl/GhUmCE0PMLaMPTa3Jk4HbKmRlHmu+gCftg==}
+    engines: {node: '>=12'}
+
+  '@tanstack/virtual-core@3.17.3':
+    resolution: {integrity: sha512-8Np/TFELpI0ySuJoVmjvOrQYXH/8sTX0Biv9szhFhY39xOdAAY+smrMxjxOum/ux3eM8MUJQsEJ0/R0UpvC8dw==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -747,6 +807,10 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
+  diff@7.0.0:
+    resolution: {integrity: sha512-PJWHUb1RFevKCwaFA9RlG5tCd+FO5iRh9A8HEtkmBH2Li03iJriB6m6JIN4rGz3K3JLawI7/veA1xzRKP6ISBw==}
+    engines: {node: '>=0.3.1'}
+
   dom-helpers@5.2.1:
     resolution: {integrity: sha512-nRCa7CK3VTrM2NmGkIy4cbK7IZlgBE/PYMn55rrXefr5xXDP0LdtfPnblFDoVdcAfslJ7or6iqAUnx0CCGIWQA==}
 
@@ -802,6 +866,12 @@ packages:
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
+
+  immer@10.2.0:
+    resolution: {integrity: sha512-d/+XTN3zfODyjr89gM3mPq1WNX2B8pYsu7eORitdwyA2sBubnTl3laYlBk4sXY5FUa5qTZGBDPJICVbvqzjlbw==}
+
+  immer@11.1.11:
+    resolution: {integrity: sha512-qzXuyXAkPySAGYkfsAwodDPWT8Zm7/Uo5BNt4BjhMhG5WlWyZZ4wQqnWwdS8kjlQ1Cwu6gjw3A6+0gTQwlyYtw==}
 
   internmap@2.0.3:
     resolution: {integrity: sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg==}
@@ -910,6 +980,11 @@ packages:
 
   lucide-react@0.487.0:
     resolution: {integrity: sha512-aKqhOQ+YmFnwq8dWgGjOuLc8V1R9/c/yOd+zDY4+ohsR2Jo05lSGc3WsstYPIzcTpeosN7LoCkLReUUITvaIvw==}
+    peerDependencies:
+      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  lucide-react@1.23.0:
+    resolution: {integrity: sha512-38BpJcD0JhFosxHApP/BYsBetLpQFRoTRzEzstM/XCc3jsAG7wqaY1lgVwxiUe3xqYE+lNxo2PkCmYwXWrwwIw==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -1107,6 +1182,24 @@ packages:
 
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
+
+  zustand@5.0.14:
+    resolution: {integrity: sha512-/8tAspM5LMPr28b3fwLYrtdj77ECpfZviaP75CMTnwO8ISyaE4GDIG/9rDDYq/cH9D2Xw2A2RXglLInmVBQB/g==}
+    engines: {node: '>=12.20.0'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+      immer: '>=9.0.6'
+      react: '>=18.0.0'
+      use-sync-external-store: '>=1.2.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
+      use-sync-external-store:
+        optional: true
 
 snapshots:
 
@@ -1327,6 +1420,32 @@ snapshots:
     dependencies:
       playwright: 1.61.1
 
+  '@prometheus-ags/entity-graph-core@3.0.0-alpha.0(@types/react@19.2.17)(react@19.2.7)':
+    dependencies:
+      immer: 11.1.11
+      zustand: 5.0.14(@types/react@19.2.17)(immer@11.1.11)(react@19.2.7)
+    transitivePeerDependencies:
+      - '@types/react'
+      - react
+      - use-sync-external-store
+
+  '@prometheus-ags/prometheus-entity-management@3.0.0-alpha.0(@tanstack/react-table@8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+    dependencies:
+      '@prometheus-ags/entity-graph-core': 3.0.0-alpha.0(@types/react@19.2.17)(react@19.2.7)
+      '@tanstack/react-virtual': 3.14.5(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      clsx: 2.1.1
+      immer: 11.1.11
+      lucide-react: 1.23.0(react@19.2.7)
+      react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
+      tailwind-merge: 3.6.0
+      zustand: 5.0.14(@types/react@19.2.17)(immer@11.1.11)(react@19.2.7)
+    optionalDependencies:
+      '@tanstack/react-table': 8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+    transitivePeerDependencies:
+      - '@types/react'
+      - use-sync-external-store
+
   '@radix-ui/react-compose-refs@1.1.3(@types/react@19.2.17)(react@19.2.7)':
     dependencies:
       react: 19.2.7
@@ -1485,12 +1604,21 @@ snapshots:
       tailwindcss: 4.3.2
       vite: 6.4.3(jiti@2.7.0)(lightningcss@1.32.0)
 
-  '@tanstack/query-core@5.101.2': {}
-
-  '@tanstack/react-query@5.101.2(react@19.2.7)':
+  '@tanstack/react-table@8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
-      '@tanstack/query-core': 5.101.2
+      '@tanstack/table-core': 8.21.3
       react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
+
+  '@tanstack/react-virtual@3.14.5(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+    dependencies:
+      '@tanstack/virtual-core': 3.17.3
+      react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
+
+  '@tanstack/table-core@8.21.3': {}
+
+  '@tanstack/virtual-core@3.17.3': {}
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -1629,6 +1757,8 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
+  diff@7.0.0: {}
+
   dom-helpers@5.2.1:
     dependencies:
       '@babel/runtime': 7.29.7
@@ -1691,6 +1821,10 @@ snapshots:
   globals@16.5.0: {}
 
   graceful-fs@4.2.11: {}
+
+  immer@10.2.0: {}
+
+  immer@11.1.11: {}
 
   internmap@2.0.3: {}
 
@@ -1762,6 +1896,10 @@ snapshots:
       yallist: 3.1.1
 
   lucide-react@0.487.0(react@19.2.7):
+    dependencies:
+      react: 19.2.7
+
+  lucide-react@1.23.0(react@19.2.7):
     dependencies:
       react: 19.2.7
 
@@ -1953,3 +2091,15 @@ snapshots:
       lightningcss: 1.32.0
 
   yallist@3.1.1: {}
+
+  zustand@5.0.14(@types/react@19.2.17)(immer@10.2.0)(react@19.2.7):
+    optionalDependencies:
+      '@types/react': 19.2.17
+      immer: 10.2.0
+      react: 19.2.7
+
+  zustand@5.0.14(@types/react@19.2.17)(immer@11.1.11)(react@19.2.7):
+    optionalDependencies:
+      '@types/react': 19.2.17
+      immer: 11.1.11
+      react: 19.2.7

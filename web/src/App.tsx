@@ -1,4 +1,3 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import { lazy, Suspense, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
@@ -11,12 +10,11 @@ import Policies from '@/pages/Policies';
 import Budgets from '@/pages/Budgets';
 import ApiKeys from '@/pages/ApiKeys';
 import AgentIdentities from '@/pages/AgentIdentities';
+import Approvals from '@/pages/Approvals';
 
 // Code-split the analytics surface: Recharts is large and only this page needs
 // it, so it must not weigh down the CRUD bundle (app-page JS budget ~300 KB).
 const Analytics = lazy(() => import('@/pages/Analytics'));
-
-const queryClient = new QueryClient();
 
 function PageFallback() {
   return <p className="text-muted-foreground">Loading…</p>;
@@ -55,6 +53,9 @@ function Layout({ children }: { children: ReactNode }) {
           <Button variant="ghost" size="sm" asChild>
             <Link to="/agent-identities">Agents</Link>
           </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/approvals">Approvals</Link>
+          </Button>
         </nav>
       </header>
       <main className="flex-1 p-6">{children}</main>
@@ -64,26 +65,25 @@ function Layout({ children }: { children: ReactNode }) {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <BrowserRouter>
-          <Layout>
-            <Suspense fallback={<PageFallback />}>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/analytics" element={<Analytics />} />
-              <Route path="/routes" element={<RoutesPage />} />
-              <Route path="/auth" element={<AuthProviders />} />
-              <Route path="/hooks" element={<Hooks />} />
-              <Route path="/policies" element={<Policies />} />
-              <Route path="/budgets" element={<Budgets />} />
-              <Route path="/api-keys" element={<ApiKeys />} />
-              <Route path="/agent-identities" element={<AgentIdentities />} />
-            </Routes>
-            </Suspense>
-          </Layout>
-        </BrowserRouter>
-      </ToastProvider>
-    </QueryClientProvider>
+    <ToastProvider>
+      <BrowserRouter>
+        <Layout>
+          <Suspense fallback={<PageFallback />}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/routes" element={<RoutesPage />} />
+            <Route path="/auth" element={<AuthProviders />} />
+            <Route path="/hooks" element={<Hooks />} />
+            <Route path="/policies" element={<Policies />} />
+            <Route path="/budgets" element={<Budgets />} />
+            <Route path="/api-keys" element={<ApiKeys />} />
+            <Route path="/agent-identities" element={<AgentIdentities />} />
+            <Route path="/approvals" element={<Approvals />} />
+          </Routes>
+          </Suspense>
+        </Layout>
+      </BrowserRouter>
+    </ToastProvider>
   );
 }

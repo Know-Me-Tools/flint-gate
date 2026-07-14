@@ -1155,6 +1155,7 @@ dependencies = [
  "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
+ "miette",
  "mime_guess",
  "moka",
  "notify",

@@ -191,6 +191,10 @@ struct PendingToolCall {
     held_end: Option<AgUiEvent>,
     args_buffer: String,
     stage: PendingStage,
+    /// Monotonic deadline for this approval — mirrors the instant stored in the
+    /// ApprovalManager so the pipeline can compute its select! deadline from
+    /// processor state alone (immune to the janitor's concurrent purge).
+    deadline: std::time::Instant,
 }
 
 /// Whether approval was requested at START or at END.
@@ -206,21 +210,45 @@ enum PendingStage {
 struct ApprovalHandle {
     manager: ApprovalManager,
     decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+    /// Config TTL override (`approval.ttl_seconds`). When set it takes precedence
+    /// over the context's default expiry, so an operator-tuned TTL governs both the
+    /// manager's stored expiry AND the wire event's advertised deadline.
+    ttl_override: Option<std::time::Duration>,
 }
 
 impl ApprovalHandle {
-    /// Register a new approval request. Returns the approval id on success.
-    fn request(&self, context: ApprovalContext) -> Result<String, crate::approval::ApprovalError> {
+    /// Register a new approval request.
+    ///
+    /// Returns the effective monotonic deadline on success. The deadline is
+    /// based on `ttl_override` when set, otherwise derived from
+    /// `context.expires_at`. Returning it lets the caller store the deadline
+    /// in the processor's own pending map (immune to the janitor's concurrent
+    /// purge) and patch the wire-event `expiresAt` to match.
+    fn request(
+        &self,
+        context: &ApprovalContext,
+    ) -> Result<std::time::Instant, crate::approval::ApprovalError> {
         let id = context.approval_id.clone();
-        let ttl = context
-            .expires_at
-            .signed_duration_since(chrono::Utc::now())
-            .to_std()
-            .unwrap_or(crate::approval::DEFAULT_APPROVAL_TTL);
+        let ttl = self.ttl_override.unwrap_or_else(|| {
+            context
+                .expires_at
+                .signed_duration_since(chrono::Utc::now())
+                .to_std()
+                .unwrap_or(crate::approval::DEFAULT_APPROVAL_TTL)
+        });
         let expires_at = std::time::Instant::now() + ttl;
-        self.manager
-            .register(id.clone(), expires_at, self.decision_tx.clone())?;
-        Ok(id)
+        self.manager.register(
+            id,
+            expires_at,
+            self.decision_tx.clone(),
+            (
+                &context.principal_id,
+                &context.action,
+                &context.resource_id,
+                context.reason.clone(),
+            ),
+        )?;
+        Ok(expires_at)
     }
 }
 
@@ -241,8 +269,12 @@ pub struct AgUiProcessor {
     /// `process_multi(&self, …)` runs single-threaded inside one stream's
     /// processor task, so a `RefCell` is sufficient and lock-free.
     tool_calls: RefCell<HashMap<String, ToolCallState>>,
-    /// Optional handle to request human approvals. When absent, any
-    /// `RequireApproval` decision is treated as a deny (fail-closed).
+    /// Optional handle to request human approvals.
+    /// - **Present**: a `RequireApproval` Cedar decision pauses the tool call
+    ///   and emits a `gate:approval_request` event; the call resumes or is
+    ///   denied when the operator decides via `POST /approvals/{id}/decision`.
+    /// - **Absent**: `RequireApproval` is treated as an immediate deny
+    ///   (fail-closed — no handle means no approval channel is configured).
     approval_handle: Option<ApprovalHandle>,
     /// Tool calls awaiting human approval, keyed by approval id.
     pending_approvals: RefCell<HashMap<String, PendingToolCall>>,
@@ -288,10 +320,12 @@ impl AgUiProcessor {
         mut self,
         manager: ApprovalManager,
         decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+        ttl_override: Option<std::time::Duration>,
     ) -> Self {
         self.approval_handle = Some(ApprovalHandle {
             manager,
             decision_tx,
+            ttl_override,
         });
         self
     }
@@ -345,6 +379,19 @@ impl AgUiProcessor {
     /// Ids of approval requests currently pending for this stream.
     pub fn pending_approval_ids(&self) -> Vec<String> {
         self.pending_approvals.borrow().keys().cloned().collect()
+    }
+
+    /// Earliest monotonic deadline among currently-pending approvals.
+    ///
+    /// Uses the deadline stored in the processor's own pending map — independent
+    /// of the shared ApprovalManager — so a concurrent janitor purge cannot
+    /// cause the pipeline's select! to fall back to the 3600 s sentinel.
+    pub fn earliest_pending_deadline(&self) -> Option<std::time::Instant> {
+        self.pending_approvals
+            .borrow()
+            .values()
+            .map(|p| p.deadline)
+            .min()
     }
 
     /// Resolve a pending approval. Returns the events that should be forwarded
@@ -551,17 +598,40 @@ impl AgUiProcessor {
         };
 
         let id = context.approval_id.clone();
-        if let Err(e) = handle.request(context.clone()) {
-            tracing::error!(
-                approval_id = %id,
-                error = %e,
-                "failed to register approval request — denying (fail-closed)"
-            );
-            return vec![run_error_event(
-                tool_call_id,
-                &format!("tool call `{tool_name}` denied: approval registration failed"),
-            )];
-        }
+        let deadline = match handle.request(&context) {
+            Ok(d) => d,
+            Err(crate::approval::ApprovalError::CapExceeded) => {
+                tracing::warn!(
+                    approval_id = %id,
+                    tool = %tool_name,
+                    "approval table at capacity — denying tool call (fail-closed)"
+                );
+                return vec![run_error_event(
+                    tool_call_id,
+                    &format!("tool call `{tool_name}` denied: approval table at capacity"),
+                )];
+            }
+            Err(e) => {
+                tracing::error!(
+                    approval_id = %id,
+                    error = %e,
+                    "failed to register approval request — denying (fail-closed)"
+                );
+                return vec![run_error_event(
+                    tool_call_id,
+                    &format!("tool call `{tool_name}` denied: approval registration failed"),
+                )];
+            }
+        };
+
+        // Patch the wire-event expiresAt to reflect the effective TTL (which may
+        // differ from the context's default when ttl_override is set). This keeps
+        // the client deadline in sync with the internal sleep_until deadline.
+        let effective_expires_at = chrono::Utc::now()
+            + chrono::Duration::from_std(deadline.saturating_duration_since(std::time::Instant::now()))
+                .unwrap_or(chrono::Duration::seconds(0));
+        let mut wire_context = context.clone();
+        wire_context.expires_at = effective_expires_at;
 
         self.pending_approvals.borrow_mut().insert(
             id.clone(),
@@ -571,6 +641,7 @@ impl AgUiProcessor {
                 held_end,
                 args_buffer,
                 stage,
+                deadline,
             },
         );
 
@@ -580,7 +651,7 @@ impl AgUiProcessor {
             stage = ?stage,
             "tool call requires human approval — pausing stream"
         );
-        vec![approval_request_event(&context, tool_call_id)]
+        vec![approval_request_event(&wire_context, tool_call_id)]
     }
 
     fn on_tool_call_args(&self, event: AgUiEvent) -> Vec<AgUiEvent> {

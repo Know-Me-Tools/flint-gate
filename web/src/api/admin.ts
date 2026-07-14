@@ -4,15 +4,22 @@ import type {
   ApiKeyCreateRequest,
   ApiKeyCreatedResponse,
   ApiKeyListResponse,
+  ApprovalDecisionRequest,
+  ApprovalDecisionResponse,
+  ApprovalListResponse,
   AuditListResponse,
   AuditQueryParams,
   ConfigResponse,
   DbRoute,
   HealthResponse,
   IssueAgentIdentityRequest,
+  PendingApproval,
+  PolicyHistoryResponse,
   PolicyListResponse,
   PolicyRow,
   ReadyResponse,
+  ReloadStatus,
+  RollbackResponse,
   RouteConfig,
   RouteListResponse,
   TokenAnalyticsResponse,
@@ -20,6 +27,7 @@ import type {
   ToolScopeRequest,
   ToolScopeUpsertResponse,
   UsageSummaryResponse,
+  ValidateResponse,
 } from './types';
 
 const BASE = '/api';
@@ -117,6 +125,20 @@ export async function deletePolicy(id: string): Promise<{ status: string; id: st
   return adminRequest(`/policies/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export async function validatePolicy(
+  policyText: string,
+  schemaJson?: string,
+): Promise<ValidateResponse> {
+  return adminRequest('/policies/validate', {
+    method: 'POST',
+    body: JSON.stringify({ policy_text: policyText, schema_json: schemaJson ?? null }),
+  });
+}
+
+export async function fetchReloadStatus(): Promise<ReloadStatus> {
+  return adminRequest('/policies/reload-status');
+}
+
 export async function listToolScopes(): Promise<ToolScopeListResponse> {
   return adminRequest('/tool-scopes');
 }
@@ -161,6 +183,26 @@ function queryString(params: Record<string, string | number | undefined>): strin
   return encoded ? `?${encoded}` : '';
 }
 
+
+export async function fetchPolicyHistory(
+  id: string,
+  offset = 0,
+  limit = 20,
+): Promise<PolicyHistoryResponse> {
+  return adminRequest(
+    `/policies/${encodeURIComponent(id)}/history${queryString({ offset, limit })}`,
+  );
+}
+
+export async function rollbackPolicy(
+  id: string,
+  versionNum: number,
+): Promise<RollbackResponse> {
+  return adminRequest(`/policies/${encodeURIComponent(id)}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({ version_num: versionNum }),
+  });
+}
 
 export async function fetchUsageSummary(
   params: { since?: string; until?: string } = {},
@@ -208,4 +250,24 @@ export async function rotateAgentIdentity(id: string): Promise<{ status: string;
 
 export async function revokeAgentIdentity(id: string): Promise<{ status: string; id: string }> {
   return adminRequest(`/agent-identities/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ── Human-in-the-loop approvals ───────────────────────────────────────────────
+
+export async function listApprovals(): Promise<ApprovalListResponse> {
+  return adminRequest('/approvals');
+}
+
+export async function getApproval(id: string): Promise<PendingApproval> {
+  return adminRequest(`/approvals/${encodeURIComponent(id)}`);
+}
+
+export async function decideApproval(
+  id: string,
+  payload: ApprovalDecisionRequest,
+): Promise<ApprovalDecisionResponse> {
+  return adminRequest(`/approvals/${encodeURIComponent(id)}/decision`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }

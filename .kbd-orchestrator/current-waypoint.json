@@ -1,12 +1,12 @@
 {
-  "phase": "approval-full-flow-integration",
-  "previousPhase": "sdk-integration-test-expansion",
-  "exactNextCommand": "/kbd-next-phase",
-  "status": "reflect_complete",
-  "stage": "reflect_complete",
-  "changes_completed": 3,
-  "changes_total": 3,
-  "activeChange": null,
-  "note": "New phase seeded from sdk-integration-test-expansion/reflection.md Option A. Goal: full end-to-end approval flow integration test (stub upstream + approve/deny cycle).",
-  "next": "/kbd-next-phase"
+  "phase": "post-beta-hardening",
+  "previousPhase": "beta-release-readiness",
+  "exactNextCommand": "/kbd-apply add-approval-store-trait",
+  "status": "execute_pending",
+  "stage": "execute_pending",
+  "changes_completed": 2,
+  "changes_total": 8,
+  "activeChange": "add-approval-store-trait",
+  "note": "Changes 1-2 complete. Next: add-approval-store-trait (G-1a — extract ApprovalStore trait from DashMap-backed ApprovalManager).",
+  "next": "/kbd-apply add-approval-store-trait"
 }

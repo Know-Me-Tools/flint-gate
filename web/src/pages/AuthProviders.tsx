@@ -2,6 +2,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useConfig } from '@/hooks/useAdmin';
+import { ReadOnlyBanner } from '@/components/ReadOnlyBanner';
 
 export default function AuthProviders() {
   const { data, isLoading, error } = useConfig();
@@ -13,6 +14,7 @@ export default function AuthProviders() {
 
   return (
     <div className="space-y-6">
+      <ReadOnlyBanner />
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Auth Providers</h1>
         <p className="text-muted-foreground">Configured identity providers from the loaded config.</p>

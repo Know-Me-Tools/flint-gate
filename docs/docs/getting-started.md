@@ -212,8 +212,109 @@ Override ports:
 ./target/release/flint-gate --listen 127.0.0.1:8080 --admin-listen 127.0.0.1:8081
 ```
 
+## Admin API security
+
+The admin API (port 4457) is a privileged control plane — it can read audit
+logs, list approvals, and manage Cedar policies. **Never expose it to the
+public internet or cluster-wide without authentication.**
+
+### Kubernetes deployments
+
+Apply the bundled `NetworkPolicy` to deny all cluster-wide ingress to port 4457:
+
+```bash
+kubectl apply -f k8s/network-policy.yaml
+```
+
+The `NetworkPolicy` allows all ingress to port 4456 (proxy) and denies all
+ingress to port 4457 by default. Grant access only to specific pods:
+
+```yaml
+# k8s/network-policy.yaml (excerpt)
+ingress:
+  # Add this to allow ops pods to reach the admin API:
+  - from:
+      - podSelector:
+          matchLabels:
+            role: ops
+    ports:
+      - port: 4457
+        protocol: TCP
+```
+
+For local admin access from your workstation:
+
+```bash
+kubectl port-forward svc/flint-gate 4457:4457
+```
+
+### Authentication
+
+Set `server.admin_auth` in your config to require a valid JWT on all admin
+requests. Without it, admin access is restricted to loopback (localhost)
+only — flint-gate refuses to start if the admin bind is non-loopback and
+`admin_auth` is not configured.
+
+```yaml
+server:
+  admin_auth:
+    provider: jwt
+    jwks_uri: "https://your-idp/.well-known/jwks.json"
+    audience: "flint-gate-admin"
+```
+
+## Multi-replica deployment checklist
+
+flint-gate can run with multiple replicas (`replicas: 2` in `k8s/deployment.yaml`),
+but requires two additional steps to ensure the human-in-the-loop approval flow
+works correctly across replicas.
+
+### Why this matters
+
+The approval store is in-process, per-replica. When an approval decision
+(`POST /approvals/:id/decision`) is routed to a different replica than the one
+holding the paused stream, the request returns `404` — the approval appears stuck.
+In a 2-replica deployment, roughly 50% of decisions fail silently.
+
+### Required: deploy the admin Service with sticky sessions
+
+```bash
+kubectl apply -f k8s/service-admin.yaml
+```
+
+`service-admin.yaml` creates a dedicated `flint-gate-admin` ClusterIP Service
+with `sessionAffinity: ClientIP` (3-hour timeout). This pins each admin client
+to one replica, ensuring decisions reach the correct in-process approval store.
+
+### Required: apply the NetworkPolicy
+
+```bash
+kubectl apply -f k8s/network-policy.yaml
+```
+
+The NetworkPolicy restricts cluster-wide access to port 4457 (admin) while
+allowing port 4456 (proxy) freely. See [Admin API security](#admin-api-security).
+
+### Known limitation: pod restart loses session affinity
+
+`sessionAffinity: ClientIP` is a best-effort mechanism. If the pinned pod
+restarts or is evicted:
+
+- The session affinity is lost for that client IP.
+- Any pending approval stream on the restarted pod is abandoned (the stream
+  auto-denies when the pod exits).
+- New approval requests from the same client may land on a different replica.
+
+**Beta guidance:** avoid restarting pods while approvals are pending. A
+Postgres-backed shared approval store (future work) will remove this constraint.
+
 ## Next steps
 
 - Read the full [configuration reference](./configuration.md).
 - Explore the [admin API](./admin-api.md).
 - Pick a client SDK from the [SDK overview](./sdks/index.md).
+  Available now: Go and TypeScript/Node.js. The Flutter/Dart SDK is in
+  development and not yet published to pub.dev.
+- Write authorization policies — see the [Cedar policies reference](./cedar-policies.md).
+- Operate in production — see the [Operations Runbook](./operations.md) for
+  key rotation, policy recovery, approval janitor tuning, and the audit trail.

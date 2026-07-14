@@ -60,6 +60,7 @@ export interface PolicyRow {
   schema_json?: Record<string, unknown> | null;
   entities_json?: Record<string, unknown> | null;
   enabled: boolean;
+  written_by?: string | null;
 }
 
 export interface PolicyListResponse {
@@ -241,4 +242,91 @@ export interface IssueAgentIdentityRequest {
   id: string;
   kind: AgentIdentityKind;
   label?: string;
+}
+
+// ── Human-in-the-loop approvals ───────────────────────────────────────────────
+
+export type ApprovalDecision = 'approve' | 'deny';
+
+/** A single pending approval request surfaced by the admin list/get endpoints. */
+export interface PendingApproval {
+  approval_id: string;
+  principal_id: string;
+  action: string;
+  resource_id: string;
+  reason?: string;
+  expires_at: string;
+  expired: boolean;
+}
+
+export interface ApprovalListResponse {
+  approvals: PendingApproval[];
+}
+
+export interface ApprovalDecisionRequest {
+  decision: ApprovalDecision;
+}
+
+export interface ApprovalDecisionResponse {
+  status: string;
+  approval_id: string;
+  decision: ApprovalDecision;
+}
+
+// ── Policy version history + rollback ────────────────────────────────────────
+
+export interface PolicyVersionRow {
+  id: number;
+  policy_id: string;
+  version_num: number;
+  policy_text: string;
+  schema_json?: unknown | null;
+  entities_json?: unknown | null;
+  written_by?: string | null;
+  written_at: string;
+}
+
+export interface PolicyHistoryResponse {
+  policy_id: string;
+  total_hint: number | null;
+  offset: number;
+  limit: number;
+  versions: PolicyVersionRow[];
+}
+
+export interface RollbackResponse {
+  status: string;
+  policy_id: string;
+  from_version: number;
+  to_version: number;
+  reloaded: boolean;
+}
+
+// ── Cedar policy validation ───────────────────────────────────────────────────
+
+export interface PolicyParseError {
+  line: number;
+  column: number;
+  length: number;
+  message: string;
+}
+
+export interface ValidateResponse {
+  valid: boolean;
+  errors: PolicyParseError[];
+}
+
+// ── Admin SSE events ──────────────────────────────────────────────────────────
+
+export type AdminEvent =
+  | { type: 'policy_reload_ok'; policy_count: number }
+  | { type: 'policy_reload_error'; skipped_count: number; db_error?: string | null };
+
+// ── Hot-reload status ─────────────────────────────────────────────────────────
+
+export interface ReloadStatus {
+  ok: boolean;
+  policy_count: number;
+  last_error?: string | null;
+  last_reload_at?: string | null;
 }

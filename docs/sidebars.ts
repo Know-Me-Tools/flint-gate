@@ -17,6 +17,15 @@ const sidebars: SidebarsConfig = {
         'sdks/flutter',
       ],
     },
+    {
+      type: 'category',
+      label: 'Operations',
+      items: [
+        'operations',
+        'cedar-policies',
+        'metrics',
+      ],
+    },
   ],
 };
 

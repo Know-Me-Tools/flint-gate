@@ -6,7 +6,7 @@ use crate::approval::{ApprovalDecision, ApprovalManager};
 use crate::config::types::StreamConfig;
 use crate::stream::a2ui::{A2UiEvent, A2UiProcessor};
 use crate::stream::ag_ui::{AgUiEvent, AgUiProcessor, AgUiTokenCounter};
-use crate::stream::StreamMetrics;
+use crate::stream::{ApprovalHandleParts, StreamMetrics};
 use bytes::Bytes;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
@@ -36,6 +36,7 @@ pub struct NdjsonStreamProcessor {
 struct ApprovalHandle {
     manager: ApprovalManager,
     decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+    ttl_override: Option<std::time::Duration>,
 }
 
 impl NdjsonStreamProcessor {
@@ -69,7 +70,7 @@ impl NdjsonStreamProcessor {
         metadata: serde_json::Map<String, serde_json::Value>,
         theme: Option<serde_json::Value>,
         tool_authz: Option<crate::authz::ToolAuthzContext>,
-        approval_handle: Option<(ApprovalManager, UnboundedSender<(String, ApprovalDecision)>)>,
+        approval_handle: Option<ApprovalHandleParts>,
     ) -> Self {
         let max_tool_args_bytes = config
             .ai
@@ -77,10 +78,12 @@ impl NdjsonStreamProcessor {
             .max_tool_args_bytes
             .unwrap_or(crate::stream::DEFAULT_MAX_TOOL_ARGS_BYTES);
 
-        let approval_handle = approval_handle.map(|(manager, decision_tx)| ApprovalHandle {
-            manager,
-            decision_tx,
-        });
+        let approval_handle =
+            approval_handle.map(|(manager, decision_tx, ttl_override)| ApprovalHandle {
+                manager,
+                decision_tx,
+                ttl_override,
+            });
 
         let ag_ui_processor = if config.ai.ag_ui.enabled {
             let mut proc = AgUiProcessor::new(
@@ -90,7 +93,7 @@ impl NdjsonStreamProcessor {
             .with_tool_authz(tool_authz.clone())
             .with_max_tool_args_bytes(max_tool_args_bytes);
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
             }
             Some(proc)
         } else {
@@ -101,7 +104,7 @@ impl NdjsonStreamProcessor {
             let mut proc = A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
                 .with_tool_authz(tool_authz.clone());
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx);
+                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
             }
             Some(proc)
         } else {
@@ -144,6 +147,21 @@ impl NdjsonStreamProcessor {
                 .unwrap_or_default(),
         );
         ids
+    }
+
+    /// Earliest monotonic deadline across all pending approvals.
+    pub fn earliest_pending_deadline(&self) -> Option<std::time::Instant> {
+        [
+            self.ag_ui_processor
+                .as_ref()
+                .and_then(|p| p.earliest_pending_deadline()),
+            self.a2ui_processor
+                .as_ref()
+                .and_then(|p| p.earliest_pending_deadline()),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Resolve a pending approval, returning the NDJSON bytes to forward.
@@ -333,6 +351,10 @@ impl crate::stream::StreamProcessor for NdjsonStreamProcessor {
     ) -> Option<Bytes> {
         self.resolve_approval(approval_id, decision)
     }
+
+    fn earliest_pending_deadline(&self) -> Option<std::time::Instant> {
+        self.earliest_pending_deadline()
+    }
 }
 
 #[cfg(test)]
@@ -461,7 +483,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         let out = proc
@@ -492,7 +514,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -523,7 +545,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -550,7 +572,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(
@@ -584,7 +606,7 @@ mod tests {
             serde_json::Map::new(),
             None,
             Some(ctx(require_approval_at_end_engine())),
-            Some((manager, tx)),
+            Some((manager, tx, None)),
         );
 
         proc.process_chunk(

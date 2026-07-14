@@ -102,21 +102,37 @@ pub fn required_scope(intent: &str) -> &'static str {
 struct ApprovalHandle {
     manager: ApprovalManager,
     decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+    /// Config TTL override (`approval.ttl_seconds`) — see the AG-UI handle.
+    ttl_override: Option<std::time::Duration>,
 }
 
 impl ApprovalHandle {
-    /// Register a new approval request. Returns the approval id on success.
-    fn request(&self, context: ApprovalContext) -> Result<String, ApprovalError> {
+    /// Register a new approval request.
+    ///
+    /// Returns the effective monotonic deadline on success — see the AG-UI
+    /// counterpart for the race-safety rationale.
+    fn request(&self, context: &ApprovalContext) -> Result<Instant, ApprovalError> {
         let id = context.approval_id.clone();
-        let ttl = context
-            .expires_at
-            .signed_duration_since(chrono::Utc::now())
-            .to_std()
-            .unwrap_or(crate::approval::DEFAULT_APPROVAL_TTL);
+        let ttl = self.ttl_override.unwrap_or_else(|| {
+            context
+                .expires_at
+                .signed_duration_since(chrono::Utc::now())
+                .to_std()
+                .unwrap_or(crate::approval::DEFAULT_APPROVAL_TTL)
+        });
         let expires_at = Instant::now() + ttl;
-        self.manager
-            .register(id.clone(), expires_at, self.decision_tx.clone())?;
-        Ok(id)
+        self.manager.register(
+            id,
+            expires_at,
+            self.decision_tx.clone(),
+            (
+                &context.principal_id,
+                &context.action,
+                &context.resource_id,
+                context.reason.clone(),
+            ),
+        )?;
+        Ok(expires_at)
     }
 }
 
@@ -125,6 +141,9 @@ impl ApprovalHandle {
 struct PendingA2UiApproval {
     held_event: A2UiEvent,
     context: ApprovalContext,
+    /// Monotonic deadline — mirrors the ApprovalManager entry so the pipeline
+    /// can compute its select! deadline from processor state alone.
+    deadline: std::time::Instant,
 }
 
 /// Processes A2UI events: filters by intent and scope.
@@ -136,8 +155,12 @@ pub struct A2UiProcessor {
     /// for routes without authz — the common path, where A2UI intents are
     /// UI-directive and carry no tool call.
     tool_authz: Option<ToolAuthzContext>,
-    /// Optional handle to request human approvals. When absent, any
-    /// `RequireApproval` decision is treated as a deny (fail-closed).
+    /// Optional handle to request human approvals.
+    /// - **Present**: a `RequireApproval` Cedar decision pauses the A2UI event
+    ///   and emits a `gate:approval_request` event; the event is released or
+    ///   dropped when the operator decides via `POST /approvals/{id}/decision`.
+    /// - **Absent**: `RequireApproval` is treated as an immediate deny
+    ///   (fail-closed — no handle means no approval channel is configured).
     approval_handle: Option<ApprovalHandle>,
     /// A single A2UI event awaiting human approval. A2UI events are stateless
     /// and one-at-a-time within the stream, so at most one approval is pending
@@ -172,10 +195,12 @@ impl A2UiProcessor {
         mut self,
         manager: ApprovalManager,
         decision_tx: UnboundedSender<(String, ApprovalDecision)>,
+        ttl_override: Option<std::time::Duration>,
     ) -> Self {
         self.approval_handle = Some(ApprovalHandle {
             manager,
             decision_tx,
+            ttl_override,
         });
         self
     }
@@ -246,6 +271,15 @@ impl A2UiProcessor {
             .as_ref()
             .map(|p| vec![p.context.approval_id.clone()])
             .unwrap_or_default()
+    }
+
+    /// Earliest monotonic deadline among currently-pending approvals.
+    ///
+    /// Uses the deadline stored in the processor's own pending field —
+    /// independent of the shared ApprovalManager — so a concurrent janitor
+    /// purge cannot cause the pipeline's select! to fall back to the sentinel.
+    pub fn earliest_pending_deadline(&self) -> Option<std::time::Instant> {
+        self.pending_approval.borrow().as_ref().map(|p| p.deadline)
     }
 
     /// Metadata for any approval request currently pending.
@@ -329,20 +363,40 @@ impl A2UiProcessor {
         };
 
         let id = context.approval_id.clone();
-        if let Err(e) = handle.request(context.clone()) {
-            tracing::error!(
-                approval_id = %id,
-                error = %e,
-                "failed to register A2UI approval request — denying (fail-closed)"
-            );
-            return None;
-        }
+        let deadline = match handle.request(&context) {
+            Ok(d) => d,
+            Err(crate::approval::ApprovalError::CapExceeded) => {
+                tracing::warn!(
+                    approval_id = %id,
+                    intent = %event.intent,
+                    tool = %tool_name,
+                    "approval table at capacity — denying A2UI tool call (fail-closed)"
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::error!(
+                    approval_id = %id,
+                    error = %e,
+                    "failed to register A2UI approval request — denying (fail-closed)"
+                );
+                return None;
+            }
+        };
+
+        // Patch wire-event expiresAt to match the effective internal deadline.
+        let effective_expires_at = chrono::Utc::now()
+            + chrono::Duration::from_std(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(chrono::Duration::seconds(0));
+        let mut wire_context = context.clone();
+        wire_context.expires_at = effective_expires_at;
 
         self.pending_approval
             .borrow_mut()
             .replace(PendingA2UiApproval {
                 held_event: event,
-                context,
+                context: wire_context,
+                deadline,
             });
 
         tracing::info!(
@@ -609,6 +663,7 @@ mod tests {
             .with_approval_handle(
                 ApprovalManager::new(),
                 tokio::sync::mpsc::unbounded_channel().0,
+                None,
             );
         let ev = A2UiEvent {
             intent: "invoke_tool".to_string(),
@@ -640,6 +695,7 @@ mod tests {
             .with_approval_handle(
                 ApprovalManager::new(),
                 tokio::sync::mpsc::unbounded_channel().0,
+                None,
             );
         let ev = A2UiEvent {
             intent: "invoke_tool".to_string(),
@@ -664,6 +720,7 @@ mod tests {
             .with_approval_handle(
                 ApprovalManager::new(),
                 tokio::sync::mpsc::unbounded_channel().0,
+                None,
             );
         let ev = A2UiEvent {
             intent: "invoke_tool".to_string(),
@@ -700,6 +757,7 @@ mod tests {
             .with_approval_handle(
                 ApprovalManager::new(),
                 tokio::sync::mpsc::unbounded_channel().0,
+                None,
             );
         let ev = A2UiEvent {
             intent: "invoke_tool".to_string(),

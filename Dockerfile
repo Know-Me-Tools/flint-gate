@@ -1,11 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Flint Gate — Multi-stage Docker build
-# Build: rust:1.82-bookworm
+# Build: rust:1.85-bookworm  (1.85+ required for edition2024 deps)
 # Runtime: debian:bookworm-slim
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM rust:1.82-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 WORKDIR /app
 

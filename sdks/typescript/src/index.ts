@@ -19,7 +19,12 @@
 
 export {
   FlintGateClient,
+  isRateLimited,
+  isUnauthorized,
+  isApprovalRequired,
+  isNotFound,
 } from "./client";
+export type { TokenProvider } from "./client";
 
 export {
   FlintGateAdmin,
@@ -28,7 +33,9 @@ export {
 export {
   streamSSE,
   streamNDJSON,
+  streamSSEWithReconnect,
 } from "./stream";
+export type { SSEReconnectOptions } from "./stream";
 
 export {
   streamWS,
@@ -63,6 +70,7 @@ export type {
   SiteId,
   ApiKeyValue,
   AuthConfig,
+  TokenProvider,
   StreamEvent,
   TextDelta,
   ToolCall,
@@ -84,4 +92,12 @@ export type {
   HealthStatus,
   ReadyStatus,
   FlintGateClientConfig,
+  PolicyRow,
+  UpsertPolicyInput,
+  UpsertPolicyResponse,
+  DeletePolicyResponse,
+  PolicyVersion,
+  PolicyHistoryResponse,
+  PolicyHistoryOptions,
+  RollbackResponse,
 } from "./types";

@@ -255,6 +255,68 @@ export interface ReadyStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Admin API — policies
+// ---------------------------------------------------------------------------
+
+/** A Cedar policy record as stored server-side. */
+export interface PolicyRow {
+  readonly id: string;
+  readonly policy_text: string;
+  readonly enabled: boolean;
+  readonly created_at?: string;
+  readonly updated_at?: string;
+  readonly version_num?: number;
+}
+
+/** Input for creating or updating a policy. */
+export interface UpsertPolicyInput {
+  readonly id: string;
+  readonly policy_text: string;
+  readonly enabled?: boolean;
+}
+
+/** Response from POST /policies or PUT /policies/{id}. */
+export interface UpsertPolicyResponse {
+  readonly status: "created" | "updated" | string;
+  readonly id: string;
+  readonly reloaded?: boolean;
+}
+
+/** Response from DELETE /policies/{id}. */
+export interface DeletePolicyResponse {
+  readonly status: "deleted" | string;
+  readonly id: string;
+}
+
+/** One historical revision of a policy. */
+export interface PolicyVersion {
+  readonly version_num: number;
+  readonly policy_text: string;
+  readonly created_at: string;
+}
+
+/** Response from GET /policies/{id}/history. */
+export interface PolicyHistoryResponse {
+  readonly policy_id: string;
+  readonly total_hint: number | null;
+  readonly versions: readonly PolicyVersion[];
+}
+
+/** Options for getPolicyHistory pagination. */
+export interface PolicyHistoryOptions {
+  readonly offset?: number;
+  readonly limit?: number;
+}
+
+/** Response from POST /policies/{id}/rollback. */
+export interface RollbackResponse {
+  readonly status: "rolled_back" | string;
+  readonly policy_id: string;
+  readonly from_version: number;
+  readonly to_version: number;
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -290,6 +352,23 @@ export class StreamProtocolError extends FlintGateError {
 }
 
 // ---------------------------------------------------------------------------
+// Token provider
+// ---------------------------------------------------------------------------
+
+/**
+ * An async function that returns a bearer token string.
+ *
+ * Use this for dynamic token sources — JWTs that need periodic refresh,
+ * tokens from an in-memory credential cache, etc. The SDK calls this before
+ * every request (or on 401 retry) so the implementation should cache
+ * internally when appropriate.
+ *
+ * For static tokens use {@link FlintGateClientConfig.token} — it is wrapped
+ * in a `StaticTokenProvider` automatically and is backwards-compatible.
+ */
+export type TokenProvider = () => Promise<string>;
+
+// ---------------------------------------------------------------------------
 // Client config
 // ---------------------------------------------------------------------------
 
@@ -308,10 +387,28 @@ export interface FlintGateClientConfig {
   readonly adminUrl?: string | URL;
   /** Auth strategy applied to proxied data-plane requests. */
   readonly auth?: AuthConfig;
+  /**
+   * Static bearer token for the data plane. Convenience shorthand for
+   * `auth: { type: "bearer", token: "..." }`. Takes precedence over `auth`
+   * when both are supplied. Backwards-compatible with previous `token` field.
+   */
+  readonly token?: string;
+  /**
+   * Async token provider for dynamic/refreshable bearer tokens.
+   * When supplied, the SDK calls this before every request and sets the
+   * `Authorization: Bearer <token>` header with the returned value.
+   * Takes precedence over both `token` and `auth.token` (for bearer auth).
+   */
+  readonly tokenProvider?: TokenProvider;
   /** Extra default headers merged onto every request. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Optional default AbortSignal-shortening timeout in ms. */
   readonly timeoutMs?: number;
   /** Custom fetch implementation. Defaults to `globalThis.fetch`. */
   readonly fetch?: typeof fetch;
+  /**
+   * Maximum number of automatic retries on HTTP 429 (Rate Limited) responses.
+   * Default: 3. Set to 0 to disable.
+   */
+  readonly maxRetries?: number;
 }

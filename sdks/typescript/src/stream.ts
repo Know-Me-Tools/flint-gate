@@ -1,5 +1,7 @@
 import {
   Done,
+  FlintGateApiError,
+  FlintGateError,
   RawFrame,
   StreamError,
   StreamEvent,
@@ -23,6 +25,14 @@ import {
 export async function* streamSSE(
   source: Response | ReadableStream<Uint8Array>,
   signal?: AbortSignal,
+): AsyncGenerator<StreamEvent, void, unknown> {
+  yield* streamSSEInternal(source, signal);
+}
+
+async function* streamSSEInternal(
+  source: Response | ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+  onId?: (id: string) => void,
 ): AsyncGenerator<StreamEvent, void, unknown> {
   const lines = readLines(toStream(source), signal);
   let event = "message";
@@ -60,8 +70,10 @@ export async function* streamSSE(
       event = value;
     } else if (field === "data") {
       dataBuffer = dataBuffer === "" ? value : `${dataBuffer}\n${value}`;
+    } else if (field === "id") {
+      onId?.(value);
     }
-    // id:/retry: are ignored — Flint Gate does not use them.
+    // retry: is ignored.
   }
 
   // Flush any trailing frame without a blank-line terminator.
@@ -72,6 +84,137 @@ export async function* streamSSE(
       if (evt) yield evt;
     }
   }
+}
+
+/**
+ * Options for {@link streamSSEWithReconnect}.
+ */
+export interface SSEReconnectOptions {
+  /** Maximum reconnect attempts after a network drop or 5xx. Default: 5. */
+  maxReconnects?: number;
+  /** Custom fetch implementation. Defaults to `globalThis.fetch`. */
+  fetch?: typeof globalThis.fetch;
+  /** Extra request headers. */
+  headers?: Record<string, string>;
+  /** Bearer token for `Authorization` header. */
+  bearerToken?: string;
+  /** AbortSignal to cancel the stream. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Fetch an SSE endpoint with automatic reconnect on network drops or 5xx errors.
+ *
+ * - Tracks the last `id:` field and sends `Last-Event-ID` on reconnect.
+ * - Reconnects up to `maxReconnects` times (default 5) with exponential backoff:
+ *   250ms * 2^attempt, capped at 8s.
+ * - HTTP 4xx responses are fatal and are not retried.
+ * - Yields the same {@link StreamEvent} values as {@link streamSSE}.
+ */
+export async function* streamSSEWithReconnect(
+  urlStr: string,
+  opts: SSEReconnectOptions = {},
+): AsyncGenerator<StreamEvent, void, unknown> {
+  const maxReconnects = opts.maxReconnects ?? 5;
+  const fetchImpl = opts.fetch ?? globalThis.fetch;
+  const signal = opts.signal;
+
+  let lastEventId: string | undefined;
+  let attempt = 0;
+
+  while (attempt <= maxReconnects) {
+    if (signal?.aborted) return;
+
+    const headers: Record<string, string> = { ...opts.headers };
+    if (opts.bearerToken) {
+      headers["Authorization"] = `Bearer ${opts.bearerToken}`;
+    }
+    if (lastEventId !== undefined) {
+      headers["Last-Event-ID"] = lastEventId;
+    }
+    headers["Accept"] = "text/event-stream";
+    headers["Cache-Control"] = "no-cache";
+
+    let res: Response;
+    try {
+      res = await fetchImpl(urlStr, { headers, signal });
+    } catch (err) {
+      if (signal?.aborted) return;
+      if (attempt >= maxReconnects) {
+        throw new FlintGateError(
+          `SSE connection failed after ${attempt} retries: ${String(err)}`,
+          { code: "SSE_CONNECT_FAILED" },
+        );
+      }
+      await sleep(sseBackoff(attempt));
+      attempt++;
+      continue;
+    }
+
+    // 4xx = fatal, do not retry
+    if (res.status >= 400 && res.status < 500) {
+      let body = "";
+      try { body = await res.text(); } catch { /* ignore */ }
+      throw new FlintGateApiError(
+        body || `SSE endpoint returned ${res.status}`,
+        { status: res.status },
+      );
+    }
+
+    // 5xx or unexpected = retryable
+    if (!res.ok) {
+      if (attempt >= maxReconnects) {
+        throw new FlintGateApiError(
+          `SSE endpoint returned ${res.status} after ${attempt} retries`,
+          { status: res.status },
+        );
+      }
+      await sleep(sseBackoff(attempt));
+      attempt++;
+      continue;
+    }
+
+    // Successful connection — reset attempt counter, stream events
+    attempt = 0;
+    let streamError: unknown = null;
+    let receivedDone = false;
+
+    try {
+      const idTracker = (id: string) => { lastEventId = id; };
+      for await (const evt of streamSSEInternal(res, signal, idTracker)) {
+        if (signal?.aborted) return;
+        yield evt;
+        if (evt.type === "done") {
+          receivedDone = true;
+          return;
+        }
+      }
+      // Clean EOF with a done frame already yielded — normal termination
+      if (receivedDone) return;
+      // Clean EOF without a done frame — connection dropped, try to reconnect
+    } catch (err) {
+      if (signal?.aborted) return;
+      streamError = err;
+    }
+
+    if (signal?.aborted) return;
+
+    // Stream broke or dropped — retry if we have reconnects left
+    if (attempt >= maxReconnects) {
+      if (streamError) throw streamError;
+      return;
+    }
+    await sleep(sseBackoff(attempt));
+    attempt++;
+  }
+}
+
+function sseBackoff(attempt: number): number {
+  return Math.min(250 * Math.pow(2, attempt), 8000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -118,7 +261,20 @@ async function* readLines(
   try {
     while (true) {
       if (signal?.aborted) return;
-      const { value, done } = await reader.read();
+      // Race the read against the abort signal so we don't block forever on
+      // a stream that never closes (e.g. test stubs or stalled connections).
+      let readResult: ReadableStreamReadResult<Uint8Array>;
+      if (signal) {
+        const abortPromise = new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
+          const onAbort = () => resolve({ done: true, value: undefined });
+          if (signal.aborted) { onAbort(); return; }
+          signal.addEventListener("abort", onAbort, { once: true });
+        });
+        readResult = await Promise.race([reader.read(), abortPromise]);
+      } else {
+        readResult = await reader.read();
+      }
+      const { value, done } = readResult;
       if (done) break;
       if (value == null) continue;
       buffer += decoder.decode(value, { stream: true });

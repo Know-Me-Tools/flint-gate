@@ -7,10 +7,17 @@ import {
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateRouteInput,
+  DeletePolicyResponse,
   HealthStatus,
+  PolicyHistoryOptions,
+  PolicyHistoryResponse,
+  PolicyRow,
   ReadyStatus,
+  RollbackResponse,
   RouteConfig,
   RouteId,
+  UpsertPolicyInput,
+  UpsertPolicyResponse,
 } from "./types";
 
 /**
@@ -130,6 +137,91 @@ export class FlintGateAdmin {
       method: "DELETE",
       signal,
     });
+  }
+
+  // -------------------------------------------------------------- policies
+
+  /** List all Cedar policies. */
+  async listPolicies(signal?: AbortSignal): Promise<PolicyRow[]> {
+    const res = await this.client.adminRequest<{ policies: PolicyRow[] }>("/policies", { signal });
+    return res.policies;
+  }
+
+  /** Get a single Cedar policy by id. */
+  async getPolicy(id: string, signal?: AbortSignal): Promise<PolicyRow> {
+    return this.client.adminRequest<PolicyRow>(
+      `/policies/${encodeURIComponent(id)}`,
+      { signal },
+    );
+  }
+
+  /** Create a new Cedar policy. */
+  async createPolicy(
+    input: UpsertPolicyInput,
+    signal?: AbortSignal,
+  ): Promise<UpsertPolicyResponse> {
+    return this.client.adminRequest<UpsertPolicyResponse>("/policies", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal,
+    });
+  }
+
+  /** Update an existing Cedar policy by id. */
+  async updatePolicy(
+    id: string,
+    input: UpsertPolicyInput,
+    signal?: AbortSignal,
+  ): Promise<UpsertPolicyResponse> {
+    return this.client.adminRequest<UpsertPolicyResponse>(
+      `/policies/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal,
+      },
+    );
+  }
+
+  /** Delete a Cedar policy by id. */
+  async deletePolicy(id: string, signal?: AbortSignal): Promise<DeletePolicyResponse> {
+    return this.client.adminRequest<DeletePolicyResponse>(
+      `/policies/${encodeURIComponent(id)}`,
+      { method: "DELETE", signal },
+    );
+  }
+
+  /** Get the version history for a Cedar policy. */
+  async getPolicyHistory(
+    id: string,
+    opts?: PolicyHistoryOptions,
+    signal?: AbortSignal,
+  ): Promise<PolicyHistoryResponse> {
+    const params = new URLSearchParams();
+    if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    const path = `/policies/${encodeURIComponent(id)}/history${qs ? `?${qs}` : ""}`;
+    return this.client.adminRequest<PolicyHistoryResponse>(path, { signal });
+  }
+
+  /** Roll a Cedar policy back to a previous version. */
+  async rollbackPolicy(
+    id: string,
+    versionNum: number,
+    signal?: AbortSignal,
+  ): Promise<RollbackResponse> {
+    return this.client.adminRequest<RollbackResponse>(
+      `/policies/${encodeURIComponent(id)}/rollback`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version_num: versionNum }),
+        signal,
+      },
+    );
   }
 }
 

@@ -4,6 +4,7 @@ import {
   FlintGateApiError,
   FlintGateClientConfig,
   FlintGateError,
+  TokenProvider,
 } from "./types";
 
 /**
@@ -19,17 +20,32 @@ export class FlintGateClient {
   public readonly adminUrl: string | null;
   /** Immutable auth config. */
   public readonly auth: AuthConfig;
+  private readonly tokenProvider: TokenProvider | null;
   private readonly headers: Record<string, string>;
   private readonly timeoutMs?: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly maxRetries: number;
 
   constructor(config: FlintGateClientConfig) {
     this.baseUrl = normalizeBase(config.baseUrl);
     this.adminUrl = config.adminUrl ? normalizeBase(config.adminUrl) : null;
-    this.auth = config.auth ?? { type: "anonymous" };
     this.headers = { ...(config.headers ?? {}) };
     this.timeoutMs = config.timeoutMs;
     this.fetchImpl = config.fetch ?? defaultFetch;
+    this.maxRetries = config.maxRetries ?? 3;
+
+    // Resolve token provider priority: tokenProvider > token > auth
+    if (config.tokenProvider) {
+      this.tokenProvider = config.tokenProvider;
+      this.auth = config.auth ?? { type: "anonymous" };
+    } else if (config.token) {
+      const staticToken = config.token;
+      this.tokenProvider = () => Promise.resolve(staticToken);
+      this.auth = config.auth ?? { type: "anonymous" };
+    } else {
+      this.tokenProvider = null;
+      this.auth = config.auth ?? { type: "anonymous" };
+    }
   }
 
   /**
@@ -51,9 +67,11 @@ export class FlintGateClient {
     path: string,
     init: RequestInit & { readonly signal?: AbortSignal } = {},
   ): Promise<Response> {
-    const headers = this.mergeHeaders({
-      Accept: "text/event-stream, application/x-ndjson",
-    });
+    const token = this.tokenProvider ? await this.tokenProvider() : null;
+    const headers = this.mergeHeaders(
+      { Accept: "text/event-stream, application/x-ndjson" },
+      token,
+    );
     const signal = this.applyTimeout(init.signal);
     const res = await this.fetchImpl(this.url(path), {
       ...init,
@@ -100,27 +118,79 @@ export class FlintGateClient {
     init: RequestInit & { readonly signal?: AbortSignal },
     isAdmin: boolean,
   ): Promise<T> {
-    const headers = isAdmin
-      ? this.mergeHeaders(normalizeHeadersInit(init.headers))
-      : this.mergeHeaders(normalizeHeadersInit(init.headers));
+    const token = (!isAdmin && this.tokenProvider)
+      ? await this.tokenProvider()
+      : null;
+
+    const headers = this.mergeHeaders(normalizeHeadersInit(init.headers), token);
     const signal = this.applyTimeout(init.signal);
-    const res = await this.fetchImpl(url, { ...init, headers, signal });
-    if (!res.ok) {
-      await consumeAndThrow(res);
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (attempt > 0) {
+        await sleep(retryDelay(attempt - 1));
+      }
+
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, { ...init, headers, signal });
+      } catch (err) {
+        throw new FlintGateError(
+          `flint-gate fetch failed: ${String(err)}`,
+          { code: "FETCH_ERROR" },
+        );
+      }
+
+      if (res.status === 429 && attempt < this.maxRetries) {
+        // Respect Retry-After header if present
+        const retryAfter = res.headers.get("retry-after");
+        if (retryAfter) {
+          const ms = parseRetryAfter(retryAfter);
+          if (ms > 0) {
+            await sleep(ms);
+            lastError = new FlintGateApiError(
+              `flint-gate rate limited (429)`,
+              { status: 429, code: "RATE_LIMITED" },
+            );
+            continue;
+          }
+        }
+        lastError = new FlintGateApiError(
+          `flint-gate rate limited (429)`,
+          { status: 429, code: "RATE_LIMITED" },
+        );
+        continue;
+      }
+
+      if (!res.ok) {
+        await consumeAndThrow(res);
+      }
+
+      if (res.status === 204) return undefined as T;
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        return (await res.json()) as T;
+      }
+      return (await res.text()) as unknown as T;
     }
-    if (res.status === 204) return undefined as T;
-    const ct = res.headers.get("content-type") ?? "";
-    if (ct.includes("application/json")) {
-      return (await res.json()) as T;
-    }
-    return (await res.text()) as unknown as T;
+
+    // All retries exhausted — rethrow the last error
+    throw lastError;
   }
 
   private mergeHeaders(
     extra: Readonly<Record<string, string>> | Headers | undefined,
+    token?: string | null,
   ): Record<string, string> {
     const out: Record<string, string> = { ...this.headers };
-    applyAuth(out, this.auth);
+
+    // Apply token provider first (takes priority over auth config)
+    if (token) {
+      out["authorization"] = `Bearer ${token}`;
+    } else {
+      applyAuth(out, this.auth);
+    }
+
     if (extra) {
       if (typeof (extra as Headers).forEach === "function") {
         (extra as Headers).forEach((v, k) => (out[k] = v));
@@ -143,6 +213,39 @@ export class FlintGateClient {
     void timer;
     return ctrl.signal;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Error type helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if `err` is a 429 Rate Limited response from Flint Gate.
+ */
+export function isRateLimited(err: unknown): boolean {
+  return err instanceof FlintGateApiError && err.status === 429;
+}
+
+/**
+ * Returns true if `err` is a 401 Unauthorized response from Flint Gate.
+ */
+export function isUnauthorized(err: unknown): boolean {
+  return err instanceof FlintGateApiError && err.status === 401;
+}
+
+/**
+ * Returns true if `err` is a 403 Forbidden response from Flint Gate,
+ * typically indicating approval is required before the action can proceed.
+ */
+export function isApprovalRequired(err: unknown): boolean {
+  return err instanceof FlintGateApiError && err.status === 403;
+}
+
+/**
+ * Returns true if `err` is a 404 Not Found response from Flint Gate.
+ */
+export function isNotFound(err: unknown): boolean {
+  return err instanceof FlintGateApiError && err.status === 404;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,3 +360,25 @@ function emptySignal(): AbortSignal {
   }
   return new AbortController().signal;
 }
+
+/** Exponential backoff with ±20% jitter. attempt is 0-based. */
+function retryDelay(attempt: number): number {
+  const base = 500 * Math.pow(2, attempt);
+  const jitter = base * 0.2 * (Math.random() * 2 - 1);
+  return Math.round(base + jitter);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseRetryAfter(value: string): number {
+  const n = Number(value);
+  if (!Number.isNaN(n)) return n * 1000;
+  const d = Date.parse(value);
+  if (!Number.isNaN(d)) return Math.max(0, d - Date.now());
+  return 0;
+}
+
+// Re-export TokenProvider for consumers.
+export type { TokenProvider };

@@ -1,0 +1,51 @@
+{
+  "phase": "sdk-integration-tests",
+  "status": "complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": null,
+  "updated_at": "2026-07-09T18:45:00Z",
+  "changes_total": 4,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/e2e-coverage-and-ui-smoke-tests/reflection.md",
+  "seeded_from_phase": "e2e-coverage-and-ui-smoke-tests",
+  "changes": [
+    {
+      "id": "add-integration-test-fixture",
+      "status": "DONE",
+      "tasks_done": 3,
+      "tasks_total": 3
+    },
+    {
+      "id": "add-go-sdk-integration-tests",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5
+    },
+    {
+      "id": "add-ts-sdk-integration-tests",
+      "status": "DONE",
+      "tasks_done": 4,
+      "tasks_total": 4
+    },
+    {
+      "id": "add-integration-ci-workflow",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

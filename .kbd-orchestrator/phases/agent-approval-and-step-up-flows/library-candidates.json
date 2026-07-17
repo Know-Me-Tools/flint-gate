@@ -1,0 +1,55 @@
+{
+  "phase": "agent-approval-and-step-up-flows",
+  "generated": "2026-07-08",
+  "mode": "stack-specified",
+  "stack": "Rust (axum 0.8 / tokio 1 full / dashmap) + React 19 / Vite / TanStack Query admin UI",
+  "summary": "Zero external adoption surface. The approval engine, ApprovalManager, stream pause/resume, and admin/UI patterns already exist in-repo; the gaps close with in-tree tokio::time (already used in the same pipeline file), a DashMap iterate, an axum GET handler, and the existing React kit. Build-vs-adopt: BUILD (wire) for all three goals, zero new dependencies.",
+  "candidates": [],
+  "build_required": [
+    {
+      "gap_id": "G3-fail-closed-lifecycle",
+      "goal": "G3",
+      "what": "Add a TTL-deadline arm to the paused-stream select! (auto-DENY the held call on expiry, emit deny + resume to termination); a background purge_expired janitor; and an approval:{enabled,ttl_seconds} config block (enabled:false -> fail-closed deny).",
+      "reuses": [
+        "middleware/pipeline.rs:815-833 (the paused-stream select! to add the sleep_until arm) + pipeline.rs:744 (tokio::time::interval watchdog pattern for the janitor)",
+        "approval/mod.rs:57 PendingApproval.expires_at (Instant, monotonic) + approval/mod.rs:158 purge_expired",
+        "authz/engine.rs:54 DEFAULT_APPROVAL_TTL_SECONDS; config/types.rs (add approval block, serde default)"
+      ],
+      "capability_gap_id": null,
+      "effort": "medium",
+      "priority": "HIGH — closes a fail-open-to-hang defect; build first"
+    },
+    {
+      "gap_id": "G2-operator-surface",
+      "goal": "G2",
+      "what": "ApprovalManager::list() -> Vec<ApprovalStatus> (iterate DashMap, skip expired); GET /approvals + GET /approvals/{id} admin endpoints; a new Approvals web tab (page + client fns + hooks + types) with a poll refresh and approve/deny buttons.",
+      "reuses": [
+        "approval/mod.rs:145 status() + :186 ApprovalStatus (Serialize) — add list()",
+        "admin/mod.rs list-handler pattern (list_policies_handler / list_agent_identities_handler) + POST /approvals/{id}/decision already present",
+        "web/src/pages/AgentIdentities.tsx + Policies.tsx (page/table/modal + RQ hooks), App.tsx route+nav, admin.ts/useAdmin.ts/types.ts"
+      ],
+      "capability_gap_id": null,
+      "effort": "medium"
+    },
+    {
+      "gap_id": "G1-verify-and-fix-comments",
+      "goal": "G1",
+      "what": "Fix the stale 'RequireApproval is treated as a deny' comments (ag_ui.rs:245, a2ui.rs:140) to describe only the no-handle fallback; add a verification test that the flow pauses+resumes/denies end-to-end. In-band client decision channel is OUT of scope (follow-up).",
+      "reuses": [
+        "stream/ag_ui.rs + stream/a2ui.rs request_approval/resolve_approval; middleware/pipeline.rs pause loop"
+      ],
+      "capability_gap_id": null,
+      "effort": "low"
+    }
+  ],
+  "new_dependencies": [],
+  "in_tree_confirmations": [
+    "tokio = features=[\"full\"] (time present); already using tokio::time::interval (pipeline.rs:744), sleep (cache/mod.rs:386), timeout (main.rs:839) — the select! deadline arm for G3 is an in-tree pattern, zero new deps.",
+    "ApprovalManager stores expires_at as a monotonic Instant — reuse for the deadline, don't re-derive from wall clock.",
+    "ApprovalStatus is already Serialize — a list endpoint reuses it."
+  ],
+  "deferred_followups": [
+    "Multi-replica: ApprovalManager is in-memory per-replica; cross-replica decision routing (shared store + sticky routing) is a documented single-replica constraint this phase, follow-up later.",
+    "In-band client decision channel (client-decides over the same stream) — larger stream-protocol change."
+  ]
+}

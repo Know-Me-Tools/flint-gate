@@ -1,0 +1,51 @@
+{
+  "phase": "agent-approval-and-step-up-flows",
+  "status": "executing",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": "2026-07-08T00:00:00Z",
+  "updated_at": "2026-07-08T15:30:00Z",
+  "changes_total": 3,
+  "changes_completed": 3,
+  "assessment_complete": true,
+  "analysis_complete": true,
+  "plan_complete": true,
+  "spec_complete": true,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/agent-governance-completeness-and-policy-authoring/reflection.md",
+  "seeded_from_phase": "agent-governance-completeness-and-policy-authoring",
+  "changes": [
+    {
+      "id": "add-approval-timeout-and-janitor",
+      "goal": "G3",
+      "status": "archived",
+      "tasks_total": 6,
+      "tasks_done": 6
+    },
+    {
+      "id": "add-pending-approvals-surface",
+      "goal": "G2",
+      "status": "archived",
+      "tasks_total": 6,
+      "tasks_done": 6
+    },
+    {
+      "id": "fix-approval-flow-comments-and-verify",
+      "goal": "G1",
+      "status": "archived",
+      "tasks_total": 3,
+      "tasks_done": 3
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "analysis.md",
+    "library-candidates.json",
+    "plan.md",
+    "execution.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

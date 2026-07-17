@@ -1,0 +1,51 @@
+{
+  "phase": "admin-hardening-and-multi-replica-approval",
+  "status": "complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": "2026-07-08T00:00:00Z",
+  "updated_at": "2026-07-08T16:10:00Z",
+  "changes_total": 3,
+  "changes_completed": 3,
+  "assessment_complete": true,
+  "analysis_complete": true,
+  "plan_complete": true,
+  "spec_complete": true,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/agent-approval-and-step-up-flows/reflection.md",
+  "seeded_from_phase": "agent-approval-and-step-up-flows",
+  "changes": [
+    {
+      "id": "add-admin-write-rate-limiting",
+      "goal": "G1",
+      "status": "DONE",
+      "tasks_total": 5,
+      "tasks_done": 5,
+      "archived_at": "2026-07-08T14:52:33Z"
+    },
+    {
+      "id": "add-approval-cap-and-janitor-config",
+      "goal": "G2",
+      "status": "DONE",
+      "tasks_total": 5,
+      "tasks_done": 5,
+      "archived_at": "2026-07-08T15:30:00Z"
+    },
+    {
+      "id": "add-admin-hardening-and-multi-replica-doc",
+      "goal": "G3+G4",
+      "status": "DONE",
+      "tasks_total": 5,
+      "tasks_done": 5,
+      "archived_at": "2026-07-08T16:10:00Z"
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

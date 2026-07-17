@@ -1,0 +1,39 @@
+{
+  "phase": "agent-authz-budget-rate-limiting",
+  "status": "reflect_complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": null,
+  "updated_at": "2026-07-09T14:35:00Z",
+  "changes_total": 2,
+  "changes_completed": 2,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/sdk-integration-tests/reflection.md",
+  "seeded_from_phase": "sdk-integration-tests",
+  "changes": [
+    {
+      "id": "add-go-sdk-approval-methods",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5
+    },
+    {
+      "id": "add-ts-sdk-approval-methods",
+      "status": "DONE",
+      "tasks_done": 6,
+      "tasks_total": 6
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

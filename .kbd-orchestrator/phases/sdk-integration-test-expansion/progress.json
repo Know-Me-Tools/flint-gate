@@ -1,0 +1,32 @@
+{
+  "phase": "sdk-integration-test-expansion",
+  "status": "complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": null,
+  "updated_at": "2026-07-09T20:20:00Z",
+  "changes_total": 4,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/agent-authz-budget-rate-limiting/reflection.md",
+  "seeded_from_phase": "agent-authz-budget-rate-limiting",
+  "changes": [
+    { "id": "add-go-sdk-policy-methods", "status": "DONE", "tasks_done": 7, "tasks_total": 7 },
+    { "id": "fix-ts-listpolicies-envelope", "status": "DONE", "tasks_done": 2, "tasks_total": 2 },
+    { "id": "expand-go-integration-tests", "status": "DONE", "tasks_done": 5, "tasks_total": 5 },
+    { "id": "expand-ts-integration-tests", "status": "DONE", "tasks_done": 4, "tasks_total": 4 }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md",
+    "reflection.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

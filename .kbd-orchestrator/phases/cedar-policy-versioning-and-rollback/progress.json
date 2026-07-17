@@ -1,0 +1,55 @@
+{
+  "phase": "cedar-policy-versioning-and-rollback",
+  "status": "complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": null,
+  "updated_at": "2026-07-09T11:30:00Z",
+  "changes_total": 4,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": false,
+  "seed": ".kbd-orchestrator/phases/cedar-policy-authoring-ux/reflection.md",
+  "seeded_from_phase": "cedar-policy-authoring-ux",
+  "changes": [
+    {
+      "id": "add-policy-version-history-schema",
+      "status": "DONE",
+      "tasks_done": 7,
+      "tasks_total": 7,
+      "archived_at": "2026-07-08T22:00:00Z"
+    },
+    {
+      "id": "add-policy-history-endpoint",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5,
+      "archived_at": "2026-07-09T00:00:00Z"
+    },
+    {
+      "id": "add-policy-rollback-endpoint",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5,
+      "archived_at": "2026-07-09T00:00:00Z"
+    },
+    {
+      "id": "add-policy-version-history-ui",
+      "status": "DONE",
+      "tasks_done": 6,
+      "tasks_total": 6,
+      "archived_at": "2026-07-09T11:30:00Z"
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

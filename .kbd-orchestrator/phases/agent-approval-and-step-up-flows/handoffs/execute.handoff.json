@@ -1,0 +1,7 @@
+{
+  "stage": "execute",
+  "completedAt": "2026-07-08T00:00:00Z",
+  "outputs": ["execution.md", "progress.json"],
+  "nextStage": "reflect",
+  "summaryForNext": "Backend: openspec, driven by /kbd-apply (one task/turn, never bare /opsx:apply). 3 changes in dependency order G3->G2->G1 (INVERTS the seed; the flow already works, G3 is the safety bug), tasks 6/6/3; first pending: add-approval-timeout-and-janitor (G3, no dep, BUILD FIRST safety-critical). G2 (add-pending-approvals-surface) HARD-DEPENDS on change 1; G1 (fix-approval-flow-comments-and-verify) independent + last. Per-change QA: artifact-refiner + SEPARATED security-reviewer on changes 1&2 (author never grades its own) + a fail-closed test each; each change has a specs/approval delta written; archive via openspec archive --skip-specs --yes. Fail-closed emphasis: change 1 sleep_until auto-DENY MUST emit deny + resume to termination (NO silent-allow / NO half-open stream) + enabled:false -> deny + janitor reaps -- the auto-deny check is the HIGHEST-priority security item this phase; change 2 = list skips expired + GET /approvals admin-only + web build/typecheck green; change 3 = verify-only (code-reviewer suffices) + end-to-end no-silent-allow test. Zero new deps (tokio::time in-tree). Documented single-replica ApprovalManager constraint. In-band client decision channel OUT of scope. Federate any JWKS IdM (Ory ref) never an IdP; admin 4457 stays private; config priority untouched. Sync progress.json then advance waypoint in SEPARATE commands (pipeline-enforce hook)."
+}

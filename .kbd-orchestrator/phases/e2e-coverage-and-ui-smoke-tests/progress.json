@@ -1,0 +1,56 @@
+{
+  "phase": "e2e-coverage-and-ui-smoke-tests",
+  "status": "complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": null,
+  "updated_at": "2026-07-09T17:00:00Z",
+  "changes_total": 4,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/admin-ux-polish-and-diff-view/reflection.md",
+  "seeded_from_phase": "admin-ux-polish-and-diff-view",
+  "changes": [
+    {
+      "id": "add-playwright-webserver-config",
+      "status": "DONE",
+      "tasks_done": 2,
+      "tasks_total": 2,
+      "archived_at": "2026-07-09T14:35:00Z"
+    },
+    {
+      "id": "add-policies-ui-smoke-tests",
+      "status": "DONE",
+      "tasks_done": 7,
+      "tasks_total": 7,
+      "archived_at": "2026-07-09T14:50:00Z"
+    },
+    {
+      "id": "add-approvals-smoke-test",
+      "status": "DONE",
+      "tasks_done": 6,
+      "tasks_total": 6,
+      "archived_at": "2026-07-09T16:00:00Z"
+    },
+    {
+      "id": "add-e2e-ci-workflow",
+      "status": "DONE",
+      "tasks_done": 3,
+      "tasks_total": 3,
+      "archived_at": "2026-07-09T16:30:00Z"
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md",
+    "reflection.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

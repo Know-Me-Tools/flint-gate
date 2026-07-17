@@ -1,0 +1,10 @@
+POSITION REMINDER — read this as your FIRST tool call every turn
+Phase: post-beta-hardening
+Step: 2 of 8
+Stage: execute_pending
+Next command: /kbd-apply add-approval-store-trait
+
+Required signal format (emit BEFORE any tool call):
+  Starting <kbd-skill> — post-beta-hardening (step 2 of 8)
+  [do work]
+  Completed <kbd-skill> — post-beta-hardening (step 2 of 8)

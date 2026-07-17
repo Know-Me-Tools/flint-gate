@@ -1,0 +1,55 @@
+{
+  "phase": "cedar-policy-authoring-ux",
+  "status": "in_progress",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": null,
+  "updated_at": "2026-07-08T16:30:00Z",
+  "changes_total": 4,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": false,
+  "plan_complete": true,
+  "spec_complete": false,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/admin-hardening-and-multi-replica-approval/reflection.md",
+  "seeded_from_phase": "admin-hardening-and-multi-replica-approval",
+  "changes": [
+    {
+      "id": "add-cedar-policy-validate-endpoint",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5,
+      "archived_at": "2026-07-08T18:30:00Z"
+    },
+    {
+      "id": "add-cedar-hot-reload-observability",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5,
+      "archived_at": "2026-07-08T20:00:00Z"
+    },
+    {
+      "id": "add-policy-editor-inline-errors",
+      "status": "DONE",
+      "tasks_done": 5,
+      "tasks_total": 5,
+      "archived_at": "2026-07-08T20:30:00Z"
+    },
+    {
+      "id": "add-cedar-policy-simulate-endpoint",
+      "status": "DONE",
+      "tasks_done": 4,
+      "tasks_total": 4,
+      "archived_at": "2026-07-08T21:00:00Z"
+    }
+  ],
+  "artifacts": [
+    "goals.md",
+    "assessment.md",
+    "plan.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

@@ -1,0 +1,7 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-08T00:00:00Z",
+  "outputs": ["plan.md"],
+  "nextStage": "execute",
+  "summaryForNext": "3 changes ordered G3->G2->G1 (INVERTS the seed — the flow already works; G3 is the safety bug), backend openspec, driven one-task/turn by /kbd-apply. Order + tasks: (1) add-approval-timeout-and-janitor [G3, no dep, BUILD FIRST safety-critical, 6 tasks]; (2) add-pending-approvals-surface [G2, HARD-DEPENDS ON change 1 so the list reflects the expiry semantics, 6 tasks]; (3) fix-approval-flow-comments-and-verify [G1, independent, last, 3 tasks]. Zero new deps (tokio::time already in-tree). Uniform per-change QA: artifact-refiner + separated security-reviewer on changes 1&2 (change 1 = explicit 'no silent-allow, no half-open stream on timeout' check, HIGHEST-priority security item; change 2 = admin-only exposure + no list-payload leak); change 3 is verify-only (code-reviewer suffices) + a fail-closed test each + clippy/test --workspace green + >=80% new-code coverage + web build/typecheck green for change 2; archive via openspec archive --skip-specs --yes; sync progress.json + advance waypoint in SEPARATE commands (pipeline-enforce hook). Constraints: no secrets; admin 4457 stays private (new GET /approvals admin-router only); no broken tests; config priority untouched (approval block additive); federate any JWKS IdM (Ory ref) never an IdP; documented single-replica ApprovalManager constraint; LLM-ops out of scope. First: /kbd-apply add-approval-timeout-and-janitor."
+}

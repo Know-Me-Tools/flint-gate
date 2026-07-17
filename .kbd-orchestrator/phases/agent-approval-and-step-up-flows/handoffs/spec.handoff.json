@@ -1,0 +1,11 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-08T00:00:00Z",
+  "outputs": [
+    "openspec/changes/add-approval-timeout-and-janitor/",
+    "openspec/changes/add-pending-approvals-surface/",
+    "openspec/changes/fix-approval-flow-comments-and-verify/"
+  ],
+  "nextStage": "plan",
+  "summaryForNext": "3 openspec changes written + validated strict, build-ordered G3->G2->G1 (the seed's order INVERTED — the flow already works, G3 is the safety bug): (1) add-approval-timeout-and-janitor [G3, dep: none, BUILD FIRST, safety-critical] — sleep_until(nearest expires_at) arm on the paused-stream select! (pipeline.rs:815-833) auto-DENYs an undecided call (emit deny + resume to termination, NO silent-allow / NO half-open stream); background purge_expired janitor (main.rs, mirror watchdog interval pipeline.rs:744); approval:{enabled=true,ttl_seconds?} config, enabled:false -> fail-closed deny. (2) add-pending-approvals-surface [G2, dep: change 1] — ApprovalManager::list()->Vec<ApprovalStatus> (skip expired) + GET /approvals + GET /approvals/{id} + a new /approvals web tab (page, client fns, hooks, types, poll refresh, approve/deny). (3) fix-approval-flow-comments-and-verify [G1, dep: none] — fix the misleading 'treated as a deny' comments (ag_ui.rs:245, a2ui.rs:140, they describe only the no-handle fallback) + an end-to-end pause/approve/deny verification test. ZeeSpec: n/a. Backend: openspec. ZERO new deps (tokio::time already used in-tree). Each change touches approval/stream/authz -> separated security review each; change 1's auto-deny (fail-closed, emit-deny-not-silent-drop, no half-open stream) is the highest-priority security item. Documented single-replica constraint (ApprovalManager in-memory per-replica). In-band client decision channel OUT of scope. Plan ordering is the natural G3->G2->G1 (change 2 depends on change 1; change 3 independent, last)."
+}

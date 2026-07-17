@@ -9,7 +9,7 @@ All SDKs support the proxy data plane (streaming requests) and the admin plane (
 | Rust | `flint-gate-client` | `crates/flint-gate-client` |
 | Go | `github.com/know-me-tools/flint-gate/sdks/go` | `sdks/go` |
 | TypeScript | `@know-me/flint-gate` | `sdks/typescript` |
-| Flutter / Dart | `flint_gate` | `sdks/flutter` |
+| Flutter / Dart | `flint_gate` *(coming soon — not yet published)* | `sdks/flutter` |
 
 ## Capabilities by SDK
 

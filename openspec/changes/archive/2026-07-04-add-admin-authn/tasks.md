@@ -1,0 +1,5 @@
+- [x] Add `AdminAuthConfig` + `ServerConfig.admin_auth`; loopback/off-loopback startup guard (refuse non-loopback without auth)
+- [x] `admin::auth` middleware: verify JWT (jwt_verify) or Kratos session (kratos), attach Identity, 401 on failure
+- [x] Wire the middleware onto `admin_router()`; keep `/health` (+ `/ready`) unauthenticated for probes
+- [x] Tests: authed passes, missing/invalid token 401, loopback-dev bypass, off-loopback-without-auth refuses start (fail-closed `degrades_to_deny`)
+- [x] Docs: config.example.yaml `admin_auth` block + README admin-exposure note; `cargo check/clippy/test --workspace` green

@@ -1,38 +1,89 @@
-import { Navigate, NavLink, Route, Routes } from 'react-router-dom';
-import Approvals from '@/pages/Approvals';
+import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
+import { lazy, Suspense, type ReactNode } from 'react';
+import { Button } from '@/components/ui/button';
+import { ToastProvider } from '@/components/ui/toast';
+import Dashboard from '@/pages/Dashboard';
+import RoutesPage from '@/pages/Routes';
+import AuthProviders from '@/pages/AuthProviders';
+import Hooks from '@/pages/Hooks';
 import Policies from '@/pages/Policies';
+import Budgets from '@/pages/Budgets';
+import ApiKeys from '@/pages/ApiKeys';
+import AgentIdentities from '@/pages/AgentIdentities';
+import Approvals from '@/pages/Approvals';
+
+// Code-split the analytics surface: Recharts is large and only this page needs
+// it, so it must not weigh down the CRUD bundle (app-page JS budget ~300 KB).
+const Analytics = lazy(() => import('@/pages/Analytics'));
+
+function PageFallback() {
+  return <p className="text-muted-foreground">Loading…</p>;
+}
+
+function Layout({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-screen flex flex-col">
+      <header className="border-b px-4 py-3 flex items-center gap-4">
+        <div className="font-semibold">Flint Gate Admin</div>
+        <nav className="flex gap-2">
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/">Dashboard</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/analytics">Analytics</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/routes">Routes</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/auth">Auth</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/hooks">Hooks</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/policies">Policies</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/budgets">Budgets</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/api-keys">API Keys</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/agent-identities">Agents</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/approvals">Approvals</Link>
+          </Button>
+        </nav>
+      </header>
+      <main className="flex-1 p-6">{children}</main>
+    </div>
+  );
+}
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="border-b px-6 py-3 flex items-center gap-6">
-        <span className="font-bold text-lg">Flint Gate</span>
-        <nav className="flex gap-4">
-          <NavLink
-            to="/policies"
-            className={({ isActive }) =>
-              isActive ? 'font-medium' : 'text-muted-foreground hover:text-foreground'
-            }
-          >
-            Policies
-          </NavLink>
-          <NavLink
-            to="/approvals"
-            className={({ isActive }) =>
-              isActive ? 'font-medium' : 'text-muted-foreground hover:text-foreground'
-            }
-          >
-            Approvals
-          </NavLink>
-        </nav>
-      </header>
-      <main className="px-6 py-8 max-w-6xl mx-auto">
-        <Routes>
-          <Route path="/" element={<Navigate to="/policies" replace />} />
-          <Route path="/policies" element={<Policies />} />
-          <Route path="/approvals" element={<Approvals />} />
-        </Routes>
-      </main>
-    </div>
+    <ToastProvider>
+      <BrowserRouter>
+        <Layout>
+          <Suspense fallback={<PageFallback />}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/routes" element={<RoutesPage />} />
+            <Route path="/auth" element={<AuthProviders />} />
+            <Route path="/hooks" element={<Hooks />} />
+            <Route path="/policies" element={<Policies />} />
+            <Route path="/budgets" element={<Budgets />} />
+            <Route path="/api-keys" element={<ApiKeys />} />
+            <Route path="/agent-identities" element={<AgentIdentities />} />
+            <Route path="/approvals" element={<Approvals />} />
+          </Routes>
+          </Suspense>
+        </Layout>
+      </BrowserRouter>
+    </ToastProvider>
   );
 }

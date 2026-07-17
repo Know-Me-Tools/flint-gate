@@ -1,0 +1,5 @@
+- [x] Add `BudgetScope::Agent` to the enum + serde + key derivation (budget/ratelimit key prefix) in ratelimit/mod.rs; no collision with User/Team keys
+- [x] Resolve an agent principal's budget under the Agent scope (tie to the change-1 Agent classification) so delegated agents count against their Agent budget, not User
+- [x] Add a fail-closed outage posture: on a budget-backend error, Agent scope -> Deny (default), User/Team -> degrade (current behavior). Reuse BackendUnavailablePosture; add config plumbing + config.example docs
+- [x] Tests: Agent budget backend-unavailable -> deny (degrades_to_deny); User budget backend-unavailable -> still degrades (no regression); over-budget Agent -> blocked; Agent/User keys don't collide
+- [x] Docs: README + config.example.yaml (Agent budget scope + fail-closed posture); `cargo check/clippy/test --workspace` green

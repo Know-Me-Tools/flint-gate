@@ -1,0 +1,27 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Flint Gate Web Admin — Smoke-test dev server
+# Build context: repository root (so ../sdks/typescript is available)
+# ─────────────────────────────────────────────────────────────────────────────
+FROM node:22-alpine
+
+WORKDIR /app/web
+
+# Enable pnpm via corepack (pin to v9 so build scripts run by default)
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+# Copy dependency manifests and install before source for layer caching
+COPY web/package.json web/pnpm-lock.yaml ./
+
+# The local SDK package is referenced as file:../sdks/typescript
+COPY sdks/typescript /app/sdks/typescript
+RUN pnpm install --frozen-lockfile
+
+# Copy the application source
+COPY web/ ./
+
+EXPOSE 5173
+
+ENV VITE_ADMIN_API_URL=http://flint-gate:4457
+ENV NODE_ENV=development
+
+CMD ["pnpm", "run", "dev", "--", "--host"]

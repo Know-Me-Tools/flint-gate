@@ -1,6 +1,9 @@
 package flintgate
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // HealthStatus is the body returned by GET /health on the admin server.
 type HealthStatus struct {
@@ -110,6 +113,103 @@ type CacheStats struct {
 	ApiKeyEntries int `json:"api_key_entries"`
 	HitRate       float64 `json:"hit_rate"`
 }
+
+// ---------------------------------------------------------------------------
+// Identity — populated by Flint Gate on inbound requests and forwarded to
+// downstream services as headers (see middleware.IdentityFromHeaders).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Policies — Cedar authorization policy management
+// ---------------------------------------------------------------------------
+
+// PolicyRow is the read shape returned by GET /policies and GET /policies/{id}.
+type PolicyRow struct {
+	ID           string          `json:"id"`
+	PolicyText   string          `json:"policy_text"`
+	SchemaJSON   json.RawMessage `json:"schema_json,omitempty"`
+	EntitiesJSON json.RawMessage `json:"entities_json,omitempty"`
+	Enabled      bool            `json:"enabled"`
+	WrittenBy    *string         `json:"written_by,omitempty"`
+}
+
+// PolicyVersionRow is one entry in the history returned by GET /policies/{id}/history.
+type PolicyVersionRow struct {
+	ID           int             `json:"id"`
+	PolicyID     string          `json:"policy_id"`
+	VersionNum   int             `json:"version_num"`
+	PolicyText   string          `json:"policy_text"`
+	SchemaJSON   json.RawMessage `json:"schema_json,omitempty"`
+	EntitiesJSON json.RawMessage `json:"entities_json,omitempty"`
+	WrittenBy    *string         `json:"written_by,omitempty"`
+	WrittenAt    time.Time       `json:"written_at"`
+}
+
+// PolicyHistoryResponse is returned by GET /policies/{id}/history.
+type PolicyHistoryResponse struct {
+	PolicyID  string             `json:"policy_id"`
+	TotalHint *int               `json:"total_hint"` // nullable — server omits COUNT(*)
+	Versions  []PolicyVersionRow `json:"versions"`
+}
+
+// UpsertPolicyInput is the body for POST /policies and PUT /policies/{id}.
+type UpsertPolicyInput struct {
+	ID           string          `json:"id,omitempty"` // required on POST
+	PolicyText   string          `json:"policy_text"`
+	SchemaJSON   json.RawMessage `json:"schema_json,omitempty"`
+	EntitiesJSON json.RawMessage `json:"entities_json,omitempty"`
+	Enabled      bool            `json:"enabled"`
+}
+
+// UpsertPolicyResponse is returned by POST /policies and PUT /policies/{id}.
+type UpsertPolicyResponse struct {
+	Status   string   `json:"status"` // "created" | "updated" | "ok"
+	ID       string   `json:"id"`
+	Reloaded bool     `json:"reloaded"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// DeletePolicyResponse is returned by DELETE /policies/{id}.
+type DeletePolicyResponse struct {
+	Status   string `json:"status"` // "deleted"
+	ID       string `json:"id"`
+	Reloaded bool   `json:"reloaded"`
+}
+
+// RollbackPolicyResponse is returned by POST /policies/{id}/rollback.
+type RollbackPolicyResponse struct {
+	Status      string   `json:"status"` // "rolled_back" | "ok"
+	PolicyID    string   `json:"policy_id"`
+	FromVersion int      `json:"from_version"`
+	ToVersion   int      `json:"to_version"`
+	Reloaded    bool     `json:"reloaded"`
+	Warnings    []string `json:"warnings,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Approvals — human-in-the-loop tool-call approval flow
+// ---------------------------------------------------------------------------
+
+// ApprovalStatus is the read-only view of a pending approval returned by
+// GET /approvals and GET /approvals/{id}.
+type ApprovalStatus struct {
+	ApprovalID  string     `json:"approval_id"`
+	PrincipalID string     `json:"principal_id"`
+	Action      string     `json:"action"`
+	ResourceID  string     `json:"resource_id"`
+	Reason      *string    `json:"reason,omitempty"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	Expired     bool       `json:"expired"`
+}
+
+// ApprovalDecision is the value sent in POST /approvals/{id}/decision.
+// The server expects snake_case JSON: "approve" or "deny".
+type ApprovalDecision string
+
+const (
+	ApprovalDecisionApprove ApprovalDecision = "approve"
+	ApprovalDecisionDeny    ApprovalDecision = "deny"
+)
 
 // ---------------------------------------------------------------------------
 // Identity — populated by Flint Gate on inbound requests and forwarded to

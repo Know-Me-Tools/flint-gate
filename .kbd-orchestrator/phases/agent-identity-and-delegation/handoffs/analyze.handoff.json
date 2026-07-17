@@ -1,0 +1,9 @@
+{
+  "stage": "analyze",
+  "completedAt": "2026-07-04T14:50:00Z",
+  "outputs": ["analysis.md", "library-candidates.json", "decision-log.md"],
+  "nextStage": "spec",
+  "summaryForNext": "4 build-vs-adopt calls, ZERO new crates — all reuse. Governing rule: flint-gate federates any JWT-capable IdM (Ory standard), never becomes an IdP. D-B01 admin-authn: reuse JWT/Kratos via from_fn middleware. D-B02 RFC 8693: hand-roll gateway-local downscoping exchange (verify subject_token via JWKS -> mint act-claim token via JwtMinter) as the vendor-neutral core, Hydra-delegate as optional seam (external-aud caveat ory/hydra#3723). D-B03 introspection/client-creds: hybrid — consume Hydra's native RFC 7662 + hand-roll local for gateway-minted tokens. D-B04 NHI: thread principal entity-TYPE through the already-generic make_uid + lifecycle store. Build order G1->G2->G3->G4. Open for spec: G2 delegate-mode-now vs local-first (lean local); G4 distinct Agent:: type vs User+kind (lean distinct); admin-authn default posture.",
+  "skipped": false,
+  "skipReason": null
+}

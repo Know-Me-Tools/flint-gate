@@ -1,0 +1,5 @@
+- [x] Add an admin endpoint (POST + list/delete) accepting { agent, allow[], deny[] } that compiles via compile_and_validate (same allowlist-charset + validate_policy 400-gate) and persists as the sugar-overlay source, then reloads — mirroring upsert_policy_inner's validate-then-reload
+- [x] Backend tests: valid entry compiles + persists + reloads; illegal agent id / tool token -> 400 (injection fail-closed at the boundary); deny-wins preserved; no raw-Cedar bypass path exists
+- [x] Web: client fn in web/src/api/admin.ts + a React-Query hook + types for the tool-scope entry
+- [x] Web: Policies-tab tool-scope builder form (agent id + allow-list + deny-list, glob support) following AgentIdentities.tsx (modal builder + hooks) and Routes.tsx (nested structured config) patterns
+- [x] Docs: README (admin-UI tool-scope builder over the merged sugar; structured-only, no raw-Cedar for tool-scopes) + web build green; cargo check/clippy/test --workspace green; SEPARATED security review with an explicit API-boundary injection re-check

@@ -1,0 +1,121 @@
+version: "3.9"
+
+# SDK integration-test environment.
+# No web container — this stack is for Go/TypeScript SDK tests only.
+# Admin API is exposed on host :4457 with a static token for test clients.
+# Start with: docker compose -f docker-compose.test.yml up -d --wait
+
+services:
+  # ── Postgres ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flintgate
+      POSTGRES_PASSWORD: flintgate
+      POSTGRES_DB: flintgate
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flintgate -d flintgate"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Mock upstream (ndjson tool-call stream for approval flow tests) ─────────
+  mock-upstream:
+    image: node:20-alpine
+    command: node /stub/server.mjs
+    volumes:
+      - ./test/stub:/stub:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9999/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+  # ── Flint Gate ──────────────────────────────────────────────────────────────
+  flint-gate:
+    build: .
+    ports:
+      - "4456:4456"
+      - "4457:4457"
+    environment:
+      DATABASE_URL: "postgres://flintgate:flintgate@postgres:5432/flintgate"
+      FLINT_GATE_JWT_SECRET: "test-jwt-secret"
+      FLINT_GATE_CONFIG: "/app/config/config.test.yaml"
+      RUST_LOG: "info,flint_gate=debug"
+    volumes:
+      - ./config.test.yaml:/app/config/config.test.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hydra-seed:
+        condition: service_completed_successfully
+      mock-upstream:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4457/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Ory Hydra ───────────────────────────────────────────────────────────────
+  hydra-migrate:
+    image: oryd/hydra:v2.2.0
+    command: migrate sql -e --yes
+    environment:
+      DSN: "postgres://flintgate:flintgate@postgres:5432/flintgate?sslmode=disable&max_conns=20&max_idle_conns=4&search_path=hydra"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  hydra:
+    image: oryd/hydra:v2.2.0
+    command: serve all --dev
+    ports:
+      - "4444:4444" # public
+      - "4445:4445" # admin
+    environment:
+      DSN: "postgres://flintgate:flintgate@postgres:5432/flintgate?sslmode=disable&max_conns=20&max_idle_conns=4&search_path=hydra"
+      URLS_SELF_ISSUER: "http://hydra:4444"
+      SECRETS_SYSTEM: "test-hydra-system-secret-min-16-ch"
+      STRATEGIES_ACCESS_TOKEN: "jwt"
+    depends_on:
+      hydra-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4445/health/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  hydra-seed:
+    image: oryd/hydra:v2.2.0
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        hydra create oauth2-client
+        --endpoint http://hydra:4445
+        --name flint-integration
+        --grant-type client_credentials
+        --token-endpoint-auth-method client_secret_post
+        --format json
+        --id flint-integration-client
+        --secret flint-integration-secret
+        || echo "client may already exist"
+    depends_on:
+      hydra:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  postgres_test_data:

@@ -1,0 +1,9 @@
+{
+  "stage": "analyze",
+  "completedAt": "2026-07-04T18:40:00Z",
+  "outputs": ["analysis.md", "library-candidates.json", "decision-log.md"],
+  "nextStage": "spec",
+  "summaryForNext": "4 calls, ONE new crate (bcrypt@0.19) — otherwise reuse. D-C01 G1: authenticate /oauth/introspect with OAuth client-credentials via the EXISTING oauth_clients store (RFC 7662 §2.1 MUST) + per-endpoint governor layer (exists); gate Hydra-delegate behind it. D-C02 G2: adopt bcrypt (stable/pure-Rust) over unsalted sha256; verify refactors to fetch-by-id + bcrypt::verify, format-sniff cutover; argon2 rejected (rc churn + overkill for 256-bit secret). D-C03 G3: extend existing — api_key kind=Service, gate Kratos act-fallback off session_id, transactional NHI audit. D-C04 G4: verify-or-REJECT actor_token (kill today's silent-ignore fail-open) + wire delegate_to_hydra proxy. Build order G1->G2->G3->G4. Open for spec: /oauth/token hard-auth-vs-rate-limit; bcrypt migration format-sniff; actor_token verify-vs-reject (lean reject); rate-limit backend governor-vs-Redis.",
+  "skipped": false,
+  "skipReason": null
+}

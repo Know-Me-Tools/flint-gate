@@ -33,6 +33,7 @@ pub struct GateCache {
 }
 
 /// Redis key prefix for L2 cache entries.
+#[cfg(feature = "redis-l2")]
 const L2_PREFIX: &str = "flint";
 
 impl GateCache {
@@ -76,6 +77,16 @@ impl GateCache {
             }
         }
         Ok(())
+    }
+
+    /// Return a clone of the Redis L2 connection manager, if connected.
+    ///
+    /// Reused by the rate-limit module so it shares the single connection
+    /// manager/pool established by [`GateCache::connect_l2`] rather than
+    /// opening a second connection.
+    #[cfg(feature = "redis-l2")]
+    pub fn l2_connection(&self) -> Option<redis::aio::ConnectionManager> {
+        self.l2.clone()
     }
 
     /// Invalidate all cache entries. Called on config change.
@@ -282,12 +293,39 @@ pub struct CacheStats {
     pub kv_entry_count: u64,
 }
 
+/// The action a NOTIFY payload maps to. Extracted so the dispatch logic is
+/// unit-testable without a live Postgres LISTEN/NOTIFY connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotifyAction {
+    /// Route/site change — invalidate route cache and rebuild the router.
+    Routes,
+    /// Authorization policy change — reload the Cedar engine from the DB.
+    Policies,
+    /// Anything else — conservatively flush all caches.
+    All,
+}
+
+/// Classify a raw NOTIFY payload into a [`NotifyAction`].
+pub(crate) fn classify_notification(payload: &str) -> NotifyAction {
+    match payload {
+        "routes" | "sites" => NotifyAction::Routes,
+        "policies" => NotifyAction::Policies,
+        _ => NotifyAction::All,
+    }
+}
+
 /// Start the Postgres LISTEN/NOTIFY cache invalidation listener.
 ///
 /// Subscribes to the configured channel and invalidates caches when a
 /// notification arrives. When `db` and `router` are provided and a "routes"
 /// notification is received, the router is rebuilt from the DB + YAML config.
+/// When `authz` is provided and a "policies" notification is received, the
+/// shared authorization engine is reloaded from the database (parse-before-swap,
+/// retain last-good) so peer replicas pick up policy edits WITHOUT a restart.
 /// This is best-effort — errors are logged, not fatal.
+///
+/// When `event_tx` is `Some`, an `AdminEvent` is broadcast after every reload
+/// attempt so admin SSE subscribers receive real-time reload status.
 pub async fn start_cache_invalidation_listener(
     pool: sqlx::PgPool,
     cache: Arc<GateCache>,
@@ -297,6 +335,8 @@ pub async fn start_cache_invalidation_listener(
         crate::config::SharedConfig,
         Arc<crate::db::Database>,
     )>,
+    authz: Option<(Arc<crate::authz::AuthzEngine>, Arc<crate::db::Database>)>,
+    event_tx: Option<tokio::sync::broadcast::Sender<crate::admin::AdminEvent>>,
 ) {
     tokio::spawn(async move {
         let mut listener = match sqlx::postgres::PgListener::connect_with(&pool).await {
@@ -319,15 +359,44 @@ pub async fn start_cache_invalidation_listener(
                 Ok(notification) => {
                     let payload = notification.payload();
                     info!(channel = %channel, payload = %payload, "cache invalidation notification received");
-                    match payload {
-                        "routes" | "sites" => {
+                    match classify_notification(payload) {
+                        NotifyAction::Routes => {
                             cache.invalidate_routes().await;
                             // Rebuild router from DB + YAML when override mode is active.
                             if let Some((ref shared_router, ref shared_config, ref db)) = router {
                                 rebuild_router_from_db(shared_router, shared_config, db).await;
                             }
                         }
-                        _ => cache.invalidate_all().await,
+                        NotifyAction::Policies => {
+                            // Reload the shared Cedar engine from the DB. Reload
+                            // is parse-before-swap + lenient (skip bad rows), so a
+                            // poisoned remote row can neither blank nor over-open
+                            // this replica's policy bundle.
+                            if let Some((ref authz, ref db)) = authz {
+                                match authz.reload_from_database(db).await {
+                                    Ok(()) => {
+                                        let policy_count = authz.snapshot().policies().policies().count();
+                                        if let Some(ref tx) = event_tx {
+                                            let _ = tx.send(crate::admin::AdminEvent::PolicyReloadOk { policy_count });
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, "policy reload from NOTIFY failed — retaining last-good");
+                                        if let Some(ref tx) = event_tx {
+                                            let _ = tx.send(crate::admin::AdminEvent::PolicyReloadError {
+                                                skipped_count: 0,
+                                                db_error: Some(e.to_string()),
+                                            });
+                                        }
+                                    }
+                                }
+                            } else {
+                                // No engine wired (no DB / authz on this replica);
+                                // fall back to a cache flush for safety.
+                                cache.invalidate_all().await;
+                            }
+                        }
+                        NotifyAction::All => cache.invalidate_all().await,
                     }
                 }
                 Err(e) => {
@@ -343,6 +412,16 @@ pub async fn start_cache_invalidation_listener(
     });
 }
 
+/// Decide whether a route hot-reload must be rejected (last-good retained).
+///
+/// Fail-closed posture for a LIVE process (which cannot refuse-to-start): a reload
+/// is rejected only under `strict_agent_governance` AND when the merged set has at
+/// least one governance finding. Pure, so the reload policy is unit-testable
+/// without a database.
+fn reload_must_be_rejected(strict: bool, finding_count: usize) -> bool {
+    strict && finding_count > 0
+}
+
 /// Reload DB routes and rebuild the shared router.
 async fn rebuild_router_from_db(
     shared_router: &crate::proxy::SharedRouter,
@@ -352,7 +431,27 @@ async fn rebuild_router_from_db(
     let config = shared_config.read().await.clone();
     match db.load_routes().await {
         Ok(db_routes) => {
-            let new_router = crate::proxy::Router::from_config_and_db_routes(&config, &db_routes);
+            // Compute the merged (YAML + DB) route set and lint it for
+            // under-governed agent routes. A live process CANNOT refuse-to-start,
+            // so the fail-closed posture here is: WARN always, and under
+            // `strict_agent_governance` REJECT the reload and RETAIN the last-good
+            // router (never apply an under-governed route, never terminate).
+            let merged = crate::proxy::merge_routes(&config, &db_routes);
+            let findings = config.agent_governance_lint_routes(&merged);
+            for f in &findings {
+                warn!(route_id = %f.route_id, "agent-governance (reload): {}", f.reason.as_str());
+            }
+            if reload_must_be_rejected(config.server.strict_agent_governance, findings.len()) {
+                crate::metrics::record_governance_reload_rejected();
+                warn!(
+                    findings = findings.len(),
+                    "agent-governance (reload, strict): under-governed agent route(s) in the \
+                     reloaded set — REJECTING the reload and retaining the last-good router; \
+                     the new route set is NOT applied"
+                );
+                return;
+            }
+            let new_router = crate::proxy::Router::from_config_with_routes(&config, merged);
             let count = new_router.route_count();
             *shared_router.write().await = new_router;
             info!(route_count = count, "router rebuilt from DB + YAML routes");
@@ -394,5 +493,49 @@ mod tests {
             .await;
         cache.invalidate_all().await;
         assert!(cache.kv.get("key").await.is_none());
+    }
+
+    // ── C1: NOTIFY payload dispatch (the arm the listener selects) ───────────
+
+    #[test]
+    fn classify_routes_and_sites_map_to_routes() {
+        assert_eq!(classify_notification("routes"), NotifyAction::Routes);
+        assert_eq!(classify_notification("sites"), NotifyAction::Routes);
+    }
+
+    #[test]
+    fn classify_policies_maps_to_policies_reload() {
+        // This is the fix for C1: a "policies" NOTIFY must trigger an authz
+        // reload, NOT fall through to the generic invalidate_all arm.
+        assert_eq!(classify_notification("policies"), NotifyAction::Policies);
+    }
+
+    #[test]
+    fn classify_unknown_payload_falls_back_to_all() {
+        assert_eq!(classify_notification("signing_keys"), NotifyAction::All);
+        assert_eq!(classify_notification("something_else"), NotifyAction::All);
+        assert_eq!(classify_notification(""), NotifyAction::All);
+    }
+
+    // ── reload governance decision (fail-closed for a live process) ──────────
+
+    #[test]
+    fn reload_rejected_only_under_strict_with_findings() {
+        // Strict + findings → reject (retain last-good); a live process can't bail.
+        assert!(reload_must_be_rejected(true, 1));
+        assert!(reload_must_be_rejected(true, 5));
+    }
+
+    #[test]
+    fn reload_applies_when_not_strict_even_with_findings() {
+        // Non-strict → advisory only: warn but still apply the reload.
+        assert!(!reload_must_be_rejected(false, 3));
+    }
+
+    #[test]
+    fn reload_applies_when_strict_but_clean() {
+        // Strict but no findings → apply normally.
+        assert!(!reload_must_be_rejected(true, 0));
+        assert!(!reload_must_be_rejected(false, 0));
     }
 }

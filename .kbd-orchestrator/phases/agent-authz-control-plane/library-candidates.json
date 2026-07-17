@@ -1,0 +1,69 @@
+{
+  "phase": "agent-authz-control-plane",
+  "generated": "2026-07-02",
+  "mode": "stack-specified",
+  "stack": "rust-axum-tokio-postgres",
+  "decisions": [
+    {
+      "gap": "G2-policy-engine",
+      "verdict": "adopt",
+      "choice": "cedar-policy",
+      "version": "4",
+      "confidence": "high",
+      "rationale": "Native Rust, Send+Sync (lock-free ArcSwap sharing), runtime-loadable policy text from Postgres JSONB, typed principal/action/resource/context ABAC maps 1:1 onto claims/tool/params, deterministic + DoS-resistant, AWS-backed and most-maintained.",
+      "fallback": "regorus",
+      "rejected": ["casbin (not Send+Sync — RwLock hot-path hazard)", "oso (deprecated)", "opa-wasm (heavier runtime)", "openfga (remote/no-sidecar violation)"],
+      "license": "Apache-2.0",
+      "integration_notes": "ArcSwap<Arc<CedarBundle>>; parse-before-swap fail-closed; validate at write-time via Cedar Validator; one Request per tool-call; list_tools filters Deny."
+    },
+    {
+      "gap": "G3-rate-limit-budgets",
+      "verdict": "hybrid-adopt-plus-handroll",
+      "choice": ["governor", "tower_governor", "redis-window-counters(hand-rolled)"],
+      "version": {"governor": "0.10", "tower_governor": "0.8", "redis": "1 (existing, redis-l2 feature)"},
+      "confidence": "high",
+      "rationale": "governor = in-process per-replica burst shield (no distributed backend exists); hand-rolled Redis Lua window counters (reuse existing redis dep) = authoritative shared per-key/per-team rolling-window token budgets + cross-replica rate limits; Postgres usage_events = durable ledger.",
+      "fallback": "governor-only + Postgres windowed SUM(tokens) check when redis-l2 disabled",
+      "rejected": ["redis-rate / tower-rate-limit-redis (duplicate redis dep, version conflict risk)"],
+      "license": "MIT / MIT-Apache-2.0"
+    },
+    {
+      "gap": "G1-mcp-resource-server",
+      "verdict": "hand-roll-surface-reuse-jwt",
+      "choice": ["hand-rolled RFC9728/WWW-Authenticate/RFC8707/PKCE", "jsonwebtoken(existing) + reqwest JWKS cache"],
+      "version": {"jsonwebtoken": "9 (existing — DO NOT bump)", "sha2": "existing", "reqwest": "existing"},
+      "optional": {"openidconnect": "4 (only if federating many issuers; RP-shaped API needs adaptation)"},
+      "confidence": "high",
+      "rationale": "No crate covers the MCP RS/metadata role. .well-known JSON + WWW-Authenticate + RFC 8707 + PKCE S256 are trivial hand-rolls; JWKS fetch/rotation on existing jsonwebtoken 9 is ~60-80 lines and single-binary-friendly.",
+      "fallback": "openidconnect 4 for discovery/JWKS if issuer federation grows",
+      "rejected": ["jwks (pins jsonwebtoken ^10 — conflicts with pinned v9)", "jwks-cache (immature, GPL-3.0)", "oauth2 (client-only)", "rmcp auth feature (client-only)"],
+      "constraint": "Stay on jsonwebtoken 9 to avoid v10 conflict."
+    },
+    {
+      "gap": "G4-web-config-ui",
+      "verdict": "adopt",
+      "choice": {"serving": "rust-embed", "frontend": "react-vite-spa", "charts": ["recharts", "uplot"]},
+      "version": {"rust-embed": "8 (features: axum, debug-embed)"},
+      "confidence": "high",
+      "rationale": "rust-embed preserves single-binary shipping (ServeDir cannot serve embedded assets); React+Vite SPA reuses the existing TypeScript SDK directly and stays in lockstep with utoipa OpenAPI; Recharts for cost/token analytics, uPlot for dense time-series.",
+      "fallback": "include_dir (embed) / SvelteKit static (frontend) / ServeDir+disk (if single-binary relaxed)",
+      "rejected": ["htmx-alpine-lit (throws away TS SDK, still needs chart JS)", "leptos scaffolds (WASM, cannot reuse TS SDK)"],
+      "license": "MIT-Apache-2.0"
+    },
+    {
+      "gap": "G1-oauth2-client-breadth",
+      "verdict": "defer",
+      "choice": null,
+      "confidence": "high",
+      "rationale": "Generic OAuth2 client / RFC 8693 token-exchange / introspection breadth is the NHI/delegation workstream — deferred to next phase per seed brief. This phase's G1 is the MCP resource-server surface only."
+    }
+  ],
+  "new_crates": ["cedar-policy@4", "arc-swap@1", "governor@0.10", "tower_governor@0.8", "rust-embed@8"],
+  "reused_crates": ["jsonwebtoken@9", "redis@1(redis-l2)", "reqwest", "sha2", "tower-http@0.6", "utoipa"],
+  "explicitly_excluded": ["casbin", "oso", "regorus(fallback-only)", "oauth2", "openidconnect(optional-only)", "jwks", "jwks-cache", "rmcp-auth", "redis-rate", "include_dir", "axum-embed", "leptos"],
+  "open_questions": [
+    "Redis L2 as hard dep for accurate budgets, or optional with Postgres fallback?",
+    "HITL decision channel: in-band stream resume vs Admin API callback (lean in-band)",
+    "Cedar action modeling: generic call_tool action + context.tool_name vs per-tool action (lean generic)"
+  ]
+}

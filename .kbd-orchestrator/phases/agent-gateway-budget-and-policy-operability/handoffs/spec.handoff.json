@@ -1,0 +1,9 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": ["openspec/changes (3 proposals)"],
+  "nextStage": "plan",
+  "summaryForNext": "3 OpenSpec changes (proposal.md + tasks.md, no specs/ delta -> archive via --skip-specs). Dependency-ordered: 1) add-agent-governance-lint (G1+G4, 5 tasks -- GateConfig::agent_governance_lint() flags agent-reachable [Jwt|Mcp] routes with non-agent budget / no Authorize hook / scope:agent+lifetime; WARN default + opt-in server.strict_agent_governance->bail!, mirrors admin_auth_posture); 2) add-local-exchange-metric-strict-ratelimit (G2, 5 -- flint_local_exchange_total{result} via ?-restructure into outcome arms + oauth.rate_limit.require_shared_backend refuse-start when exposed non-loopback without a shared limiter); 3) add-agent-tool-scope-sugar (G3, 5 -- agent_tool_policies:{allow,deny} config compiling to Cedar permit/forbid on call_tool+Route, validated by the existing write-time validator; deny-wins; admin-UI DEFERRED). ZERO new deps. Each change: fail-safe-default / fail-closed test + separated security review (1+2 change startup/deny behavior; 3 is validated by the Cedar validator). First change: add-agent-governance-lint.",
+  "skipped": false,
+  "skipReason": null
+}

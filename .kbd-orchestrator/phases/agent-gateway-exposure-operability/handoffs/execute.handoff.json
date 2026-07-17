@@ -1,0 +1,9 @@
+{
+  "stage": "execute",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["execution.md", "progress.json"],
+  "nextStage": "reflect",
+  "summaryForNext": "Backend: openspec, driven by /kbd-apply (one task/turn). 4 changes in dependency order; first pending: add-oauth-shared-ratelimit (G1). Per-change QA: artifact-refiner + separated security-review (author never grades its own fail-open seam) + a fail-closed/refuse-start test each; archive via --skip-specs. Only change 3 adds deps (metrics@0.24 + metrics-exporter-prometheus@0.18). Guardrail: federate any JWKS IdM, Ory reference, never an IdP (load-bearing in change 3 no-re-stamp). Sync progress.json then advance waypoint in SEPARATE commands (pipeline-enforce hook).",
+  "skipped": false,
+  "skipReason": null
+}

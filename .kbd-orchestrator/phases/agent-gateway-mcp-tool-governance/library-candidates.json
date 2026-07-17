@@ -1,0 +1,55 @@
+{
+  "phase": "agent-gateway-mcp-tool-governance",
+  "generated_at": "2026-07-06T00:00:00Z",
+  "mode": "stack-specified",
+  "stack": "rust / cedar-policy 4 / axum 0.8 / redis 1 / Ory (Hydra/Kratos) reference",
+  "candidates": [],
+  "new_dependencies": [],
+  "research_evidence": [
+    {
+      "source": "https://modelcontextprotocol.io/docs/tutorials/security/authorization",
+      "finding": "MCP authorization follows OAuth 2.1; per-user/agent access control, audit of who-did-what, and per-user rate/usage tracking are first-class concerns — flint-gate's remit."
+    },
+    {
+      "source": "https://www.cerbos.dev/blog/mcp-authorization",
+      "finding": "Independently describes flint-gate's EXISTING design: externalized policy engine queried per tool-call, list_tools filtered by policy decision, decision logs, and 'attenuated permissions derived from the calling user' (the delegation case). Validates embedded Cedar as the equivalent of an external PDP — do NOT adopt Cerbos/OPA. The gap the industry sources do NOT solve — per-agent token/cost budgets — is flint-gate's G2 differentiator."
+    },
+    {
+      "source": "https://github.com/ory/hydra/discussions/2552",
+      "finding": "Ory Hydra supports custom access-token claims via the token/consent hook — the 'Hydra-side claim mapper' option for delegate-classification is real, but rejected as the DEFAULT (fragile per-deployment; only covers the Hydra path, not any-JWKS-IdM)."
+    }
+  ],
+  "build_required": [
+    {
+      "id": "build-001",
+      "gap": "G1 delegate-classification + tool-scoping confirmation",
+      "rationale": "Tool-authz engine + list_tools filtering + audit already exist (validated by the Cerbos reference architecture). DECIDED: classify a token as Agent GATEWAY-SIDE from its RFC 8693 `act` claim at verification time (not a Hydra claim mapper), so delegated agents are governed by agent tool-policy + budget without the gateway rewriting tokens. Honors federate-never-an-IdP and covers any JWKS IdM; Hydra claim mapper documented as an optional operator enhancement.",
+      "reuses": "authz/tool_authz.rs (authorize_tool_call), identity classification (act/flint_kind)",
+      "capability_gap_id": null,
+      "open_question": "Confirm act/flint_kind precedence for Agent classification in Spec."
+    },
+    {
+      "id": "build-002",
+      "gap": "G2 Agent budget scope + fail-closed posture",
+      "rationale": "Add BudgetScope::Agent (User|Team today) + key derivation, tied to build-001 classification so delegated agents are budgeted. DECIDED: reuse BackendUnavailablePosture (built last phase); default Agent -> Deny (fail-closed) on a budget-backend outage, User/Team keep the current degrade. Closes the fail-OPEN resolve_budget_usage seam for agent budgets.",
+      "reuses": "BudgetScope enum, RedisRateLimiter::incr_budget/get_budget, BackendUnavailablePosture, budget_exceeded() pipeline enforcement",
+      "capability_gap_id": null
+    },
+    {
+      "id": "build-003",
+      "gap": "G3 tool-authz + budget metrics",
+      "rationale": "record_authz_decision writes only the DB audit trail. Add flint_tool_authz_total{decision} + budget-consumption on the existing admin /metrics, reusing the record_delegate pattern. DECIDED: label by `decision` only (bounded), NOT raw tool name (runtime/attacker-influenced -> cardinality explosion); tool name stays in the DB audit.",
+      "reuses": "metrics.rs (record_delegate pattern), admin /metrics endpoint",
+      "capability_gap_id": null
+    },
+    {
+      "id": "build-004",
+      "gap": "G4 operability edge (optional)",
+      "rationale": "Strict cross-replica rate-limit mode (token-endpoint deny posture) + a symmetric metric for the local-mint exchange path. Only if G1-G3 land with budget.",
+      "reuses": "oauth.rate_limit posture, metrics.rs",
+      "capability_gap_id": null
+    }
+  ],
+  "contested_stack_choice": null,
+  "ergonomics_scope": "out-of-scope this phase (admin Policies tab + Cedar write-time validation already exist; defer higher-level agent-tool affordance)"
+}

@@ -30,13 +30,22 @@ pub struct Router {
 }
 
 impl Router {
-    /// Build a `Router` from a [`GateConfig`], compiling all route patterns.
+    /// Build a `Router` from a [`GateConfig`], compiling all route patterns from
+    /// the config's own YAML routes.
     pub fn from_config(config: &GateConfig) -> Self {
+        Self::from_config_with_routes(config, config.routes.clone())
+    }
+
+    /// Build a `Router` from a [`GateConfig`] (for sites/scoping) and an explicit
+    /// route set — e.g. the merged (YAML + DB) routes from [`merge_routes`]. This
+    /// is the shared compile core; `from_config` and `from_config_and_db_routes`
+    /// both funnel through it, so callers that have already merged (and linted)
+    /// the route set don't recompute the merge.
+    pub fn from_config_with_routes(config: &GateConfig, route_set: Vec<RouteConfig>) -> Self {
         let site_map: std::collections::HashMap<&str, &SiteConfig> =
             config.sites.iter().map(|s| (s.id.as_str(), s)).collect();
 
-        let mut routes: Vec<CompiledRoute> = config
-            .routes
+        let mut routes: Vec<CompiledRoute> = route_set
             .iter()
             .filter(|r| r.enabled)
             .filter_map(|route| {
@@ -93,46 +102,7 @@ impl Router {
     /// route replaces it; otherwise it is appended. When `db_routes` is empty
     /// this is equivalent to `from_config`.
     pub fn from_config_and_db_routes(config: &GateConfig, db_routes: &[DbRoute]) -> Self {
-        // Start with YAML routes, keyed by id for O(1) override lookup.
-        let mut yaml_by_id: std::collections::HashMap<String, RouteConfig> = config
-            .routes
-            .iter()
-            .map(|r| (r.id.clone(), r.clone()))
-            .collect();
-
-        // Deserialize and merge DB routes. DB wins on id collision.
-        let mut db_parsed: Vec<RouteConfig> = Vec::new();
-        for db_route in db_routes {
-            if !db_route.enabled {
-                yaml_by_id.remove(&db_route.id);
-                continue;
-            }
-            match serde_json::from_value::<RouteConfig>(db_route.config.clone()) {
-                Ok(mut rc) => {
-                    rc.priority = db_route.priority;
-                    rc.enabled = db_route.enabled;
-                    yaml_by_id.remove(&rc.id); // DB overrides YAML
-                    db_parsed.push(rc);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        route_id = %db_route.id,
-                        error = %e,
-                        "failed to deserialize DB route — skipping"
-                    );
-                }
-            }
-        }
-
-        // Rebuild the merged config and delegate to from_config.
-        let merged_routes: Vec<RouteConfig> = yaml_by_id.into_values().chain(db_parsed).collect();
-
-        let merged_config = GateConfig {
-            routes: merged_routes,
-            ..config.clone()
-        };
-
-        Self::from_config(&merged_config)
+        Self::from_config_with_routes(config, merge_routes(config, db_routes))
     }
 
     /// Find the best matching route for a request.
@@ -214,6 +184,48 @@ impl Router {
     pub fn route_ids(&self) -> impl Iterator<Item = String> + '_ {
         self.routes.iter().map(|r| r.config.id.clone())
     }
+}
+
+/// Merge YAML routes with DB-sourced routes into the effective route set the
+/// router serves. Pure — the same set that [`Router::from_config_and_db_routes`]
+/// compiles, surfaced so callers (e.g. the agent-governance lint) can inspect the
+/// *served* routes, not just YAML. A disabled DB row removes the same-id YAML
+/// route; an enabled DB row overrides the same-id YAML route, else is appended
+/// (DB wins on id collision). Undeserializable DB rows are WARN-skipped, exactly
+/// as during router build.
+pub fn merge_routes(config: &GateConfig, db_routes: &[DbRoute]) -> Vec<RouteConfig> {
+    // Start with YAML routes, keyed by id for O(1) override lookup.
+    let mut yaml_by_id: std::collections::HashMap<String, RouteConfig> = config
+        .routes
+        .iter()
+        .map(|r| (r.id.clone(), r.clone()))
+        .collect();
+
+    // Deserialize and merge DB routes. DB wins on id collision.
+    let mut db_parsed: Vec<RouteConfig> = Vec::new();
+    for db_route in db_routes {
+        if !db_route.enabled {
+            yaml_by_id.remove(&db_route.id);
+            continue;
+        }
+        match serde_json::from_value::<RouteConfig>(db_route.config.clone()) {
+            Ok(mut rc) => {
+                rc.priority = db_route.priority;
+                rc.enabled = db_route.enabled;
+                yaml_by_id.remove(&rc.id); // DB overrides YAML
+                db_parsed.push(rc);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    route_id = %db_route.id,
+                    error = %e,
+                    "failed to deserialize DB route — skipping"
+                );
+            }
+        }
+    }
+
+    yaml_by_id.into_values().chain(db_parsed).collect()
 }
 
 /// Check if a host header matches a route-level host pattern.
@@ -618,5 +630,73 @@ mod tests {
             .match_route("api.example.com:8443", "/api/data", "GET")
             .unwrap();
         assert_eq!(matched.config.id, "api-only");
+    }
+
+    // ── merged-set governance lint (DB-sourced routes) ───────────────────────
+
+    /// A GateConfig with a JWKS-backed (jwt) provider + one site, and NO YAML
+    /// routes — so any route reaching the lint comes from the DB merge.
+    fn jwt_config_no_routes() -> crate::config::types::GateConfig {
+        serde_yaml::from_str(
+            "auth_providers:\n  p:\n    type: jwt\n    jwks_url: \"https://idp/jwks\"\n    issuer: \"https://idp\"\n\
+             sites:\n  - id: s\n    default_auth: p\n",
+        )
+        .expect("valid fixture")
+    }
+
+    /// A DB route row carrying an agent-reachable (jwt-authed) route with NO
+    /// authorize hook — i.e. under-governed (a `NoAuthorizeHook` finding).
+    fn under_governed_db_route(id: &str) -> crate::db::DbRoute {
+        let rc = serde_json::json!({
+            "id": id,
+            "site": "s",
+            "match": { "path": "/x" },
+            "auth": "p",
+        });
+        crate::db::DbRoute {
+            id: id.to_string(),
+            config: rc,
+            priority: 0,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn merge_routes_surfaces_db_only_routes_to_the_lint() {
+        // The core of the change: a DB-only route appears in the merged set the
+        // lint inspects, even though YAML has none.
+        let config = jwt_config_no_routes();
+        let merged = merge_routes(&config, &[under_governed_db_route("db-tool")]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "db-tool");
+    }
+
+    #[test]
+    fn lint_flags_db_only_under_governed_agent_route() {
+        // The YAML-only lint would MISS this (no YAML routes); the merged-set lint
+        // catches it — the whole point of the change.
+        let config = jwt_config_no_routes();
+        assert!(
+            config.agent_governance_lint().is_empty(),
+            "YAML-only lint sees nothing (no YAML routes)"
+        );
+        let merged = merge_routes(&config, &[under_governed_db_route("db-tool")]);
+        let findings = config.agent_governance_lint_routes(&merged);
+        assert!(
+            !findings.is_empty(),
+            "merged-set lint must flag the DB-only agent-reachable route with no authorize hook"
+        );
+        assert!(findings.iter().any(|f| f.route_id == "db-tool"));
+    }
+
+    #[test]
+    fn disabled_db_route_is_not_linted() {
+        // A disabled DB row is removed from the merged set → nothing to flag.
+        let config = jwt_config_no_routes();
+        let mut db = under_governed_db_route("db-tool");
+        db.enabled = false;
+        let merged = merge_routes(&config, &[db]);
+        assert!(merged.is_empty());
+        assert!(config.agent_governance_lint_routes(&merged).is_empty());
     }
 }

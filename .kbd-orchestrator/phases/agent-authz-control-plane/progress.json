@@ -1,0 +1,86 @@
+{
+  "phase": "agent-authz-control-plane",
+  "status": "reflected",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": "2026-07-02T00:00:00Z",
+  "updated_at": "2026-07-04T14:30:00Z",
+  "changes_total": 8,
+  "changes_completed": 8,
+  "assessment_complete": true,
+  "analysis_complete": true,
+  "plan_complete": true,
+  "seed": ".kbd-orchestrator/evolution-briefs/ai-agent-gateway-parity.md",
+  "changes": [
+    {
+      "id": "add-budget-rate-limiting",
+      "goal": "G3",
+      "status": "archived",
+      "tasks_done": 8,
+      "tasks_total": 8
+    },
+    {
+      "id": "add-mcp-resource-server",
+      "goal": "G1",
+      "status": "archived",
+      "tasks_done": 9,
+      "tasks_total": 9
+    },
+    {
+      "id": "add-policy-engine",
+      "goal": "G2a",
+      "status": "archived",
+      "tasks_done": 8,
+      "tasks_total": 8
+    },
+    {
+      "id": "add-per-tool-authz",
+      "goal": "G2b",
+      "status": "archived",
+      "tasks_done": 6,
+      "tasks_total": 6
+    },
+    {
+      "id": "add-authz-audit-trail",
+      "goal": "G6b",
+      "status": "archived",
+      "tasks_done": 5,
+      "tasks_total": 5
+    },
+    {
+      "id": "add-hitl-approval",
+      "goal": "G5",
+      "status": "archived",
+      "tasks_done": 7,
+      "tasks_total": 7
+    },
+    {
+      "id": "add-guardrail-hook",
+      "goal": "G6a",
+      "status": "archived",
+      "tasks_done": 6,
+      "tasks_total": 6
+    },
+    {
+      "id": "add-web-config-ui",
+      "goal": "G4",
+      "status": "archived",
+      "tasks_done": 7,
+      "tasks_total": 7
+    }
+  ],
+  "artifacts": [
+    "analysis.md",
+    "assessment.md",
+    "decision-log.md",
+    "execution.md",
+    "library-candidates.json",
+    "openspec/changes (8 proposals)",
+    "plan.md"
+  ],
+  "spec_complete": true,
+  "backend": "openspec",
+  "driver": "kbd-apply",
+  "reflection_complete": true
+}

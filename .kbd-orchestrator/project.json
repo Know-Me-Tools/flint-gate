@@ -1,9 +1,11 @@
 {
   "name": "flint-gate",
-  "description": "AI-native auth proxy and API gateway — Flint brand by KnowMe, LLC",
-  "active_phase": "sdk-ecosystem-and-docs",
+  "description": "AI-native auth proxy and API gateway \u2014 Flint brand by KnowMe, LLC",
+  "active_phase": "post-beta-hardening",
   "focus_project_path": "/Users/gqadonis/Projects/prometheus/flint-gate",
-  "spec_paths": ["openspec/specs/*.md"],
+  "spec_paths": [
+    "openspec/specs/*.md"
+  ],
   "openspec_available": true,
   "constraint_file": ".kbd-orchestrator/constraints.md",
   "build_health_command": "cargo check --workspace",

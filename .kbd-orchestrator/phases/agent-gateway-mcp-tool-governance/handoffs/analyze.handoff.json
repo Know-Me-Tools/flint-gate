@@ -1,0 +1,9 @@
+{
+  "stage": "analyze",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["analysis.md", "library-candidates.json", "decision-log.md"],
+  "nextStage": "spec",
+  "summaryForNext": "ZERO new dependencies — every goal builds on cedar-policy 4 + the shared Redis budget counters + the metrics surface + BackendUnavailablePosture, all in-tree. Research (MCP authz spec, Cerbos MCP-authz architecture, ory/hydra#2552) VALIDATED flint-gate's existing embedded-Cedar per-tool-authz design (do NOT adopt an external PDP like Cerbos/OPA). Decisions: (1) G1 delegate-classification = GATEWAY-SIDE from the RFC 8693 act claim at verification (NOT a Hydra claim mapper — honors federate-never-an-IdP + covers any JWKS IdM; confirm act/flint_kind precedence in Spec); (2) G2 = add BudgetScope::Agent + reuse BackendUnavailablePosture with Agent->Deny fail-closed default (User/Team degrade) — closes the fail-OPEN resolve_budget_usage seam for agents; (3) G3 tool metrics = flint_tool_authz_total{decision} DECISION-ONLY label (tool name stays in DB audit — cardinality); (4) ergonomics = out of scope. Order: G1 classification -> G2 agent-budget+fail-closed -> G3 metrics -> G4 optional. No contested stack, no elicitation.",
+  "skipped": false,
+  "skipReason": null
+}

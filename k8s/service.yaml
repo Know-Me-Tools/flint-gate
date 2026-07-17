@@ -12,6 +12,7 @@ spec:
     - name: proxy
       port: 4456
       targetPort: proxy
-    - name: admin
-      port: 4457
-      targetPort: admin
+    # Admin port 4457 is intentionally omitted from the Service.
+    # Access is restricted via NetworkPolicy (network-policy.yaml).
+    # Use `kubectl port-forward` for local admin access:
+    #   kubectl port-forward svc/flint-gate 4457:4457

@@ -1,0 +1,9 @@
+- [x] Add Mcp variant to AuthProviderConfig + config plumbing
+- [x] .well-known/oauth-protected-resource (RFC 9728) JSON handler
+- [x] WWW-Authenticate resource_metadata on 401; insufficient_scope on 403 step-up
+- [x] JWKS discovery + rotation cache on existing jsonwebtoken@9
+- [x] Access-token validation: signature + RFC 8707 audience/resource + scope
+- [x] PKCE S256 verify via sha2
+- [x] No-token-passthrough confused-deputy guard
+- [x] Tests: MCP client handshake end-to-end + security review (≥80%)
+- [x] cargo check/clippy/test --workspace

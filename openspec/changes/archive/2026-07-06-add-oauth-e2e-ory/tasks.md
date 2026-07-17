@@ -1,0 +1,4 @@
+- [x] Add Ory Hydra (+ Kratos where needed) to docker-compose.smoke.yml, seeded with a test OAuth client + JWKS; healthchecks + wait-for-ready
+- [x] E2E specs: authenticated /oauth/token (client-credentials + RFC 8693 exchange) + /oauth/introspect happy-path; Hydra-delegate returns a Hydra-minted token
+- [x] E2E specs: fail-closed denials — unauth introspect → 401; over-rate → 429; Hydra transport/non-2xx/redirect → deny; present actor_token → 400
+- [x] Deterministic waits (no timeout-based flakiness); document the CI invocation (compose up → wait-healthy → run → teardown); note runtime cost

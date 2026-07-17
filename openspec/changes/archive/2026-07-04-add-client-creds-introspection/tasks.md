@@ -1,0 +1,6 @@
+- [x] Client store: extend api_keys / add `oauth_clients` with hashed `client_secret` + grant metadata; constant-time verify
+- [x] `grant_type=client_credentials` on `/oauth/token`: verify client → mint service token (client_id + scopes + aud) via JwtMinter
+- [x] `POST /oauth/introspect` (RFC 7662): verify gateway-minted token via jwt_verify → active/scope/aud/exp/client_id; inactive→`{"active":false}`
+- [x] Hydra introspection consume seam (`introspection_delegate.hydra_admin_url?`) — defined + wired behind config, off by default
+- [x] Tests: client-creds mint+verify round-trip, bad secret denied (constant-time), introspection active/inactive, `degrades_to_deny`/`active:false` on malformed
+- [x] Docs: endpoints + client config; `cargo check/clippy/test --workspace` green

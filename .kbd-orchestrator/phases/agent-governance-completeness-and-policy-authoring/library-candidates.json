@@ -1,0 +1,52 @@
+{
+  "phase": "agent-governance-completeness-and-policy-authoring",
+  "generated": "2026-07-07",
+  "mode": "stack-specified",
+  "stack": "Rust (axum 0.8 / tokio / cedar-policy 4) + React 19 / Vite / TanStack Query admin UI",
+  "summary": "Zero external adoption surface. All three goals extend in-tree primitives; no crate or npm candidate scored for adopt/adapt. Build-vs-adopt verdict: BUILD (wire) for all three, zero new dependencies.",
+  "candidates": [],
+  "build_required": [
+    {
+      "gap_id": "G1-db-route-lint",
+      "goal": "G1",
+      "what": "Lint the merged (YAML+DB) route set at startup and on hot-reload; startup keeps bail!-under-strict, reload WARNs / rejects-route-and-retains-last-good under strict (never terminates a live process).",
+      "reuses": [
+        "config/types.rs:157 agent_governance_lint_routes(&[RouteConfig]) — already lints any slice",
+        "proxy/router.rs:128 — the merged Vec<RouteConfig> already built (currently discarded)",
+        "cache/mod.rs:398 rebuild_router_from_db — reload point holding config + db_routes"
+      ],
+      "capability_gap_id": null,
+      "effort": "low-medium"
+    },
+    {
+      "gap_id": "G2-sugar-db-merge",
+      "goal": "G2",
+      "what": "Store validated sugar_policies as an immutable overlay on AuthzEngine and concatenate DB records ++ sugar in every build/reload path; remove the refuse-start guard. Precedence relies on Cedar forbid-overrides-permit (no custom code).",
+      "reuses": [
+        "authz/sugar.rs:139 compile_and_validate -> Vec<PolicyRecord>",
+        "authz/bundle.rs:91 CedarBundle::from_records — already merges any &[PolicyRecord] into one PolicySet",
+        "authz/engine.rs:229 reload_from_database / cache/mod.rs:372 / admin/mod.rs:727 — reload call sites to concatenate sugar into"
+      ],
+      "capability_gap_id": null,
+      "effort": "medium"
+    },
+    {
+      "gap_id": "G3-admin-ui-toolscope-builder",
+      "goal": "G3",
+      "what": "New admin endpoint accepting {agent, allow[], deny[]} -> compile_and_validate (same 400-gate) -> persist as the sugar overlay source; Policies-tab builder form. MUST route operator input only through compile_and_validate (no raw-Cedar bypass) — injection defense at the now-attacker-adjacent API boundary.",
+      "reuses": [
+        "authz/sugar.rs:72 compile_agent_tool_policies + the allowlist-charset injection defense",
+        "admin/mod.rs:680 upsert_policy_inner — validate_policy 400-gate + reload pattern",
+        "web/src/pages/AgentIdentities.tsx (modal builder + RQ hooks) + web/src/pages/Routes.tsx (nested structured config) — UI templates"
+      ],
+      "capability_gap_id": "G2-sugar-db-merge",
+      "effort": "medium"
+    }
+  ],
+  "new_dependencies": [],
+  "authoritative_findings": [
+    "Cedar Security ref: forbid-overrides-permit (a single forbid=Deny) -> merged-PolicySet precedence is source-agnostic and safe (G2).",
+    "Cedar Security ref: skip-on-error + default-deny -> validates lenient parse-before-swap merge on reload (G2).",
+    "Cedar Security ref: avoid string concatenation / injection breakout example -> G3 endpoint must preserve the allowlist-charset compile_and_validate gate at the attacker-adjacent API boundary."
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1",
+  "updatedAt": "2026-07-09T11:07:56Z",
+  "cursor": [
+    "cedar-policy-versioning-and-rollback"
+  ],
+  "root": {
+    "type": "phase",
+    "id": "cedar-policy-versioning-and-rollback",
+    "status": "execute_in_progress",
+    "progress": {
+      "done": 3,
+      "total": 4
+    },
+    "children": [],
+    "annotations": []
+  }
+}

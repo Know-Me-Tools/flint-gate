@@ -97,7 +97,10 @@ export type {
   UpsertPolicyResponse,
   DeletePolicyResponse,
   PolicyVersion,
+  PolicyVersionRow,
   PolicyHistoryResponse,
   PolicyHistoryOptions,
   RollbackResponse,
+  ApprovalStatus,
+  ApprovalDecision,
 } from "./types";

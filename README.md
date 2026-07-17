@@ -590,7 +590,16 @@ When a limit is hit, Flint Gate emits a `RUN_ERROR` SSE event and closes the str
 
 ## Admin API
 
-All endpoints are on the admin port (`:4457`). Never expose this to the internet.
+All endpoints are on the admin port (`:4457`).
+
+**Authentication.** The admin API is unauthenticated by default and, in that
+state, is only permitted on a **loopback** bind — flint-gate **refuses to start**
+if `admin_listen` is non-loopback while `server.admin_auth` is unset (fail-safe
+against exposing an unauthenticated control plane). To expose the admin API (and
+the web UI) beyond loopback, set `server.admin_auth` to an auth provider
+(`type: jwt` — e.g. an Ory Hydra-issued Bearer token — or `type: kratos` session;
+any JWKS-backed JWT provider works). When enabled, every admin request is
+authenticated except the `/health` and `/ready` probes. See `config.example.yaml`.
 
 ### Health & readiness
 
@@ -641,6 +650,356 @@ DELETE :4457/routes/{id}
 ```
 
 Route mutations automatically send `SELECT pg_notify('flintgate_config_changed', 'routes')` so all running instances invalidate their caches within milliseconds.
+
+---
+
+## OAuth 2.0 endpoints (proxy port)
+
+Enabled per capability under `oauth:` / `token_exchange:` (see `config.example.yaml`):
+
+- `POST /oauth/token` — RFC 8693 token exchange + RFC 6749 client-credentials,
+  dispatched by `grant_type`. Callers present their grant credentials in-body;
+  enable `oauth.rate_limit` to throttle the endpoint.
+- `POST /oauth/introspect` — RFC 7662 introspection for gateway-minted tokens.
+  **Authenticated by default** (`oauth.introspect_auth: true`): the caller must
+  present OAuth client credentials (`client_id`/`client_secret` via HTTP Basic or
+  form), verified against `oauth_clients`. This is an RFC 7662 §2.1 **MUST** — the
+  endpoint is otherwise a token-scanning oracle. The Hydra introspection-delegate
+  is only reachable **after** this client-auth passes. flint-gate refuses to start
+  if `introspect_auth` is true with no database (nothing to authenticate against).
+
+Both OAuth endpoints support per-endpoint rate limiting (`oauth.rate_limit`)
+independent of the proxy `server.rate_limit`.
+
+**Cross-replica rate limiting.** When a shared Redis limiter is configured
+(`cache.l2`), the `/oauth/*` counters are **authoritative across all replicas** —
+a horizontally-scaled deployment enforces one shared limit rather than N
+per-replica limits. Without Redis, an in-process governor applies (per-replica
+burst shield only). The window ceiling is `oauth.rate_limit.per_second × 60`,
+keyed by a hash of the caller credential (Authorization / API-key / cookie).
+
+Set **`oauth.rate_limit.require_shared_backend: true`** to make that shared limiter
+a hard requirement: on a non-loopback bind the gateway then **refuses to start**
+unless `cache.l2.enabled` + `cache.l2.redis_url` are configured — turning "I need
+cross-replica-accurate limits" into an enforced invariant rather than a silent
+degrade to per-replica governance. Off by default (non-breaking); ignored on a
+loopback bind and on `server.rate_limit` (that layer is per-replica by design).
+
+If the shared Redis limiter is unreachable mid-request, the behavior is governed
+by **`oauth.rate_limit.on_backend_unavailable`** (fail-closed by default):
+
+| Value | `/oauth/introspect` | `/oauth/token` |
+| --- | --- | --- |
+| `deny` (default) | `503` — the introspection oracle (RFC 7662 §2.1) must never lose its limit | `503` |
+| `degrade` | `503` — the oracle **always** denies on outage, regardless of this setting | falls back to the in-process governor + a `WARN` (availability-first) |
+
+The introspection endpoint is always fail-closed on a backend outage; the setting
+only relaxes the token endpoint, and an operator can force uniform `deny`.
+
+**Exposure guardrails.** Because `/oauth/*` mounts on the **proxy** bind, the
+gateway enforces three fail-safe invariants so the surface cannot be
+misconfigured into an unsafe exposure:
+
+- **Exposure posture** — flint-gate **refuses to start** when `/oauth/*` is
+  mounted on a non-loopback `server.listen` without **both** `oauth.introspect_auth`
+  and `oauth.rate_limit.enabled` (mirrors the admin-bind fail-safe) — and, when
+  `oauth.rate_limit.require_shared_backend` is set, without a shared Redis limiter.
+  Bind loopback for local dev, or enable the required guards to expose it.
+- **https-only upstreams** — an `http://` `hydra_token_url` / `hydra_admin_url` is
+  refused at startup (those calls forward a `subject_token` / client credentials).
+  Set `server.allow_insecure_upstream: true` (off by default, loud `WARN`) only for
+  local dev.
+- **Upstream body cap** — relayed Hydra responses (token-exchange delegate +
+  introspection) are read with a 64 KiB ceiling; an oversized body fails closed
+  (deny) rather than buffering unbounded (memory-pressure DoS guard).
+
+**Client secrets** are stored under **bcrypt** (per-secret salt + work factor).
+The raw secret is a 256-bit CSPRNG token shown once at creation and never
+recoverable. Verification format-sniffs the stored hash, so any pre-bcrypt
+(legacy SHA-256) client keeps working and is **transparently re-hashed to bcrypt
+on its next successful authentication** — no re-issue or migration step needed.
+
+---
+
+## Non-Human Identities (agents & services)
+
+Flint Gate authorizes **non-human identities** as first-class Cedar principals,
+distinct from human users. The principal **kind** is derived from *trusted*
+signals only:
+
+- a **delegated token** carrying an RFC 8693 **`act`** (actor) claim → **`Agent`**.
+  This is **gateway-side and IdM-agnostic**: a delegated token minted by the
+  gateway-local exchange OR by an Ory Hydra `delegate_to_hydra` exchange — indeed
+  by **any** JWKS provider that emits `act` — classifies as `Agent` without the
+  gateway rewriting the token. The `act` value must be a **well-formed actor
+  object** (a non-object `act` is ignored). *(A Hydra-side claim mapper that stamps
+  an agent marker is an **optional** operator enhancement — not required, and not
+  the gateway's mechanism; flint-gate stays a pure verifier: federate, never an IdP.)*
+- a **client-credentials** service token or an **API-key** credential → **`Service`**;
+- everything else, including any Kratos session, → **`User`**.
+
+Classification is spoof-resistant on two fronts:
+
+1. **`flint_kind` is trusted only on gateway-minted tokens.** The gateway stamps
+   its `flint_kind` marker (`agent`/`service`) on tokens *it* mints; the JWKS
+   verifiers (`jwt`, `mcp`) **strip any inbound `flint_kind`**, so a federated IdP
+   (or a self-service identity) cannot forge `flint_kind: agent` to escalate.
+2. **`act` promotes only token-derived identities**, never a Kratos session
+   (whose `metadata_public` may be self-service-writable), and a bare `client_id`
+   / `azp` never classifies as non-`User`.
+
+Because the Cedar entity *type* differs, a policy can grant an agent something a
+user must not have — and vice-versa:
+
+```cedar
+// Agents may call the deploy tool; a human user with the same id may not.
+permit(principal == Agent::"ci-bot", action == Action::"call_tool", resource == Route::"deploy");
+
+// A service identity may read metrics.
+permit(principal == Service::"metrics-scraper", action, resource == Route::"metrics");
+
+// Humans keep their own policies.
+permit(principal == User::"alice", action, resource);
+```
+
+**Agent tool-scope sugar.** Hand-writing one Cedar `permit`/`forbid` per tool is
+error-prone. `agent_tool_policies` is an ergonomic front-end that compiles to
+exactly the Cedar above — a validated shortcut, **not a second policy authority**:
+
+```yaml
+agent_tool_policies:
+  - agent: "ci-bot"
+    allow: ["deploy", "run_tests"]   # → permit … Route::"deploy" / Route::"run_tests"
+    deny:  ["delete_*"]              # → forbid … when { context.tool_name like "delete_*" }
+```
+
+- Each `allow` tool compiles to a `permit`, each `deny` to a `forbid`, scoped to
+  `principal == Agent::"<agent>"` + `action == Action::"call_tool"`.
+- **`deny` wins over `allow`** — Cedar `forbid` always overrides `permit`, so a
+  tool in both lists (or matched by a `deny` glob) is blocked even when explicitly
+  allowed.
+- A value containing `*` is a **glob** matched against the tool name
+  (`context.tool_name like "…"`); otherwise it is an exact `Route::"<tool>"` match.
+- **Validated at startup.** The compiled policies run through the same write-time
+  validator as stored policies; a block that compiles to invalid Cedar (or names
+  an agent/tool with illegal characters) **refuses start** — fail-closed, a bad
+  policy never loads.
+- The compiled sugar is carried as an **immutable overlay on the authorization
+  engine** and enforced **alongside** any database policies: the live bundle is
+  built from `DB rows ++ sugar` and the overlay is **re-applied on every reload**,
+  so a `policies` hot-reload or admin CRUD write never drops the config
+  tool-scopes. With no database, the sugar is the whole policy set (config-only
+  deployment). Cross-source conflicts resolve by Cedar's rule — **`forbid`
+  overrides `permit`** regardless of which side (DB or sugar) contributed each
+  policy — so a DB `forbid` beats a sugar `permit` and vice-versa.
+- The overlay is **fixed at startup** from the config file; changing
+  `agent_tool_policies` at runtime needs a restart (a config-sugar hot-reload is a
+  follow-up). If the database is unreachable at startup, the engine still enforces
+  the sugar overlay (fail-closed on the DB, but config tool-scopes stay active).
+
+**Admin-UI tool-scope builder.** Beyond the config file, an operator can author
+agent tool-scopes at runtime from the admin **Policies** page (or the
+`POST /tool-scopes` endpoint with `{ agent, allow[], deny[] }`). The endpoint
+compiles the structured input through the **same allowlist-charset
+`compile_and_validate` gate** as the config sugar and stores the result as a
+database policy row (hot-reloadable, enforced alongside all other policies; keyed
+`tool_scope::<agent>`, upserted per agent). It is **structured-only — there is no
+raw-Cedar field for tool-scopes** — so operator input reaches Cedar exclusively
+through the validated compiler, and the string-concatenation injection the
+compiler defends can never be reached from the API. An illegal agent id or tool
+token is rejected `400` (fail-closed). Deny still wins. Raw-Cedar authoring stays
+available on the same page for advanced policies, but is a separate, clearly
+distinct surface.
+
+### Agent budgets (fail-closed)
+
+Token budgets are accounted per **scope** — set a route's `max_token_budget.scope`
+to `agent` to budget an agent principal **independently of the human it may act
+for**. Agent-scoped spend keys into its own counter (`flint:budget:agent:{id}:…`),
+so a delegated agent's usage never merges into a `User` budget.
+
+**A budget-backend outage fails closed for agents.** If neither the shared Redis
+counter nor the Postgres fallback can be read, the request **denies** when either
+the budget is `agent`-scoped **or** the actual principal is an `Agent` (defense in
+depth — a delegated agent never silently escapes fail-closed via a route left at
+`scope: user`). `user`/`team` budgets for human principals **degrade** — they allow
+the request with a `WARN` to preserve availability. This mirrors the OAuth
+rate-limiter's outage posture. Fail-closed applies to **windowed** budgets
+(minute/hour/day); a `lifetime` budget is ledger-only and best-effort, so an agent
+budget that must fail closed needs a fixed window.
+
+**Governance lint.** Because agent-budget scoping is operator-declared, a route
+can be *silently under-governed*. flint-gate lints every **agent-reachable** route
+— one whose auth provider is `jwt` or `mcp` (JWKS-backed, so it can carry an agent
+token) — and **WARNs** when it has a budget left at a non-agent scope (agent spend
+not counted under the Agent scope), no `authorize` hook (ungoverned tool calls), or
+a `scope: agent` + `window: lifetime` budget (can't fail closed). Set
+`server.strict_agent_governance: true` to promote those warnings to a
+**refuse-to-start** — turning "the operator must remember" into "the gateway tells
+you." Off by default (non-breaking).
+
+The lint covers the **merged (YAML + database) route set actually served** — a
+route sourced from the database via `database.override_yaml`, including one added
+by a hot-reload, is linted with the same rules, not just YAML routes. Severity is
+stage-appropriate because a running process cannot refuse-to-start:
+
+- **At startup** — WARN each finding; under `strict_agent_governance`,
+  **refuse to start** (safe — pre-serve).
+- **On a route hot-reload** — WARN each finding; under `strict_agent_governance`,
+  **reject the reload and retain the last-good router** (the under-governed route
+  set is *not* applied; the gateway keeps serving the previous, governed routes and
+  logs the rejection loudly). It never terminates a live process.
+
+### Human-in-the-loop approval (`RequireApproval`)
+
+A Cedar policy can mark a tool call for **human approval** with the
+`@require_approval("reason")` annotation on a `permit`. The end-to-end flow is:
+
+```
+1. Cedar evaluates to RequireApproval
+2. Gateway PAUSES the tool call — no events forwarded to the client yet
+3. Gateway emits gate:approval_request / GATE_APPROVAL_REQUEST on the stream
+   (approval_id, principal, action, resource, reason, expires_at)
+4. Operator sees the request in the Approvals UI or polls GET :4457/approvals
+5a. APPROVE → POST :4457/approvals/{id}/decision {"decision":"approve"}
+    → held call is released and streamed to the client; stream continues
+5b. DENY   → POST :4457/approvals/{id}/decision {"decision":"deny"}
+    → held call is dropped; a deny / RUN_ERROR event is emitted; stream ends
+6. Timeout (TTL) → auto-deny (fail-closed; same outcome as explicit deny)
+```
+
+**No-handle path (fail-closed):** when `approval.enabled: false` or no approval
+channel is configured for the route, a `RequireApproval` decision is denied
+**immediately** — it never pauses, never emits a request event, and never
+silently allows the call through.
+
+When such a call is evaluated on a streaming route, the gateway **pauses** it,
+emits an approval-request event on the stream (AG-UI `GATE_APPROVAL_REQUEST` /
+A2UI `gate:approval_request`), and resumes it only when a human **approves**
+(release the held call) or **denies** it (drop the call) via the admin API / UI.
+
+The pause is **fail-closed at every edge**:
+
+- **Undecided → auto-deny.** A pending approval that reaches its TTL with no
+  decision is **denied** (the held call is dropped with a deny event and the stream
+  resumes to a clean termination) — a tool call never hangs forever waiting on a
+  human. The TTL defaults to 300s and is set by **`approval.ttl_seconds`**.
+- **Disabled → deny.** With **`approval.enabled: false`**, a `RequireApproval`
+  decision is denied outright (never paused) — an operator who cannot service
+  approvals denies rather than hangs.
+- **Reaped.** A background per-replica janitor purges expired pending approvals so
+  ended streams' entries do not accumulate.
+
+**Single-replica constraint (this release):** the pending-approval table is
+in-memory **per replica**, so a decision must reach the replica holding the paused
+stream. In a multi-replica deployment, list/decide reflect the local replica only;
+cross-replica approval routing (a shared store + sticky routing) is a follow-up.
+
+### Lifecycle (Admin API)
+
+```bash
+GET    :4457/agent-identities              # list all NHIs
+POST   :4457/agent-identities              # issue { "id": "...", "kind": "agent"|"service", "label"? }
+POST   :4457/agent-identities/{id}/rotate  # stamp rotated_at
+DELETE :4457/agent-identities/{id}         # revoke
+```
+
+Every issue / rotate / revoke is written to the authz **audit trail**. **Revocation
+is fail-closed**: once revoked, the identity is denied on its **next authorize** —
+the check runs per request and denies on a lookup error rather than letting a
+revoked agent through. Manage identities from the **Agents** tab in the web UI.
+
+### Pending Approvals (Admin API + UI)
+
+When a Cedar policy evaluates to `RequireApproval`, the tool call is **paused** and
+an approval request is held in memory on the instance that received the request. The
+operator reviews and decides from the **Approvals** tab in the web UI or directly
+via the Admin API:
+
+```bash
+GET    :4457/approvals              # list all non-expired pending requests
+GET    :4457/approvals/{id}         # single pending request by id (404 if absent/resolved)
+POST   :4457/approvals/{id}/decision  # { "decision": "approve" | "deny" }
+                                    # → 200 OK | 404 not found | 410 expired (fail-closed)
+```
+
+Each request carries: `approval_id`, `principal_id`, `action` (tool name), `resource_id`,
+optional `reason` (from the policy annotation), and `expires_at`. Requests are filtered
+server-side — expired entries are never returned by `GET /approvals`.
+
+**Fail-closed**: an undecided request auto-denies when its deadline elapses (default
+300 s). The paused stream task's `select!` loop fires the deny arm at the earliest
+pending deadline, independent of the shared approval table (no janitor-race window).
+
+> **Single-replica constraint (current release)**: pending approvals live in-process
+> memory on the replica that received the original streaming request. A `POST
+> /approvals/{id}/decision` routed to a *different* replica returns `404 Not Found`
+> because that replica has no record of the request.
+
+#### Multi-replica deployment
+
+To run flint-gate at scale you must ensure approval decisions reach the correct replica:
+
+| Strategy | How |
+|---|---|
+| **Sticky sessions (recommended)** | Configure your load balancer / service mesh to pin the browser session — or the `POST .../decision` call — to the same replica that holds the paused stream. Most ingress controllers support cookie-based or header-based stickiness. |
+| **Shared external store (roadmap)** | Replace the in-process `DashMap` with a Redis-backed or Postgres-backed store so any replica can resolve any pending approval. Tracked as Option 3a/3b in the project roadmap. |
+
+**Startup hint**: when `admin_listen` is bound to a non-loopback address and the `REPLICA_COUNT`
+environment variable is set to a value greater than 1, flint-gate emits a structured `WARN` log
+at startup naming the constraint and suggesting sticky routing. Set `REPLICA_COUNT` in your
+deployment manifest so the hint fires at the right time:
+
+```yaml
+env:
+  - name: REPLICA_COUNT
+    value: "3"
+```
+
+The web UI's Approvals page also displays this note when the admin API is reachable from the browser.
+
+### Hydra-delegate mode: tokens carry Hydra's claims (gateway relays, never rewrites)
+
+When token exchange runs in **`delegate_to_hydra`** mode, flint-gate proxies the
+RFC 8693 exchange to Hydra and relays **Hydra's minted token verbatim** — it does
+**not** re-sign or re-stamp it (rewriting another authority's token would make the
+gateway an IdP; flint-gate **federates any JWKS-capable IdM, never becomes one**).
+
+The delegated token carries **Hydra's** claims, not the gateway's signed
+`flint_kind=agent` marker. It is still classified `Agent` on re-presentation —
+**gateway-side, from its RFC 8693 `act` claim** (see *Classification*, above),
+which any 8693-conformant Hydra exchange emits. So a delegated agent **is** subject
+to `Agent`-scoped tool policy and agent budgets, without the gateway rewriting the
+token or requiring a Hydra-side claim mapper. (A Hydra claim mapper that stamps an
+agent marker remains an *optional* operator enhancement.)
+
+**Observability.** Both exchange modes are metered so operators can see the volume
+on each — the delegate path (which bypasses gateway-side agent classification) and
+the gateway-local mint path. On the **admin** port (`GET :4457/metrics`, Prometheus
+text — never the public proxy):
+
+- `flint_delegate_total{result="success"|"deny_transport"|"deny_non2xx"|"deny_badjson"|"deny_actor_token"}`
+  — one increment per **Hydra-delegate** exchange outcome (a Hydra 3xx surfaces as
+  `deny_non2xx`, since the delegate client does not follow redirects);
+- `flint_delegate_latency_seconds` — delegate round-trip latency;
+- `flint_local_exchange_total{result="success"|"deny_verify"|"deny_downscope"|"mint_failed"}`
+  — one increment per **gateway-local mint** exchange outcome (subject-token verify
+  failure, scope-downscope rejection, or minter failure), the symmetric counterpart
+  to `flint_delegate_total` so local-exchange volume and fail-closed denials are
+  visible;
+- `flint_tool_authz_total{decision="allow"|"deny"|"deny_revoked"}` — one increment
+  per **per-tool-call** authz decision, so operators see agent tool-call behavior
+  at a glance. The label is the **decision only** — the tool name is deliberately
+  never a metric label (it is operator/attacker-influenced and would explode
+  Prometheus cardinality); the tool name stays in the DB authz **audit trail**;
+- `flint_agent_budget_denied_total` — over-budget or fail-closed-on-outage denials
+  of **agent**-scoped budgets, so the volume of enforced agent spend caps is visible;
+- `flint_governance_reload_rejected_total` — route hot-reloads rejected by strict
+  agent-governance (an under-governed route in the reloaded set → reload rejected,
+  last-good retained), so a rejected reload is alertable, not just log-grep-able.
+
+All metrics carry **bounded, static labels** and are served on the admin port
+only — never the public proxy surface.
 
 ---
 

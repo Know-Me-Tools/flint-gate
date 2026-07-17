@@ -1,0 +1,8 @@
+- [x] Add cedar-policy + arc-swap deps
+- [x] authz/ module: CedarBundle (PolicySet+Schema+Entities) via ArcSwap
+- [x] authz_policies table via migrate(); load policy text+schema from JSONB
+- [x] Hot-reload parse-before-swap, fail-closed (retain last-good)
+- [x] Admin API policy CRUD + write-time Cedar Validator
+- [x] PreRequestHook::Authorize route-level decision in pipeline
+- [x] Tests: allow/deny, fail-closed, write-time rejection (≥80%)
+- [x] cargo check/clippy/test --workspace

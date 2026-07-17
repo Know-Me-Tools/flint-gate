@@ -1,0 +1,9 @@
+{
+  "stage": "execute",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": ["execution.md", "progress.json"],
+  "nextStage": "reflect",
+  "summaryForNext": "Backend: openspec, driven by /kbd-apply (one task/turn, never bare /opsx:apply). 3 changes in dependency order, 5 tasks each; first pending: lint-db-sourced-routes (G1, no dep, HIGH-first). Order G1->G2->G3; G3 (admin-tool-scope-builder) HARD-DEPENDS on G2 (merge-agent-tool-policies-into-engine). Per-change QA: artifact-refiner + SEPARATED security-reviewer (author never grades its own authz/policy/reload seam) + a fail-closed test each; each change already has a specs/ delta written; archive via openspec archive --skip-specs --yes. Fail-closed emphasis: G1 reload = WARN always / strict reject-and-retain (never terminate a live process); G2 = overlay-on-AuthzEngine + concatenate-on-reload + deny-wins matrix + remove refuse-start guard; G3 = structured-only compile_and_validate endpoint (NO raw-Cedar bypass) + illegal-input->400 + a MANDATORY admin-API-boundary Cedar injection re-check (highest-priority security item). Web build green required for G3. Zero new deps. Federate any JWKS IdM (Ory ref) never an IdP; admin 4457 stays private; config priority untouched. Sync progress.json then advance waypoint in SEPARATE commands (pipeline-enforce hook).",
+  "skipped": false,
+  "skipReason": null
+}

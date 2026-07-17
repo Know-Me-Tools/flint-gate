@@ -1,0 +1,12 @@
+{
+  "stage": "execute",
+  "completedAt": "2026-07-03T13:22:39Z",
+  "outputs": [
+    "execution.md",
+    "progress.json"
+  ],
+  "nextStage": "reflect",
+  "summaryForNext": "Backend: openspec, driven by /kbd-apply (one task/turn). 8 changes dispatched in dependency order; first pending: add-budget-rate-limiting. Per-change QA via artifact-refiner then opsx:verify+archive; security-review on the 4 authz-sensitive changes.",
+  "skipped": false,
+  "skipReason": null
+}

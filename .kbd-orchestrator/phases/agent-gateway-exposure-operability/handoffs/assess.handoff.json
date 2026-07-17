@@ -1,0 +1,9 @@
+{
+  "stage": "assess",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["assessment.md"],
+  "nextStage": "analyze",
+  "summaryForNext": "Scope reshaped: G1 (Redis-L2 shared rate-limit) is MOSTLY BUILT — RedisRateLimiter (Lua-atomic fixed-window) + L2 cache are default-on and constructed into AppState; incr_request() exists but is #[allow(dead_code)] and /oauth/* still uses the in-process governor (main.rs:469). Real G1 gap = wire /oauth/* to the shared limiter + decide the Redis-outage posture (fail-closed vs degrade). G2 (delegate observability) = real gap, no metrics facility exists at all. G3 (guardrails: https-only Hydra URLs, Hydra-response body cap, /oauth/* refuse-start posture) = real gap but mirrors the existing admin_auth_posture pattern. G4 (E2E vs real Ory) = real; smoke stack lacks Hydra/Kratos, no oauth specs. Recommended order: G1 wiring+posture → G3 guardrails → G2 observability → G4 E2E. Open questions for Analyze: (1) Redis-outage posture; (2) delegate re-stamp vs federate-first; (3) metrics backend Prometheus-vs-OTLP; (4) insecure-dev override shape. Reuse-first strongly favored (don't rebuild the limiter or the posture pattern).",
+  "skipped": false,
+  "skipReason": null
+}

@@ -1,0 +1,4 @@
+- [x] `actor_token` present → reject (400 invalid_request / unsupported), before minting — no silent-ignore
+- [x] Wire `delegate_to_hydra`: when set, proxy the exchange to `hydra_token_url` (reqwest); fail closed on transport/non-2xx
+- [x] Tests: actor_token present → rejected (fail-closed); absent → normal act-claim exchange; delegate-mode forwards to Hydra (wiremock) + fails closed on Hydra error
+- [x] Docs: config seam + external-aud caveat; `cargo check/clippy/test --workspace` green

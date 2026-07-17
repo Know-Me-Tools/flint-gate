@@ -1,0 +1,9 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["plan.md"],
+  "nextStage": "execute",
+  "summaryForNext": "4 changes ordered (dependency-aware): 1) add-oauth-shared-ratelimit (G1, BUILD FIRST — reuse RedisRateLimiter::incr_request, outage posture deny/degrade; rust+security review); 2) add-exposure-guardrails (G3 — mirror admin_auth_posture; https-only + body cap + refuse-start; security review); 3) add-delegate-observability (G2 — ADOPT cand-001 metrics@0.24 + metrics-exporter-prometheus@0.18, /metrics on ADMIN port, no re-stamp; rust review); 4) add-oauth-e2e-ory (G4 — extend smoke/Playwright with Ory, depends on 1-3; e2e-runner). Only change 3 adds deps. Each change: fail-closed/deny-path test + separated security review + archive via --skip-specs. First change to apply: add-oauth-shared-ratelimit.",
+  "skipped": false,
+  "skipReason": null
+}

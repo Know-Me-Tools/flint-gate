@@ -1,0 +1,46 @@
+{
+  "phase": "agent-gateway-budget-and-policy-operability",
+  "status": "reflected",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": "2026-07-07T00:00:00Z",
+  "updated_at": "2026-07-07T00:00:00Z",
+  "changes_total": 3,
+  "changes_completed": 3,
+  "assessment_complete": true,
+  "analysis_complete": true,
+  "plan_complete": true,
+  "spec_complete": true,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/agent-gateway-mcp-tool-governance/reflection.md",
+  "seeded_from_phase": "agent-gateway-mcp-tool-governance",
+  "changes": [
+    {
+      "id": "add-agent-governance-lint",
+      "goal": "G1",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    },
+    {
+      "id": "add-local-exchange-metric-strict-ratelimit",
+      "goal": "G2",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    },
+    {
+      "id": "add-agent-tool-scope-sugar",
+      "goal": "G3",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    }
+  ],
+  "artifacts": [
+    "goals.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

@@ -1,0 +1,5 @@
+- [x] Add `bcrypt = "0.19"`; `SecretHash` helper (bcrypt hash + format-sniff verify + needs_rehash)
+- [x] `create_oauth_client` mints CSPRNG secret → bcrypt hash (only insertion path)
+- [x] `verify_client_credentials`: fetch client by id → verify (bcrypt `$2b$` else legacy sha256) → transparently re-hash legacy to bcrypt on success
+- [x] Tests: bcrypt round-trip verify, wrong secret denied, legacy sha256 row still verifies + gets re-hashed, needs_rehash logic
+- [x] Docs: note the KDF + migration behavior; `cargo check/clippy/test --workspace` green

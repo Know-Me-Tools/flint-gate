@@ -1,0 +1,5 @@
+- [x] Add flint_tool_authz_total{decision} to metrics.rs (record_tool_authz(&'static str decision), reuse the record_delegate pattern); DECISION-ONLY label, no raw tool name
+- [x] Instrument the per-tool-call authz path (tool_authz.rs / pipeline.rs) to record allow vs deny (+ enforce/shadow mode); tool name stays in the DB audit only
+- [x] Add a budget-denial counter (flint_agent_budget_denied_total) recorded where budget_exceeded blocks; (G4 stretch) symmetric flint_local_exchange_total{result} for the gateway-local mint path if it fits
+- [x] Tests: counter renders on /metrics after an allow + a deny; label set bounded/static; admin-port-only (not proxy); budget-denial counter increments on an over-budget block
+- [x] Docs: README (agent tool-call + budget observability on :4457/metrics); `cargo check/clippy/test --workspace` green

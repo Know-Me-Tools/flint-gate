@@ -1,9 +1,12 @@
 {
-  "previous_phase": "production-readiness",
-  "phase": "sdk-ecosystem-and-docs",
-  "status": "completed",
-  "changes_completed": 12,
-  "changes_total": 12,
-  "next_change": null,
-  "updated_at": "2026-06-27T00:00:00Z"
+  "phase": "post-beta-hardening",
+  "previousPhase": "beta-release-readiness",
+  "exactNextCommand": "/kbd-apply add-approval-store-trait",
+  "status": "execute_pending",
+  "stage": "execute_pending",
+  "changes_completed": 2,
+  "changes_total": 8,
+  "activeChange": "add-approval-store-trait",
+  "note": "Changes 1-2 complete. Next: add-approval-store-trait (G-1a — extract ApprovalStore trait from DashMap-backed ApprovalManager).",
+  "next": "/kbd-apply add-approval-store-trait"
 }

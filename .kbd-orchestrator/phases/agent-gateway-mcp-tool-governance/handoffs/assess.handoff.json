@@ -1,0 +1,9 @@
+{
+  "stage": "assess",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["assessment.md"],
+  "nextStage": "analyze",
+  "summaryForNext": "Scope reshaped (again): the per-tool-call authz CORE is already built + wired — authorize_tool_call + ToolAuthzContext run in the pipeline, fail-closed, Cedar Action::call_tool + Route::<tool_name> resource + audit + shadow/enforce mode; list_tools reuses it. So G1 = MOSTLY BUILT; its real gaps are (a) delegate-classification (a Hydra-delegate token isn't flint_kind=agent, so delegated agents escape agent tool-policy AND budget — the linchpin) and (b) Cedar ergonomics. G2 = REAL GAP: BudgetScope is User|Team only (NO Agent scope), and resolve_budget_usage is deliberately fail-OPEN (returns 0 -> allow on Redis/DB error) — contradicts governance fail-closed; add BudgetScope::Agent + a fail-closed outage posture (reuse BackendUnavailablePosture from last phase). G3 = REAL GAP: record_authz_decision writes only the DB audit trail, no Prometheus metric — /metrics has only flint_delegate_*; add flint_tool_authz_total{decision,tool} + budget consumption (bound tool-label cardinality). G4 = optional LOW. Order: G1 classification -> G2 agent-budget+fail-closed -> G3 metrics -> G4. Reuse-first strong (don't rebuild the authz engine or budget counters). Open Qs for Analyze: delegate-classification shape (Hydra claim mapper vs gateway policy); agent-budget posture toggle; tool-metric label cardinality; ergonomics scope.",
+  "skipped": false,
+  "skipReason": null
+}

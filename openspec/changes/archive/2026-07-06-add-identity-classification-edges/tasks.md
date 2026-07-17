@@ -1,0 +1,5 @@
+- [x] `auth/api_key.rs::build_result`: set `Identity.kind = Service`
+- [x] `identity.rs::derived_kind`: skip the `act` fallback when `session_id` is set (Kratos); `flint_kind` path unchanged
+- [x] Make NHI issue/rotate/revoke + their audit rows write in one DB transaction
+- [x] Tests: api-key → Service principal (subject to revocation); Kratos + `act` trait stays User; audit committed atomically with revoke (rollback leaves neither)
+- [x] Docs: note the classification rules; `cargo check/clippy/test --workspace` green

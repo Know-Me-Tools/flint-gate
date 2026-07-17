@@ -1,0 +1,53 @@
+{
+  "phase": "agent-gateway-exposure-operability",
+  "status": "reflect_complete",
+  "parentPhase": null,
+  "childPhases": [],
+  "childPointer": null,
+  "started_at": "2026-07-06T00:00:00Z",
+  "updated_at": "2026-07-06T00:00:00Z",
+  "changes_total": 4,
+  "changes_completed": 4,
+  "assessment_complete": true,
+  "analysis_complete": true,
+  "plan_complete": true,
+  "spec_complete": true,
+  "reflection_complete": true,
+  "seed": ".kbd-orchestrator/phases/agent-gateway-hardening-and-exposure/reflection.md",
+  "seeded_from_phase": "agent-gateway-hardening-and-exposure",
+  "changes": [
+    {
+      "id": "add-oauth-shared-ratelimit",
+      "goal": "G1",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    },
+    {
+      "id": "add-exposure-guardrails",
+      "goal": "G3",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    },
+    {
+      "id": "add-delegate-observability",
+      "goal": "G2",
+      "status": "archived",
+      "tasks_total": 5,
+      "tasks_done": 5
+    },
+    {
+      "id": "add-oauth-e2e-ory",
+      "goal": "G4",
+      "status": "archived",
+      "tasks_total": 4,
+      "tasks_done": 4
+    }
+  ],
+  "artifacts": [
+    "goals.md"
+  ],
+  "backend": "openspec",
+  "driver": "kbd-apply"
+}

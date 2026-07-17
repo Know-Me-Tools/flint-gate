@@ -1,0 +1,11 @@
+{
+  "stage": "spec",
+  "completedAt": "2026-07-03T12:58:34Z",
+  "outputs": [
+    "openspec/changes/add-budget-rate-limiting/proposal.md"
+  ],
+  "nextStage": "plan",
+  "summaryForNext": "8 OpenSpec changes created (proposal + tasks each), ordered per plan. ZeeSpec: n/a (no .zeespec). First to apply: add-budget-rate-limiting.",
+  "skipped": false,
+  "skipReason": null
+}

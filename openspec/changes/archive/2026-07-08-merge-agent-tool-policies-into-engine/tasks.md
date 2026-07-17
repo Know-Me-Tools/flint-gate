@@ -1,0 +1,6 @@
+- [x] Carry an immutable sugar overlay on AuthzEngine: store validated sugar_policies (Vec<PolicyRecord>) set once at construction; add a constructor/setter that from_database and from_records honor
+- [x] Concatenate DB records ++ sugar overlay in from_database AND reload_from_database (engine.rs) so the sugar survives every DB-driven rebuild; reuse CedarBundle::from_records[_lenient] (parse-before-swap, fail-closed)
+- [x] Preserve the overlay across the hot-reload + admin-CRUD reload call sites (cache/mod.rs:372, admin/mod.rs:727) — they must rebuild from DB ++ overlay, not DB-only
+- [x] main.rs: seed the engine with the sugar overlay in the DB-present branch; REMOVE the db.is_some() && !sugar.is_empty() refuse-start guard (main.rs:306-315)
+- [x] Tests: sugar enforced with a DB present; sugar survives a policies reload (not dropped); precedence matrix (sugar-permit vs DB-forbid -> deny; DB-permit vs sugar-forbid -> deny; two-permit -> allow); config-only path still works
+- [x] Docs: README (sugar now merges into the DB-backed engine; deny-wins cross-source; overlay fixed at startup — config sugar hot-reload is a follow-up) + config.example.yaml (drop the refuses-start-with-a-DB note); cargo check/clippy/test --workspace green

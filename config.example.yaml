@@ -8,12 +8,74 @@
 server:
   # Proxy server — receives all inbound traffic. Expose to the internet.
   listen: "0.0.0.0:4456"
-  # Admin API — internal only. NEVER expose to the public internet.
-  admin_listen: "0.0.0.0:4457"
+  # Admin API bind. Defaults to loopback. When you widen this bind to a
+  # non-loopback address you MUST also set `admin_auth` below — flint-gate
+  # refuses to start on a non-loopback admin bind without authentication
+  # (fail-safe against exposing an unauthenticated control plane).
+  admin_listen: "127.0.0.1:4457"
+  # Admin API authentication. Omit for an UNAUTHENTICATED loopback-only admin
+  # API (local development). Set it to require auth on every admin request
+  # (all routes except the /health and /ready probes). Reuses an ordinary auth
+  # provider — `type: jwt` (Bearer, e.g. an Ory Hydra-issued token) or
+  # `type: kratos` (session cookie). Any JWKS-backed JWT provider works.
+  # admin_auth:
+  #   provider:
+  #     type: jwt
+  #     jwks_url: "https://auth.example.com/.well-known/jwks.json"
+  #     issuer: "https://auth.example.com"
+  #     audience: "flint-admin"
+  # Allow plaintext http:// upstream URLs (Hydra token/admin endpoints). OFF by
+  # default: flint-gate refuses to start with an http:// hydra_token_url or
+  # hydra_admin_url, because those calls forward a subject_token / client
+  # credentials and must not travel in cleartext. Set true ONLY for local dev
+  # against an http:// Hydra (a loud WARN is logged when enabled).
+  allow_insecure_upstream: false
+  # Agent-governance lint. flint-gate WARNs when an AGENT-REACHABLE route (its auth
+  # provider is `jwt` or `mcp` — JWKS-backed, can carry an agent token) is
+  # under-governed: a token budget left at a non-agent scope (agent spend not
+  # counted under the Agent scope), no `authorize` hook (ungoverned tool calls), or
+  # a scope:agent + window:lifetime budget (can't fail closed). The lint covers the
+  # MERGED (YAML + database) route set actually served — including DB routes added
+  # via database.override_yaml and hot-reload, not just YAML. When true (the
+  # default), any agent-reachable route (JWT/MCP auth) without an `authorize`
+  # hook causes a hard startup error, or a hot-reload rejection that retains the
+  # last-good router. Set false ONLY for legacy routes that cannot yet add an
+  # authorization hook — understand you are running without Cedar evaluation for
+  # those routes.
+  # Default: true (fail-closed).
+  strict_agent_governance: true
+  # To disable for a legacy deployment that has not yet added authorize hooks:
+  # strict_agent_governance: false
+  # Refuse to start when the initial Cedar policy set is empty (no policies
+  # loaded from the DB). Off by default: an empty set is a valid fail-closed
+  # (default-deny) posture. Enable only when you REQUIRE explicit Cedar
+  # policies before the proxy accepts any traffic.
+  # Has no effect when `database:` is not configured.
+  require_policies_at_startup: false
+  # Per-credential rate limiting for the admin router's PROTECTED endpoints
+  # (everything except /health, /ready, and /metrics). Uses tower-governor with
+  # the same CredentialKeyExtractor as the proxy surface — rate-limits are keyed
+  # by the caller's credential (Bearer token, session cookie), not by IP, so a
+  # shared ingress/NAT does not let one admin credential starve others.
+  #
+  # Recommended for any admin bind reachable beyond localhost. For a loopback-only
+  # admin bind this is defense-in-depth against local scripted abuse.
+  #
+  # Note: this limiter is per-replica in-process (no shared Redis backend).
+  # In a multi-replica deployment each replica limits independently. Use a
+  # network ingress rate-limiter (e.g. Nginx, Envoy, or cloud WAF) for a
+  # cross-replica accurate ceiling on the admin surface.
+  #
+  # admin_rate_limit:
+  #   enabled: true
+  #   per_second: 5     # sustained token refill rate (requests / second)
+  #   burst: 10         # burst capacity on top of the sustained rate
   tls:
     enabled: false
     # cert_path: "/etc/flint-gate/tls/cert.pem"
     # key_path: "/etc/flint-gate/tls/key.pem"
+    # fail_open: false   # PRODUCTION: keep false (default). A cert load failure aborts startup.
+    #                    # Set to true ONLY in development to fall back to plain TCP on cert errors.
 
 database:
   url: "postgres://flintgate:secret@localhost:5432/flintgate"
@@ -28,6 +90,11 @@ cache:
   l2:
     enabled: false
     # redis_url: "redis://localhost:6379"
+    # IMPORTANT (multi-replica): when server.rate_limit.enabled is true and
+    # you run more than one replica (e.g. a Kubernetes Deployment with replicas > 1),
+    # each pod maintains its own in-memory counter. Agents can bypass limits by
+    # spreading requests across replicas. Set redis_url here to share counters
+    # across all replicas and enforce a true per-identity budget.
   # Postgres LISTEN channel for real-time cache invalidation
   invalidation_channel: "flintgate_config_changed"
 
@@ -67,6 +134,125 @@ jwt:
   signing_key_secret: "change-me-in-production-use-a-strong-secret"
   issuer: "https://gate.example.com"
   default_ttl_seconds: 300
+
+# ─── Token Exchange (RFC 8693) ────────────────────────────────────────────────
+# Gateway-local OAuth 2.0 Token Exchange at `POST /oauth/token`. An agent
+# exchanges a user's `subject_token` for a DOWNSCOPED delegated token carrying an
+# `act` claim — the user's raw token is never forwarded upstream. The
+# subject_token is verified against `subject_token_provider`'s JWKS, so ANY IdM
+# that issues a verifiable JWT (Ory Hydra is the reference) is a valid source.
+# Disabled by default.
+token_exchange:
+  enabled: false
+  # An auth_providers entry (must be JWKS-backed: type jwt or mcp).
+  subject_token_provider: bearer_jwt
+  # delegated_ttl_seconds: 300   # falls back to jwt.default_ttl_seconds
+  # Federate-first: proxy the exchange to an Ory Hydra token endpoint (Hydra owns
+  # RFC 8693) instead of minting locally. Requires hydra_token_url. On a Hydra
+  # transport/non-2xx error the exchange fails closed (deny) — no local fallback.
+  # CAVEAT: Hydra has known `aud`-handling quirks when exchanging EXTERNAL tokens
+  # (ory/hydra#3723) — validate your Hydra audience config before relying on it.
+  # delegate_to_hydra: false
+  # hydra_token_url: "https://hydra.example.com/oauth2/token"
+  # NOTE: an `actor_token` (multi-hop delegation) is rejected (400 invalid_request)
+  # — single-hop `act` only this release.
+  # NOTE: in delegate mode the RELAYED Hydra token carries Hydra's claims, NOT the
+  # gateway's signed flint_kind=agent marker — so delegate-issued tokens are NOT
+  # gateway-classified as Agent and escape the gateway-side agent budget/rate limit
+  # (by design: federate, never an IdP). Watch the share of traffic taking this path
+  # via `flint_delegate_total{result=...}` on the admin metrics endpoint (:4457/metrics).
+
+# ─── OAuth 2.0 (client credentials + introspection) ───────────────────────────
+# client_credentials: service-to-service (non-human) identity. Clients live in
+#   the `oauth_clients` table (create via the admin API); a client authenticates
+#   with client_id + client_secret at `POST /oauth/token` and receives a minted
+#   gateway service token. Where Ory Hydra is the AS, prefer Hydra's own grant.
+# introspection: RFC 7662 `POST /oauth/introspect` for gateway-MINTED tokens.
+#   `introspection_delegate` forwards opaque, Hydra-issued tokens to Hydra
+#   (which owns RFC 7662 for its own tokens). Off unless set.
+oauth:
+  client_credentials_enabled: false   # requires a database (client store)
+  introspection_enabled: false
+  # RFC 7662 §2.1 REQUIRES authenticating the introspection endpoint (token-scanning
+  # defense). Defaults to true: /oauth/introspect requires OAuth client credentials
+  # (client_id/client_secret via HTTP Basic or form), verified against oauth_clients.
+  # Set false ONLY when the endpoint is network-restricted to trusted callers.
+  introspect_auth: true
+  # Per-endpoint rate limiting for /oauth/token + /oauth/introspect (independent of
+  # server.rate_limit). Throttles the client-credentials guessing surface + the
+  # introspection oracle. When a shared Redis limiter is configured (cache.l2) the
+  # counters are authoritative ACROSS REPLICAS; otherwise an in-process governor
+  # applies (per-replica).
+  rate_limit:
+    enabled: false
+    per_second: 5
+    burst: 10
+    # Strict cross-replica mode (off by default). When true, flint-gate REFUSES to
+    # start if the OAuth surface is exposed on a non-loopback bind but no SHARED
+    # limiter is configured (cache.l2.enabled + cache.l2.redis_url). Without a
+    # shared limiter each replica limits independently, so the effective ceiling
+    # scales with the replica count — set this when you need a cross-replica-accurate
+    # limit to be an enforced invariant rather than a silent per-replica degrade.
+    require_shared_backend: false
+  # What to do if the shared Redis limiter is unreachable mid-request:
+  #   deny    — fail closed (default; REQUIRED posture for the introspection oracle)
+  #   degrade — fall back to the in-process governor + WARN (token endpoint only;
+  #             avoids an availability cliff on a Redis blip)
+  # The introspection endpoint always denies; this setting governs the token
+  # endpoint's fallback and lets an operator force uniform `deny`.
+  on_backend_unavailable: deny
+  # service_token_ttl_seconds: 300
+  # introspection_delegate:  # only reachable AFTER introspect client-auth
+  #   hydra_admin_url: "https://hydra-admin.example.com"
+
+# ─── Agent tool-scope sugar ───────────────────────────────────────────────────
+# Ergonomic per-agent tool scoping that COMPILES to Cedar permit/forbid policies
+# on Action::"call_tool" for the Agent::"<agent>" principal — a validated
+# front-end over the policy engine, not a second authority. Each `allow` tool
+# becomes a permit; each `deny` becomes a forbid (deny WINS — Cedar forbid
+# overrides permit). A value with `*` is a glob matched against the tool name;
+# otherwise it is an exact tool match. Compiled policies are validated at startup:
+# an entry that produces invalid Cedar, or names an agent/tool with illegal
+# characters, REFUSES to start (fail-closed). Empty by default.
+#
+# The compiled sugar is carried as an immutable overlay on the authorization engine
+# and enforced ALONGSIDE any database policies (the live bundle is DB rows ++ sugar,
+# and the overlay is re-applied on every reload — a policies reload never drops it).
+# Cross-source conflicts resolve by Cedar forbid-overrides-permit. The overlay is
+# fixed at startup from this file; changing it at runtime needs a restart (a
+# config-sugar hot-reload is a follow-up).
+agent_tool_policies: []
+  # - agent: "ci-bot"
+  #   allow: ["deploy", "run_tests"]
+  #   deny:  ["delete_*"]
+
+# ─── Human-in-the-loop approval ───────────────────────────────────────────────
+# When a Cedar policy marks a tool call for approval (@require_approval on a
+# permit), the streaming call PAUSES until a human approves/denies it via the
+# admin API/UI. Fail-closed at every edge: an undecided approval AUTO-DENIES at
+# `ttl_seconds` (the call is dropped, the stream resumes to termination — never
+# hangs); `enabled: false` denies a RequireApproval outright (never pauses); a
+# background janitor reaps expired entries.
+#
+# MULTI-REPLICA CONSTRAINT: The pending-approval table is in-memory PER REPLICA.
+# A POST /approvals/:id/decision that reaches the wrong replica returns 404.
+# Beta mitigation: apply k8s/service-admin.yaml (sessionAffinity: ClientIP) to
+# pin each admin client to one replica. Known limitation: sticky session is lost
+# on pod restart — any pending stream on the restarted pod is abandoned.
+# Long-term fix (post-beta): Postgres-backed shared approval store.
+approval:
+  enabled: true
+  # ttl_seconds: 300   # override the built-in default (300s)
+  # max_pending: 1000  # cap on concurrent pending approvals; new RequireApproval
+  #                    # decisions fail-closed to Deny when the table is full.
+  #                    # Defaults to 1 000. Set to a smaller value in memory-constrained
+  #                    # environments; raise it if you expect many concurrent approvals.
+  # janitor_interval_seconds: 60   # how often the background janitor sweeps expired
+  #                                # entries from the approval table. When unset,
+  #                                # derived from ttl_seconds / 2 (clamped to [10, 300]),
+  #                                # with a fallback of 60 s. Tune this independently
+  #                                # when your TTL is very long and you want faster
+  #                                # reclaim without shortening the approval window.
 
 # ─── Sites ────────────────────────────────────────────────────────────────────
 # A site maps one or more domains to a default auth provider and upstream.

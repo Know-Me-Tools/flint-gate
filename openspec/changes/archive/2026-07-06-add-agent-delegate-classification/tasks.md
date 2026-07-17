@@ -1,0 +1,5 @@
+- [x] Confirm the current `derived_kind` precedence in identity.rs (flint_kind vs act vs session vs fallback); document the Agent-classification rule
+- [x] Classify a verified token as Agent from a well-formed RFC 8693 `act` claim (gateway-side, no token rewriting), for ANY JWKS IdM; keep signed `flint_kind` as the first-precedence trusted path
+- [x] Fail-closed: malformed/empty `act` does not promote to Agent (safe default); a bare/spoofed claim without signed flint_kind or real act cannot become Agent
+- [x] Tests: act-claim → Agent (Hydra-delegate + generic JWKS); spoof-resistance (bare client_id / forged claim stays non-Agent); malformed act → safe default
+- [x] Docs: README + config.example.yaml — delegated agents are classified Agent from `act` (gateway-side); Hydra claim mapper is an OPTIONAL operator enhancement, not required; `cargo check/clippy/test --workspace` green

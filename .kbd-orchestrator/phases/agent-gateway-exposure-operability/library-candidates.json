@@ -1,0 +1,55 @@
+{
+  "phase": "agent-gateway-exposure-operability",
+  "generated_at": "2026-07-06T00:00:00Z",
+  "mode": "stack-specified",
+  "stack": "rust / axum 0.8 / tokio / redis 1 / Ory (Hydra/Kratos) reference",
+  "candidates": [
+    {
+      "id": "cand-001",
+      "gap": "G2 delegate observability metrics",
+      "name": "metrics + metrics-exporter-prometheus",
+      "version": "0.24 / 0.18",
+      "verdict": "adopt",
+      "confidence": "high",
+      "evidence": "Tier 3 cargo registry: metrics 0.24.6, metrics-exporter-prometheus 0.18.3, actively maintained. Facade decouples instrumentation call-sites from exporter; PrometheusBuilder::install_recorder() + handle.render() served on a /metrics axum route (admin port). No async-runtime coupling. Right granularity for delegate success/deny/latency counters.",
+      "rejected_alternatives": [
+        "opentelemetry 0.32 — heavier, frequent breaking churn, OTLP overkill for control-plane counters",
+        "axum-prometheus 0.10 — auto HTTP-latency middleware, wrong granularity for delegate-semantic counters",
+        "prometheus 0.14 (tikv) — lower-level registry, more boilerplate than the metrics facade"
+      ]
+    }
+  ],
+  "build_required": [
+    {
+      "id": "build-001",
+      "gap": "G1 cross-replica OAuth rate limiting",
+      "rationale": "RedisRateLimiter::incr_request (Lua-atomic fixed-window) already exists but is #[allow(dead_code)] and /oauth/* still uses the in-process governor. BUILD a thin Redis-backed axum layer on /oauth/* keyed by client_id (peer-IP fallback for the pre-auth token surface). tower_governor KeyExtractor is in-process only and cannot make cross-replica accurate — do NOT adopt a second rate-limit lib.",
+      "reuses": "flint-gate-core::ratelimit::RedisRateLimiter (existing)",
+      "capability_gap_id": null,
+      "open_question": "Redis-outage posture: config toggle oauth.rate_limit.on_backend_unavailable = deny | degrade; default deny for /oauth/introspect (oracle), degrade+warn for /oauth/token (availability)."
+    },
+    {
+      "id": "build-002",
+      "gap": "G3 operator guardrails",
+      "rationale": "No new dep. (a) https-only Hydra URL validation at startup (reject http:// unless explicit off-by-default allow_insecure_upstream); (b) body-size cap replacing unbounded resp.json::<Value>() in token_exchange.rs; (c) oauth_exposure_posture() mirroring the existing admin_auth_posture() RefuseStart pattern — refuse start when /oauth/* binds non-loopback without both introspect_auth AND rate-limiting.",
+      "reuses": "config/types.rs::admin_auth_posture pattern (existing template)",
+      "capability_gap_id": null
+    },
+    {
+      "id": "build-003",
+      "gap": "G2 delegate re-stamp decision",
+      "rationale": "DECIDED: do NOT re-stamp Hydra-minted delegated tokens with flint_kind=agent — rewriting another authority's token violates the federate-never-an-IdP constraint. Document that delegate-mode tokens carry Hydra's claims (not gateway agent-budget classification) and meter delegate issuance so the bypass volume is visible. Any future budget parity belongs in a Hydra-side claim mapper.",
+      "reuses": "cand-001 metrics (to meter the documented gap)",
+      "capability_gap_id": null
+    },
+    {
+      "id": "build-004",
+      "gap": "G4 E2E vs real Ory stack",
+      "rationale": "ADOPT existing harness — extend docker-compose.smoke.yml with Ory Hydra/Kratos + add Playwright specs for authenticated /oauth/token + /oauth/introspect + Hydra-delegate happy-path and fail-closed denials (unauth, over-rate, Hydra error/redirect). No new test framework.",
+      "reuses": "docker-compose.smoke.yml, web/playwright.config.ts, web/e2e/smoke.spec.ts (existing scaffold)",
+      "capability_gap_id": null
+    }
+  ],
+  "contested_stack_choice": null,
+  "new_dependencies": ["metrics@0.24", "metrics-exporter-prometheus@0.18"]
+}

@@ -1,15 +1,15 @@
 import { FlintGateClient } from "./client";
 import {
   ApiKey,
+  ApprovalDecision,
+  ApprovalStatus,
   asApiKeyValue,
   asRouteId,
   asSiteId,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   CreateRouteInput,
-  DeletePolicyResponse,
   HealthStatus,
-  PolicyHistoryOptions,
   PolicyHistoryResponse,
   PolicyRow,
   ReadyStatus,
@@ -139,15 +139,18 @@ export class FlintGateAdmin {
     });
   }
 
-  // -------------------------------------------------------------- policies
+  // ------------------------------------------------------------ policies
 
-  /** List all Cedar policies. */
+  /** List all Cedar authorization policies (enabled and disabled). */
   async listPolicies(signal?: AbortSignal): Promise<PolicyRow[]> {
-    const res = await this.client.adminRequest<{ policies: PolicyRow[] }>("/policies", { signal });
-    return res.policies;
+    const body = await this.client.adminRequest<{ policies: PolicyRow[] }>(
+      "/policies",
+      { signal },
+    );
+    return body.policies ?? [];
   }
 
-  /** Get a single Cedar policy by id. */
+  /** Fetch a single policy by id. */
   async getPolicy(id: string, signal?: AbortSignal): Promise<PolicyRow> {
     return this.client.adminRequest<PolicyRow>(
       `/policies/${encodeURIComponent(id)}`,
@@ -168,7 +171,7 @@ export class FlintGateAdmin {
     });
   }
 
-  /** Update an existing Cedar policy by id. */
+  /** Update (upsert) an existing Cedar policy by id. */
   async updatePolicy(
     id: string,
     input: UpsertPolicyInput,
@@ -186,28 +189,41 @@ export class FlintGateAdmin {
   }
 
   /** Delete a Cedar policy by id. */
-  async deletePolicy(id: string, signal?: AbortSignal): Promise<DeletePolicyResponse> {
-    return this.client.adminRequest<DeletePolicyResponse>(
+  async deletePolicy(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<{ status: string; id: string }> {
+    return this.client.adminRequest<{ status: string; id: string }>(
       `/policies/${encodeURIComponent(id)}`,
       { method: "DELETE", signal },
     );
   }
 
-  /** Get the version history for a Cedar policy. */
+  /**
+   * Fetch version history for a policy.
+   * @param opts.offset - Page offset (default 0).
+   * @param opts.limit  - Page size (default 20).
+   */
   async getPolicyHistory(
     id: string,
-    opts?: PolicyHistoryOptions,
+    opts?: { offset?: number; limit?: number },
     signal?: AbortSignal,
   ): Promise<PolicyHistoryResponse> {
     const params = new URLSearchParams();
     if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
-    const qs = params.toString();
-    const path = `/policies/${encodeURIComponent(id)}/history${qs ? `?${qs}` : ""}`;
-    return this.client.adminRequest<PolicyHistoryResponse>(path, { signal });
+    const qs = params.size > 0 ? `?${params.toString()}` : "";
+    return this.client.adminRequest<PolicyHistoryResponse>(
+      `/policies/${encodeURIComponent(id)}/history${qs}`,
+      { signal },
+    );
   }
 
-  /** Roll a Cedar policy back to a previous version. */
+  /**
+   * Roll back a policy to a prior version.
+   * Creates a new version row equal to the target — the rollback is fully
+   * auditable in the version history.
+   */
   async rollbackPolicy(
     id: string,
     versionNum: number,
@@ -223,11 +239,68 @@ export class FlintGateAdmin {
       },
     );
   }
+
+  // --------------------------------------------------------------- approvals
+
+  /** List all non-expired pending human-in-the-loop approvals on this replica. */
+  async listApprovals(signal?: AbortSignal): Promise<ApprovalStatus[]> {
+    const body = await this.client.adminRequest<{ approvals: unknown[] }>(
+      "/approvals",
+      { signal },
+    );
+    return (body.approvals ?? []).map(normalizeApproval);
+  }
+
+  /**
+   * Get a single pending approval by id.
+   * Throws {@link FlintGateApiError} with status 404 when not found or already resolved.
+   */
+  async getApproval(id: string, signal?: AbortSignal): Promise<ApprovalStatus> {
+    const raw = await this.client.adminRequest<unknown>(
+      `/approvals/${encodeURIComponent(id)}`,
+      { signal },
+    );
+    return normalizeApproval(raw);
+  }
+
+  /**
+   * Approve or deny a pending approval request.
+   * Throws {@link FlintGateApiError} with status 404 (not found / already resolved)
+   * or 410 (expired).
+   */
+  async decideApproval(
+    id: string,
+    decision: ApprovalDecision,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.client.adminRequest<unknown>(
+      `/approvals/${encodeURIComponent(id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision }),
+        signal,
+      },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
 // serializers / normalizers
 // ---------------------------------------------------------------------------
+
+function normalizeApproval(raw: unknown): ApprovalStatus {
+  const r = raw as Record<string, unknown>;
+  return {
+    approvalId: String(r["approval_id"]),
+    principalId: String(r["principal_id"]),
+    action: String(r["action"]),
+    resourceId: String(r["resource_id"]),
+    reason: typeof r["reason"] === "string" ? r["reason"] : undefined,
+    expiresAt: String(r["expires_at"]),
+    expired: r["expired"] === true,
+  };
+}
 
 function normalizeRoute(row: unknown): RouteConfig {
   const r = row as Record<string, unknown>;

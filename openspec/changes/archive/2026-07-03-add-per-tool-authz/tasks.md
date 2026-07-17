@@ -1,0 +1,6 @@
+- [x] Map MCP tool call to Cedar Request (principal/action/resource/context)
+- [x] Inline evaluation in stream/processor.rs; block on Deny
+- [x] Filter Deny tools from MCP list_tools responses
+- [x] Handle A2UI intent tool invocations in stream/a2ui.rs
+- [x] Tests: allow/deny, list_tools filter, param decisions (≥80%)
+- [x] cargo check/clippy/test --workspace

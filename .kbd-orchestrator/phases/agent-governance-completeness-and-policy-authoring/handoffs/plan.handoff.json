@@ -1,0 +1,9 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-07T00:00:00Z",
+  "outputs": ["plan.md"],
+  "nextStage": "execute",
+  "summaryForNext": "3 changes ordered G1->G2->G3, 5 tasks each, backend openspec, driven one-task/turn by /kbd-apply. Order: (1) lint-db-sourced-routes [G1, no dep, HIGH-first]; (2) merge-agent-tool-policies-into-engine [G2, ordered after 1]; (3) admin-tool-scope-builder [G3, HARD-DEPENDS ON change 2 — writes into the merged/enforced sugar overlay G2 establishes]. Zero new deps (all build_required, reusing agent_governance_lint_routes, compile_and_validate, CedarBundle::from_records merge, upsert_policy_inner validate-then-reload, AgentIdentities/Routes UI templates). Uniform per-change QA: artifact-refiner + SEPARATED security-reviewer (author never grades its own authz/policy/reload seam) + a fail-closed test each + clippy/test --workspace green + >=80% new-code coverage + web build green for G3; archive via openspec archive --skip-specs --yes; sync progress.json + advance waypoint in SEPARATE commands (pipeline-enforce hook). G3's admin-API-boundary Cedar injection re-check is the highest-priority security item. Constraints: no secrets; admin 4457 stays private (G3 endpoint admin-router only); no broken tests; config priority untouched; federate any JWKS IdM (Ory ref) never an IdP; LLM-ops out of scope. First: /kbd-apply lint-db-sourced-routes.",
+  "skipped": false,
+  "skipReason": null
+}

@@ -1,0 +1,73 @@
+name: SDK Integration Tests
+
+on:
+  push:
+    branches: [main, claude/flint-gate-auth-proxy-zQBD4]
+  pull_request:
+    branches: [main, claude/flint-gate-auth-proxy-zQBD4]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Admin port as exposed on the CI host by docker-compose.test.yml
+  INTEGRATION_GATEWAY_URL: "http://localhost:4457"
+  # Proxy (agent-facing) port as exposed on the CI host by docker-compose.test.yml
+  INTEGRATION_PROXY_URL: "http://localhost:4456"
+
+jobs:
+  sdk-integration:
+    name: SDK integration tests (Go + TypeScript)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Bring up the test fixture ────────────────────────────────────────────
+      - name: Start integration test stack
+        run: |
+          docker compose -f docker-compose.test.yml build --pull
+          docker compose -f docker-compose.test.yml up -d --wait
+        timeout-minutes: 10
+
+      - name: Show fixture logs on startup failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs
+
+      # ── Go SDK integration tests ──────────────────────────────────────────────
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: sdks/go/go.sum
+
+      - name: Go SDK — integration tests
+        working-directory: sdks/go
+        run: go test -v -tags integration -timeout 120s ./...
+        env:
+          INTEGRATION_GATEWAY_URL: ${{ env.INTEGRATION_GATEWAY_URL }}
+          INTEGRATION_PROXY_URL: ${{ env.INTEGRATION_PROXY_URL }}
+
+      # ── TypeScript SDK integration tests ───────────────────────────────────────
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: sdks/typescript/pnpm-lock.yaml
+
+      - name: Install TypeScript SDK dependencies
+        working-directory: sdks/typescript
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript SDK — integration tests
+        working-directory: sdks/typescript
+        run: pnpm test:integration
+        env:
+          INTEGRATION_GATEWAY_URL: ${{ env.INTEGRATION_GATEWAY_URL }}
+          INTEGRATION_PROXY_URL: ${{ env.INTEGRATION_PROXY_URL }}
+
+      # ── Tear down ────────────────────────────────────────────────────────────
+      - name: Tear down test stack
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v

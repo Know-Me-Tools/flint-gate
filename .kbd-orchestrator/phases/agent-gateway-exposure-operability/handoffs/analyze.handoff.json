@@ -1,0 +1,9 @@
+{
+  "stage": "analyze",
+  "completedAt": "2026-07-06T00:00:00Z",
+  "outputs": ["analysis.md", "library-candidates.json", "decision-log.md"],
+  "nextStage": "spec",
+  "summaryForNext": "1 adopt (cand-001: metrics 0.24 + metrics-exporter-prometheus 0.18, /metrics on admin port) + 4 build items. G1 = BUILD a Redis-backed /oauth/* rate-limit layer reusing the existing RedisRateLimiter::incr_request (do NOT adopt tower_governor for it — in-process only); Redis-outage posture = config toggle, default deny for introspect / degrade+warn for token (confirm in Spec). G2 re-stamp = DECIDED NO (federate, never an IdP) — document + meter instead. G3 = BUILD https-only Hydra URL check + Hydra-response body cap + oauth_exposure_posture() mirroring admin_auth_posture(). G4 = extend existing smoke/Playwright stack with Ory Hydra/Kratos. New deps: metrics@0.24, metrics-exporter-prometheus@0.18. No contested stack, no elicitation. Spec should confirm the outage-posture toggle + insecure-upstream override shape.",
+  "skipped": false,
+  "skipReason": null
+}

@@ -1,0 +1,5 @@
+- [x] Add the `agent_tool_policies: [{ agent, allow, deny }]` config schema (serde, default empty) in config/types.rs
+- [x] Implement the sugar->Cedar compiler: emit permit on Action::call_tool + Route::<tool> for allow entries, forbid for deny entries (glob like delete_* -> the engine's tool-name matching), for principal Agent::<agent>
+- [x] Wire the compiled policies through the existing write-time validator (authz/validator.rs) before load; a sugar block that compiles to invalid Cedar is rejected (fail-closed)
+- [x] Tests: allow-only compiles + authorizes; deny overrides allow (forbid wins); glob deny (delete_*) blocks matching tools; invalid entry rejected at load
+- [x] Docs: README (agent tool-scope sugar; deny-wins; admin-UI deferred) + config.example.yaml; `cargo check/clippy/test --workspace` green

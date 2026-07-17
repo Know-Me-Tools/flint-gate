@@ -1,0 +1,5 @@
+- [x] Add `allow_insecure_upstream` config field (serde default: false) + https-only startup validation of hydra_token_url/hydra_admin_url (reject http:// unless override; loud WARN when override on)
+- [x] Replace unbounded resp.json::<Value>() in the Hydra delegate + introspection paths with a size-capped read (default 64 KiB) then parse; over-cap → fail-closed deny
+- [x] Add `oauth_exposure_posture()` mirroring admin_auth_posture(): RefuseStart when /oauth/* binds non-loopback without both introspect_auth AND rate-limiting; consume it at startup in main.rs (bail on RefuseStart)
+- [x] Tests: http:// Hydra URL without override → refuse start; with override → starts + WARN; over-cap Hydra body → deny; non-loopback /oauth/* missing introspect_auth or rate-limit → refuse start; loopback → allowed
+- [x] Docs: README + config.example.yaml (https-only, body cap, exposure posture); `cargo check/clippy/test --workspace` green

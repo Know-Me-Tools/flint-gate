@@ -38,6 +38,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run src/__tests__/integration.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepublishOnly": "pnpm run typecheck && pnpm run build"

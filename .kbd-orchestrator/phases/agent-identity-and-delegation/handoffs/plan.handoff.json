@@ -1,0 +1,9 @@
+{
+  "stage": "plan",
+  "completedAt": "2026-07-04T15:10:00Z",
+  "outputs": ["plan.md"],
+  "nextStage": "execute",
+  "summaryForNext": "4 changes ordered by dependency + security-gate: add-admin-authn (G1, gates the phase — build first) -> add-token-exchange (G2, establishes /oauth/token + delegated minting) -> add-client-creds-introspection (G3, reuses that surface) -> add-nhi-cedar-principals (G4, names the identities the prior two create as distinct Cedar principals). Backend openspec, driver kbd-apply (one task/turn). Zero new crates — all reuse. Every change: artifact-refiner + security-review QA, explicit fail-closed test, archive via --skip-specs. First to apply: add-admin-authn.",
+  "skipped": false,
+  "skipReason": null
+}

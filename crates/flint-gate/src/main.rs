@@ -139,6 +139,7 @@ async fn shutdown_signal() {
 /// is false and the config is misconfigured (no cert/key paths supplied).
 /// The actual cert load failure path is handled inline in the startup block;
 /// this covers the "TLS enabled but paths not set" case at config-validation time.
+#[cfg(test)]
 fn check_tls_config(tls: &flint_gate_core::config::types::TlsConfig) -> Result<()> {
     if tls.enabled && (tls.cert_path.is_none() || tls.key_path.is_none()) && !tls.fail_open {
         anyhow::bail!(
@@ -896,7 +897,7 @@ async fn main() -> Result<()> {
         router: Arc::clone(&shared_router),
         config: Arc::clone(&shared_config),
         authz: Arc::clone(&authz),
-        approval_manager: approval_manager.clone(),
+        approval_manager: Arc::new(approval_manager.clone()),
         admin_events: Some(admin_event_tx.clone()),
     };
 

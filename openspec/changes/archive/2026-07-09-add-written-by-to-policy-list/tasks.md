@@ -1,0 +1,7 @@
+- [x] In `db/mod.rs`: add `written_by: Option<String>` to `PolicyRow` struct; update `from_row` to read it (nullable — use `try_get` with fallback)
+- [x] In `db/mod.rs`: modify `list_policies()` to LEFT JOIN the latest `cedar_policy_versions` row per policy and select `written_by`
+- [x] In `db/mod.rs`: add `written_by: Option<&str>` parameter to `upsert_policy` (or equivalent internal function) and pass it to the versions insert
+- [x] In `admin/mod.rs`: extract `sub` from JWT claims in `upsert_policy_inner` and pass as `written_by` to `db.upsert_policy`
+- [x] In `web/src/api/types.ts`: add `written_by?: string | null` to `PolicyRow` interface
+- [x] In `web/src/pages/Policies.tsx`: add "Last by" column header and cell to the policy table
+- [x] `cargo test --workspace` green; `cargo clippy -D warnings` clean; `tsc --noEmit` clean; `vite build` passes

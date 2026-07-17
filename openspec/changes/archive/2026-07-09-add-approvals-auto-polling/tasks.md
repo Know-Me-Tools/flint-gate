@@ -1,0 +1,3 @@
+- [x] In `web/src/pages/Approvals.tsx`, destructure `refetch` from `useApprovals()` alongside `data`, `isLoading`, `error`
+- [x] Add a `useEffect` that starts a 5 000 ms `setInterval` calling `refetch()` and returns a cleanup that calls `clearInterval`
+- [x] Verify `tsc --noEmit` passes and `vite build` succeeds

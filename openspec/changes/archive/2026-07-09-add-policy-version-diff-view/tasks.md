@@ -1,0 +1,7 @@
+- [x] Add `"diff": "^7.0.0"` to `web/package.json` dependencies; run `pnpm install`
+- [x] Add `viewMode: 'text' | 'diff'` state to `PolicyVersionHistory` (default `'text'`); reset to `'text'` when `viewedVersion` changes
+- [x] Add a "Text / Diff" toggle button in the version view pane header (only visible when `viewedVersion` is set and `viewedVersion.version_num > 1`)
+- [x] In `'diff'` mode: locate the prior version (`version_num = viewedVersion.version_num - 1`) in `history.versions`; if found, call `diff.createPatch(...)` and render the result as a colored `<pre>` block; if not found, show "No prior version available in this page — load more to compare"
+- [x] Add diff line coloring: `+` lines green (`text-green-700 dark:text-green-400`), `-` lines red (`text-destructive`), `@` lines muted, others plain
+- [x] Add `@types/diff` to devDependencies if needed — removed as conflicting; minimal local `src/types/diff.d.ts` used instead
+- [x] `tsc --noEmit` clean; `vite build` passes; JS bundle delta +5.19 KB gzipped (< 20 KB limit)

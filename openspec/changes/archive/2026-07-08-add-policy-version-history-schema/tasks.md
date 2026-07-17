@@ -1,0 +1,7 @@
+- [ ] Add `cedar_policy_versions` DDL to `SCHEMA_SQL` (idempotent `CREATE TABLE IF NOT EXISTS` + index)
+- [ ] Extend `Database::upsert_policy` with `written_by: Option<&str>` param; wrap both upsert + version insert in a single transaction
+- [ ] Add `PolicyVersionRow` struct (id, policy_id, version_num, policy_text, schema_json, entities_json, written_by, written_at)
+- [ ] Add `Database::list_policy_versions(policy_id, offset, limit)` and `Database::get_policy_version(policy_id, version_num)` methods
+- [ ] Update all 4 `upsert_policy` call sites in `admin/mod.rs` to pass `written_by: None`
+- [ ] Add unit tests: first write creates version_num=1; second write creates version_num=2; `get_policy_version` fetches correct row; `ON DELETE CASCADE` verified by test
+- [ ] `cargo test --workspace && cargo clippy --workspace -- -D warnings`

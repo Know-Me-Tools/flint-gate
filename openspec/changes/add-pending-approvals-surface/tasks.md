@@ -1,0 +1,6 @@
+- [x] Add ApprovalManager::list() -> Vec<ApprovalStatus> (iterate the DashMap, skip already-expired entries); ApprovalStatus is already Serialize
+- [x] Add admin GET /approvals (list pending) + GET /approvals/{id} (single status, reuse status()) on the admin router, mirroring the policy/agent-identity list handlers
+- [x] Backend tests: list returns pending + skips expired; GET endpoints admin-router only; decide-expired/absent still 410/404
+- [x] Web: client fns (list/get/decide) in admin.ts + React-Query hooks (with refetchInterval poll) + approval types in types.ts
+- [x] Web: /approvals route + nav in App.tsx and pages/Approvals.tsx (table of pending: id, principal, action/tool, expiry; approve/deny buttons -> POST /approvals/{id}/decision) following AgentIdentities/Policies pattern
+- [x] Docs: README (pending-approvals admin API + UI; single-replica visibility note) + web build/typecheck green; cargo check/clippy/test --workspace green; SEPARATED security review (admin-only; no sensitive leak in list payload)

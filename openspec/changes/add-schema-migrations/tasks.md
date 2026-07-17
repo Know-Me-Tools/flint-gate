@@ -1,0 +1,8 @@
+- [x] Create `crates/flint-gate-core/migrations/` directory
+- [x] Write `0001_initial_schema.sql` with all current CREATE TABLE IF NOT EXISTS DDL
+- [x] Write `0002_alter_api_keys.sql` with existing ALTER TABLE ADD COLUMN statements
+- [x] Replace `sqlx::raw_sql(SCHEMA_SQL)` with `sqlx::migrate!()` in `db/mod.rs`
+- [x] Remove `SCHEMA_SQL` constant from `db/mod.rs`
+- [x] Run `cargo sqlx prepare` and commit the generated `.sqlx/` cache (no-op: project uses dynamic `sqlx::query()` only, no `query!` macros requiring offline cache)
+- [x] Update CI (`ci.yml`) to use `SQLX_OFFLINE=true` for the test step
+- [x] Verify `cargo test --workspace` passes — 539 passed, 0 failed

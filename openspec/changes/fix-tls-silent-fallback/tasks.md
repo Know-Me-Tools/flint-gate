@@ -1,0 +1,7 @@
+- [x] Add `fail_open: bool` field (default `false`) to `TlsConfig` in `config/types.rs`
+- [x] Update TLS startup block in `main.rs`: bail on cert load failure when `fail_open: false`
+- [x] Emit explicit `WARN: TLS fail-open enabled` when `fail_open: true` and cert load fails
+- [x] Add `tls.fail_open` option to `config.example.yaml` with production warning comment
+- [x] Add unit test: TLS enabled + missing cert + `fail_open: false` → startup error
+- [x] Add unit test: TLS enabled + missing cert + `fail_open: true` → starts, logs WARN
+- [x] `cargo test --workspace` passes

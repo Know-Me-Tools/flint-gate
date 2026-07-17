@@ -1,0 +1,7 @@
+- [x] Add `sessionAffinity: ClientIP` + `sessionAffinityConfig.clientIP.timeoutSeconds: 10800` to admin service in `k8s/service-admin.yaml` (new dedicated admin Service)
+- [x] In `main.rs`: improve multi-replica startup warning to name sticky sessions as the required mitigation
+- [x] Update `config.example.yaml` approval block with per-replica constraint note
+- [x] Add multi-replica deployment checklist to `docs/docs/getting-started.md`
+- [x] Document the pod-restart session loss limitation in docs
+- [x] Add unit test: startup with `REPLICA_COUNT=2` emits the sticky-session warning
+- [x] `cargo test --workspace` passes

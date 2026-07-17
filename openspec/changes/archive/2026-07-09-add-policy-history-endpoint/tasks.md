@@ -1,0 +1,5 @@
+- [x] Add `HistoryQueryParams` (offset, limit with defaults) and `PolicyHistoryResponse` structs in `admin/mod.rs`
+- [x] Add `list_policy_history_handler`: check policy exists (404 if not), clamp limit to 100, call `db.list_policy_versions`, return `PolicyHistoryResponse`
+- [x] Register `.route("/policies/{id}/history", get(list_policy_history_handler))` — add before `/{id}` wildcard
+- [x] Add tests: 404 on unknown policy id; 200 with empty versions on policy with no edits yet (edge case); versions ordered by version_num DESC; offset/limit pagination respected; limit > 100 clamped to 100
+- [x] `cargo test --workspace && cargo clippy --workspace -- -D warnings`

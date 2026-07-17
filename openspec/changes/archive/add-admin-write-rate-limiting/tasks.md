@@ -1,0 +1,5 @@
+- [x] Add `admin_rate_limit: Option<RateLimitConfig>` to `ServerConfig` in `config/types.rs` (serde default `None`; doc comment notes `require_shared_backend` is ignored here)
+- [x] `admin_router_with_auth` accepts `Option<GovernorLayer<CredentialKeyExtractor, NoOpMiddleware, axum::body::Body>>` and layers it onto the protected sub-router when `Some`; public probes (`/health`, `/ready`, `/metrics`) skip the layer
+- [x] `main.rs`: build the admin governor layer from `initial_config.server.admin_rate_limit` using `build_governor_layer` and pass to `admin_router_with_auth` (mirror the existing proxy + OAuth wiring at lines 660-672)
+- [x] Tests in `admin/mod.rs`: protected route returns 429 after burst exhaustion; `/health` bypasses the limiter; a `None` layer leaves routes unrestricted
+- [x] `config.example.yaml`: document `server.admin_rate_limit` block with sensible defaults (`per_second: 10`, `burst: 20`) and a note that the limiter is per-replica and in-process; `cargo check/clippy/test --workspace` green

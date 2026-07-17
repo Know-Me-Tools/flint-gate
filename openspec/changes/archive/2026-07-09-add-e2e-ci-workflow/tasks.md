@@ -1,0 +1,3 @@
+- [x] Create `.github/workflows/e2e-smoke.yml` with the job definition from the proposal: checkout, pnpm setup, node 20, `pnpm install --frozen-lockfile`, `pnpm playwright install chromium --with-deps`, `pnpm test:e2e --project chromium` with `CI: true`, upload-artifact on failure
+- [x] Confirm `pnpm test:e2e --project chromium` exits 0 locally with `CI=true` set (validates the `reuseExistingServer` flag and the `webServer` config together)
+- [x] Verify workflow YAML is valid (`act -l` or `gh workflow list` shows the new job, or confirm YAML parses without error)

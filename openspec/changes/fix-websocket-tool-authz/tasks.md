@@ -1,0 +1,9 @@
+- [x] Add `tool_authz: Option<ToolAuthzContext>` and `approval_handle: Option<ApprovalHandleParts>` to `ws_bridge` signature
+- [x] Implement Cedar evaluation on WS TOOL_CALL_START frames in `websocket.rs` via AgUiProcessor.with_tool_authz()
+- [x] Implement ApprovalManager registration and decision-await for WS RequireApproval via AgUiProcessor.with_approval_handle()
+- [x] Add doc comment in `pipeline.rs` explaining why WebSocket upgrades cannot use the streaming-body dispatch path and must call `ws_bridge` directly with authz params
+- [x] Add unit test: Cedar deny on TOOL_CALL_START → RUN_ERROR emitted (ws_bridge_cedar_deny_emits_run_error_for_tool_call)
+- [x] Add unit test: Cedar permit on TOOL_CALL_START → START held until END releases (ws_bridge_cedar_permit_releases_tool_call_on_end)
+- [x] Add unit test: approval_handle wires into AgUiProcessor without panic (ws_bridge_approval_handle_wires_into_ag_ui)
+- [x] Fix env-var test isolation race in main.rs multi-replica and K8s tests (ENV_MUTEX)
+- [x] `cargo test --workspace` passes (528 passed, 0 failed)

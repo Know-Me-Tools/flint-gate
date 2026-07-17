@@ -1,0 +1,6 @@
+- [x] Create `k8s/network-policy.yaml` denying all ingress to port 4457 by default
+- [x] Remove port 4457 from `k8s/service.yaml` service `ports:` block
+- [x] In `main.rs`: detect `KUBERNETES_SERVICE_HOST` env var + missing `admin_auth` → emit WARN
+- [x] Add "Admin API security" section to `docs/docs/getting-started.md` with NetworkPolicy example
+- [x] Add unit test: missing admin_auth + KUBERNETES_SERVICE_HOST set → warning emitted
+- [x] `cargo test --workspace` passes

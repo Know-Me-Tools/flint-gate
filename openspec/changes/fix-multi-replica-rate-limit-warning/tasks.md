@@ -1,0 +1,6 @@
+- [x] Read `main.rs` to find config loading sequence and identify where startup guards run
+- [x] Add `check_rate_limit_config_sanity` function: check `rate_limiting.enabled`, `redis_url.is_none()`, and `KUBERNETES_SERVICE_HOST` env presence
+- [x] Emit `warn!("rate limiting enabled without Redis in a Kubernetes environment — per-replica counters will not be shared; configure rate_limiting.redis_url for correct multi-replica behavior")` when conditions met
+- [x] Add `rate_limiting.redis_url` comment to `config.example.yaml` documenting multi-replica requirement
+- [x] Add unit test: `check_rate_limit_config_sanity` returns warning when enabled + no Redis + K8s env set
+- [x] `cargo test --workspace` passes — 539 core tests + 4 new rate-limit warning tests passed

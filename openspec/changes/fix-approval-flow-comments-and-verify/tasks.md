@@ -1,0 +1,3 @@
+- [x] Fix the misleading comments at stream/ag_ui.rs:245 and stream/a2ui.rs:140 to state the fail-closed deny applies ONLY to the no-handle fallback; with a handle the call pauses and awaits a decision
+- [x] End-to-end verification test: drive a RequireApproval decision through the stream processor — assert the call PAUSES (nothing released), an approval-request event is emitted, an APPROVE resumes/flushes the held call, a DENY drops it with the deny event; assert no silent-allow path
+- [x] Docs: README (human-in-the-loop approval flow overview — pause -> request event -> operator decides via REST/UI -> resume/deny; no-handle -> fail-closed deny); cargo check/clippy/test --workspace green

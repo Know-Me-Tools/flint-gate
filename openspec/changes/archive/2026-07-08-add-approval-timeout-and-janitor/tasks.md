@@ -1,0 +1,6 @@
+- [x] Add approval config: approval:{ enabled:bool=true, ttl_seconds:Option<u64> } to config/types.rs (serde default); thread ttl into the approval TTL (override the hardcoded 300s) and enabled into the RequireApproval decision path
+- [x] enabled:false -> a RequireApproval decision fails closed to Deny (never pause/allow); wire at the decision/stream boundary
+- [x] Paused-stream timeout: add a tokio::time::sleep_until(nearest pending expires_at) arm to the select! in pipeline.rs (~815-833); on fire, resolve the held call as Deny (emit deny event + resume stream to termination, NOT silent drop, NO half-open stream); recompute the deadline after each resolve
+- [x] purge_expired janitor: spawn a background tokio::time::interval task calling ApprovalManager::purge_expired() periodically (mirror the watchdog interval at pipeline.rs:744), started in main.rs
+- [x] Tests: undecided approval times out -> deny; two staggered pending approvals each deny at their own deadline; janitor reaps expired entries; enabled:false denies a RequireApproval; existing pause/resume tests unregressed
+- [x] Docs: README (approval TTL/enable config; undecided -> auto-deny; per-replica janitor; single-replica constraint note) + config.example.yaml (approval block); cargo check/clippy/test --workspace green; SEPARATED security review (no silent-allow / no half-open stream on timeout)

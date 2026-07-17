@@ -1,0 +1,2 @@
+- [x] Add `webServer` block to `web/playwright.config.ts`: `command: 'pnpm dev'`, `url: 'http://localhost:5173'`, `reuseExistingServer: !process.env.CI`, `timeout: 60_000`
+- [x] Verify `pnpm --dir web test:e2e` exits 0 without a manually started dev server (existing 3 smoke tests pass)

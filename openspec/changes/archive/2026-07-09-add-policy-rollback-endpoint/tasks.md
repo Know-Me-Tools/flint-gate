@@ -1,0 +1,5 @@
+- [x] Add `RollbackRequest { version_num: i32 }` and `RollbackResponse { status, policy_id, from_version, to_version, reloaded }` structs in `admin/mod.rs`
+- [x] Add `rollback_policy_handler`: (a) fetch target version row → 404 if missing; (b) Cedar-validate via `validate_policy` → 422 with errors if invalid; (c) call `db.upsert_policy(…, written_by: None)` to restore + create new version row; (d) call `authz.reload_from_database` → 500 if fails; (e) return 200 `RollbackResponse` with correct from/to version numbers
+- [x] Register `.route("/policies/{id}/rollback", post(rollback_policy_handler))` before `/{id}` wildcard
+- [x] Add tests: 404 on unknown policy id; 404 on unknown version_num; 422 on version with syntactically invalid Cedar text; 200 happy path — verify new version_num = old_max + 1, restored policy_text in DB, reloaded=true in response
+- [x] `cargo test --workspace && cargo clippy --workspace -- -D warnings`

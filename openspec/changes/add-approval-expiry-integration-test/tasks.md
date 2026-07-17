@@ -1,0 +1,8 @@
+- [x] Set `approval.ttl_seconds: 5` in `config.test.yaml`
+- [x] Set `approval.janitor_interval_seconds: 1` in `config.test.yaml`
+- [x] Add `TestIntegration_ApprovalExpiry` to `sdks/go/integration_test.go`
+- [x] Add approval expiry `it()` test to `sdks/typescript/src/__tests__/integration.test.ts`
+- [x] Both tests assert: (a) approval appears, (b) wait > TTL (8s > 5s+1s), (c) ListApprovals returns empty, (d) stream terminated
+- [x] `go vet -tags integration ./...` passes (live E2E requires docker-compose test fixture)
+- [x] `pnpm tsc --noEmit` passes (live E2E requires docker-compose test fixture)
+- [x] `cargo test --workspace` passes — 539 passed, 0 failed

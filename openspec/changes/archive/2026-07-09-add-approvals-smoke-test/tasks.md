@@ -1,0 +1,6 @@
+- [x] Create `web/e2e/approvals.spec.ts`; add `beforeEach` that mocks `GET /api/approvals` via `page.route()` returning `{ approvals: [] }`
+- [x] Test (empty state): navigate to `/approvals`; assert "Pending Approvals" heading visible; assert "No pending approvals." text visible
+- [x] Test (table): mock `/api/approvals` returning one approval row with a known `approval_id`; navigate; assert "Approval ID" column header and the known ID visible in the table
+- [x] Test (auto-polling): call `page.clock.install()` before navigation; mock `/api/approvals` with a request counter; navigate; assert counter = 1; call `page.clock.tick(5_001)`; assert counter = 2; call `page.clock.tick(5_001)` again; assert counter = 3
+- [x] Test (nav link): navigate to `/`; assert "Approvals" link visible in navigation; click it; assert "Pending Approvals" heading visible
+- [x] Verify `pnpm --dir web test:e2e --grep "Approvals"` exits 0 (all 4 test cases pass)

@@ -1,0 +1,9 @@
+- [x] Define Cedar entity schema constant in `authz/schema.rs` (User, Agent, Service, Route, Action::"call_tool") + `validate_annotations()` for known annotation keys
+- [x] Wire schema + annotation validation into `validate_policy` endpoint via `validate_policy_for_gateway` (always injects gateway schema when caller supplies none)
+- [x] Wire `validate_policy_for_gateway` into `create_policy_handler` and `update_policy_handler` (via `upsert_policy_inner`)
+- [x] Return HTTP 422 (UNPROCESSABLE_ENTITY) with `policy_schema_violation` error code for schema/annotation errors; syntax errors remain HTTP 400
+- [x] Wire into `rollback_policy_handler` — ensure historical versions also pass gateway validation before restore
+- [x] Add unit test: `@require_apporval` (typo) → rejected at write time (typo_annotation_require_apporval_is_rejected_at_write_time)
+- [x] Add unit test: `@require_approval` (correct) → accepted (correct_require_approval_annotation_is_accepted_at_write_time)
+- [x] Add unit test: undefined entity type `Organization` → rejected at write time (undefined_entity_type_in_policy_is_rejected_at_write_time)
+- [x] `cargo test --workspace` passes (539 passed, 0 failed)

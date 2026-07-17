@@ -1,0 +1,7 @@
+- [x] Create `web/e2e/policies.spec.ts` with `beforeEach` that mocks `/api/policies` via `page.route()` returning fixture JSON with one policy where `written_by: 'alice'` and one where `written_by: null`
+- [x] Test: navigate to `/policies`, assert "Last by" column header visible, assert `alice` in first row, assert `—` in second row
+- [x] Test: mock `/api/policies/pol-alpha/history` returning `total_hint: 25` with 20 version rows; navigate to Policies, open history panel for pol-alpha; assert 20 rows; assert "Load more" button visible
+- [x] Test: click "Load more" (mock second-page response with 5 rows); assert 25 total rows visible; assert "Load more" button gone
+- [x] Test: with history containing v1 and v2, click v1 row in history panel — assert "Text / Diff" toggle is NOT visible; click v2 row — assert "Text" and "Diff" buttons visible
+- [x] Test: with v2 selected, click "Diff" button; assert `<pre>` element visible; assert at least one line starting with `+` (excluding `+++`) is present in the output
+- [x] Verify `pnpm --dir web test:e2e --grep "Policies"` exits 0 (all 4 test cases pass)

@@ -1,0 +1,6 @@
+- [x] Add `PolicyRow`, `PolicyVersionRow`, `PolicyHistoryResponse`, `RollbackResponse`, `UpsertPolicyInput`, `UpsertPolicyResponse` to `sdks/typescript/src/types.ts`
+- [x] Add `listPolicies`, `getPolicy`, `createPolicy`, `updatePolicy`, `deletePolicy` to `FlintGateAdmin` in `sdks/typescript/src/admin.ts`
+- [x] Add `getPolicyHistory` and `rollbackPolicy` to `FlintGateAdmin`
+- [x] Export the new types from `sdks/typescript/src/index.ts`
+- [x] Write unit tests for the 7 new methods in `sdks/typescript/src/__tests__/admin.test.ts` (9 tests covering all methods, URL encoding, query string params)
+- [x] `tsc --noEmit` passes in the SDK directory; all 16 tests pass

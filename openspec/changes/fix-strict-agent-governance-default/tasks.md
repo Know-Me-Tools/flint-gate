@@ -1,0 +1,7 @@
+- [x] Change `strict_agent_governance` default to `true` in `config/types.rs` (serde default fn + Default impl)
+- [x] Verify `config.test.yaml` routes are compliant with strict mode (stream-test route has authorize hook)
+- [x] Update `config.example.yaml` with new default, explicit true value, and disable instructions
+- [x] Add unit test: strict mode on + agent-reachable route without authorize hook → findings non-empty (strict_mode_on_with_ungoverned_agent_route_produces_findings)
+- [x] Add unit test: strict mode on + agent-reachable route with authorize hook → no findings (strict_mode_on_with_governed_agent_route_produces_no_findings)
+- [x] Update existing test: strict_agent_governance_defaults_false → strict_agent_governance_defaults_true
+- [x] `cargo test --workspace` passes (530 passed, 0 failed)

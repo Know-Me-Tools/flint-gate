@@ -1,0 +1,6 @@
+- [x] Add `offset` (number, init 0) and `hasMore` (boolean, init false) to `PolicyVersionHistory` state
+- [x] After initial `loadHistory()`, compute `hasMore = versions.length >= 20 || (history.total_hint != null && history.total_hint > 20)`; store result in state
+- [x] Render a "Load more" button at the bottom of the version table when `hasMore` is true
+- [x] Implement `loadMoreHistory()`: fetch `fetchPolicyHistory(policyId, offset + 20, 20)`, append versions, advance offset, recompute `hasMore`
+- [x] Show `<Loader2>` spinner inside "Load more" button while loading next page
+- [x] `tsc --noEmit` clean; `vite build` passes

@@ -1,0 +1,6 @@
+- [x] Create `CHANGELOG.md` at repo root with Keep a Changelog format header
+- [x] Add `## [Unreleased]` section (empty, for next release)
+- [x] Add `## [0.1.0-beta] - 2026-07-09` section listing: Cedar authorization engine, approval flows, ndjson streaming, admin UI, Go SDK, TypeScript SDK, audit trail, budget controls
+- [x] Read `.github/workflows/release.yml` to understand release trigger and job structure
+- [x] Add `check-changelog` step that greps for non-empty content below `## [Unreleased]` and fails if missing
+- [x] Verify the grep pattern does not false-positive on an empty Unreleased section — confirmed: empty Unreleased causes FAIL (correct behavior)

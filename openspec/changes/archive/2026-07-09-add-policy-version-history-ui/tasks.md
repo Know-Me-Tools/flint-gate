@@ -1,0 +1,6 @@
+- [x] Add `PolicyVersionRow`, `PolicyHistoryResponse`, `RollbackResponse` interfaces to `web/src/api/types.ts`
+- [x] Add `fetchPolicyHistory(id, offset?, limit?)` and `rollbackPolicy(id, versionNum)` to `web/src/api/admin.ts`
+- [x] Add collapsible "Version History" section to `PolicyForm` in `Policies.tsx`: lazy-load history on expand; render list with version_num, written_at, written_by; loading spinner + error state
+- [x] Implement "View" action: populate read-only textarea with selected version's policy_text; add "Restore to editor" button to copy text to the editable textarea without saving
+- [x] Implement "Rollback" action: explicit confirmation gate → call `rollbackPolicy` → on success: invalidate policy list query, refresh history panel, show success indicator; on error (including 422): display error/Cedar messages inline
+- [x] TypeScript `tsc --noEmit` passes; `vite build` passes

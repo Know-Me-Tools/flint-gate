@@ -5,6 +5,7 @@ pub mod http_body;
 pub mod identity;
 pub mod introspect;
 pub mod jwks;
+pub mod jwks_publish;
 pub mod jwt_mint;
 pub mod jwt_verify;
 pub mod kratos;

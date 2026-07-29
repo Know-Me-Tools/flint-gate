@@ -939,6 +939,13 @@ pub struct JwtConfig {
     pub signing_key_path: Option<String>,
     /// Raw HMAC secret (HS256). Prefer `signing_key_path` for production.
     pub signing_key_secret: Option<String>,
+    /// `kid` advertised on minted tokens and by the JWKS endpoint.
+    ///
+    /// Only meaningful for asymmetric algorithms: verifiers select a public key
+    /// by `kid`, so a token without one is rejected before its signature is
+    /// checked. Defaults to `DEFAULT_KEY_ID` when a PEM key is configured.
+    #[serde(default)]
+    pub signing_key_id: Option<String>,
     #[serde(default = "default_jwt_issuer")]
     pub issuer: String,
     #[serde(default = "default_jwt_ttl")]
@@ -961,6 +968,7 @@ impl Default for JwtConfig {
             signing_algorithm: default_jwt_algorithm(),
             signing_key_path: None,
             signing_key_secret: None,
+            signing_key_id: None,
             issuer: default_jwt_issuer(),
             default_ttl_seconds: default_jwt_ttl(),
         }

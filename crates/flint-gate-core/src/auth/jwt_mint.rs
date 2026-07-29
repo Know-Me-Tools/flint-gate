@@ -12,6 +12,19 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// Default `kid` when an asymmetric key is configured without an explicit id.
+/// Must match what the JWKS endpoint advertises for the same key.
+pub const DEFAULT_KEY_ID: &str = "flint-gate-key";
+
+/// Whether an algorithm is asymmetric, and so needs a `kid` for key selection.
+/// HMAC verifiers share the secret and have no key to choose between.
+fn is_asymmetric(alg: Algorithm) -> bool {
+    !matches!(
+        alg,
+        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
+    )
+}
+
 /// A configured JWT minter. Created from [`JwtConfig`] or a DB-sourced key.
 #[derive(Clone)]
 pub struct JwtMinter {
@@ -19,6 +32,16 @@ pub struct JwtMinter {
     encoding_key: EncodingKey,
     issuer: String,
     default_ttl_seconds: u64,
+    /// `kid` header written on every minted token.
+    ///
+    /// Asymmetric verifiers select a JWKS key by `kid`; without one they cannot
+    /// know which public key to try and reject the token outright (flint-forge
+    /// returns `IdentityError::UnknownKid`). A token signed RS256 but carrying
+    /// no `kid` therefore fails at every asymmetric upstream, which reads as a
+    /// signature problem rather than a missing header.
+    ///
+    /// `None` for HMAC, where there is no key to select.
+    key_id: Option<String>,
 }
 
 /// Thread-safe optional JWT minter — `None` when JWT minting is not configured.
@@ -28,11 +51,24 @@ impl JwtMinter {
     /// Build a [`JwtMinter`] from [`JwtConfig`].
     pub async fn from_config(cfg: &JwtConfig) -> Result<Self> {
         let (algorithm, encoding_key) = Self::load_encoding_key(cfg).await?;
+        // Asymmetric algorithms need a `kid` so verifiers can pick the key.
+        // Explicit config wins; otherwise fall back to a stable default that
+        // matches what the JWKS endpoint advertises.
+        let key_id = if is_asymmetric(algorithm) {
+            Some(
+                cfg.signing_key_id
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_KEY_ID.to_string()),
+            )
+        } else {
+            None
+        };
         Ok(Self {
             algorithm,
             encoding_key,
             issuer: cfg.issuer.clone(),
             default_ttl_seconds: cfg.default_ttl_seconds,
+            key_id,
         })
     }
 
@@ -104,6 +140,9 @@ impl JwtMinter {
             encoding_key,
             issuer: issuer.to_string(),
             default_ttl_seconds,
+            // The DB row's id IS the key id — it is what the JWKS endpoint
+            // publishes, so a rotated key is selectable by verifiers.
+            key_id: is_asymmetric(algorithm).then(|| key.id.to_string()),
         })
     }
 
@@ -199,7 +238,8 @@ impl JwtMinter {
             }
         }
 
-        let header = Header::new(self.algorithm);
+        let mut header = Header::new(self.algorithm);
+        header.kid = self.key_id.clone();
         encode(&header, &claims, &self.encoding_key).context("encoding JWT")
     }
 }
@@ -216,6 +256,7 @@ mod tests {
             signing_key_path: None,
             issuer: "test-issuer".to_string(),
             default_ttl_seconds: 300,
+            ..Default::default()
         }
     }
 

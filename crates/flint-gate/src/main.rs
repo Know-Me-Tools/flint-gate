@@ -533,6 +533,20 @@ async fn main() -> Result<()> {
                 }
             }),
         )
+        // RFC 7517 JWKS — served on the PUBLIC proxy surface because upstream
+        // services fetch it to verify the tokens this gate mints. Without it an
+        // RS256-configured gate produces tokens nothing can verify: verifiers
+        // select a key by `kid` and have nowhere to resolve it from.
+        .route(
+            flint_gate_core::auth::jwks_publish::JWKS_PATH,
+            get({
+                let db = db.clone();
+                move || {
+                    let db = db.clone();
+                    async move { flint_gate_core::auth::jwks_publish::jwks_handler(db).await }
+                }
+            }),
+        )
         .fallback(any(proxy_handler))
         .with_state(Arc::clone(&app_state))
         .layer(TraceLayer::new_for_http());

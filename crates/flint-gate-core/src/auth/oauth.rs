@@ -369,6 +369,7 @@ mod tests {
             signing_key_path: None,
             issuer: "flint-gate".into(),
             default_ttl_seconds: 300,
+            ..Default::default()
         };
         let verifier = TokenVerifier::from_jwt_config(&cfg).await.unwrap();
         let state = OAuthState {

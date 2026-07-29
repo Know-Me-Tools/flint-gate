@@ -795,6 +795,7 @@ mod tests {
             signing_key_path: None,
             issuer: "flint-gate".into(),
             default_ttl_seconds: 300,
+            ..Default::default()
         };
         Arc::new(RwLock::new(Some(
             JwtMinter::from_config(&cfg).await.unwrap(),

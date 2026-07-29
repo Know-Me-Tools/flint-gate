@@ -187,6 +187,8 @@ mod tests {
             signing_key_path: None,
             issuer: "flint-gate".into(),
             default_ttl_seconds: 300,
+            // Spread so a new JwtConfig field does not break every fixture.
+            ..Default::default()
         }
     }
 

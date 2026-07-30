@@ -65,6 +65,6 @@ data:
                   additional_claims:
                     aud: ["frf-gateway"]
                     tenant_id: "{{ identity.metadata_public.tenant_id }}"
-                    role: "{{ identity.metadata_public.role }}"
+                    role: "{{ coalesce(identity.metadata_public.role, 'user') }}"
                     flint:
                       user_id: "{{ identity.id }}"

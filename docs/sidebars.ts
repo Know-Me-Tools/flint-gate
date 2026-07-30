@@ -5,6 +5,7 @@ const sidebars: SidebarsConfig = {
     'intro',
     'getting-started',
     'configuration',
+    'forge-keys',
     'admin-api',
     {
       type: 'category',

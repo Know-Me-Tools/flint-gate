@@ -1,28 +1,32 @@
 {
-  "/flint-gate/docs-0bc": {
+  "/flint-gate/docs-289": {
     "__comp": "5e95c892",
     "__context": {
       "plugin": "aba21aa0"
     }
   },
-  "/flint-gate/docs-15c": {
+  "/flint-gate/docs-9f2": {
     "__comp": "a7bd4aaa",
     "__props": "f67fa441"
   },
-  "/flint-gate/docs-7e6": {
+  "/flint-gate/docs-c20": {
     "__comp": "a94703ab"
   },
   "/flint-gate/docs/admin-api-c87": {
     "__comp": "17896441",
     "content": "24a39250"
   },
-  "/flint-gate/docs/cedar-policies-1a2": {
+  "/flint-gate/docs/cedar-policies-142": {
     "__comp": "17896441",
     "content": "1da5c188"
   },
   "/flint-gate/docs/configuration-5ce": {
     "__comp": "17896441",
     "content": "9ed00105"
+  },
+  "/flint-gate/docs/forge-keys-99a": {
+    "__comp": "17896441",
+    "content": "787620f8"
   },
   "/flint-gate/docs/getting-started-e5a": {
     "__comp": "17896441",
@@ -32,11 +36,11 @@
     "__comp": "17896441",
     "content": "0e384e19"
   },
-  "/flint-gate/docs/metrics-8a4": {
+  "/flint-gate/docs/metrics-35b": {
     "__comp": "17896441",
     "content": "1dba1ecf"
   },
-  "/flint-gate/docs/operations-072": {
+  "/flint-gate/docs/operations-1fc": {
     "__comp": "17896441",
     "content": "4de154ba"
   },

@@ -8,6 +8,7 @@ export default {
   "4de154ba": [() => import(/* webpackChunkName: "4de154ba" */ "@site/docs/operations.md"), "@site/docs/operations.md", require.resolveWeak("@site/docs/operations.md")],
   "5e95c892": [() => import(/* webpackChunkName: "5e95c892" */ "@theme/DocsRoot"), "@theme/DocsRoot", require.resolveWeak("@theme/DocsRoot")],
   "5e9f5e1a": [() => import(/* webpackChunkName: "5e9f5e1a" */ "@generated/docusaurus.config"), "@generated/docusaurus.config", require.resolveWeak("@generated/docusaurus.config")],
+  "787620f8": [() => import(/* webpackChunkName: "787620f8" */ "@site/docs/forge-keys.md"), "@site/docs/forge-keys.md", require.resolveWeak("@site/docs/forge-keys.md")],
   "9a5f2424": [() => import(/* webpackChunkName: "9a5f2424" */ "@site/docs/sdks/index.md"), "@site/docs/sdks/index.md", require.resolveWeak("@site/docs/sdks/index.md")],
   "9ed00105": [() => import(/* webpackChunkName: "9ed00105" */ "@site/docs/configuration.md"), "@site/docs/configuration.md", require.resolveWeak("@site/docs/configuration.md")],
   "a3bb847d": [() => import(/* webpackChunkName: "a3bb847d" */ "@site/docs/sdks/rust.md"), "@site/docs/sdks/rust.md", require.resolveWeak("@site/docs/sdks/rust.md")],

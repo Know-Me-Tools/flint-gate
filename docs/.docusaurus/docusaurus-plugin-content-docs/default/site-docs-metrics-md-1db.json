@@ -11,5 +11,10 @@
   "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/metrics.md",
   "tags": [],
   "version": "current",
-  "frontMatter": {}
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Cedar Policies Reference",
+    "permalink": "/flint-gate/docs/cedar-policies"
+  }
 }

@@ -16,5 +16,9 @@
   "previous": {
     "title": "TypeScript SDK",
     "permalink": "/flint-gate/docs/sdks/typescript"
+  },
+  "next": {
+    "title": "Operations Runbook",
+    "permalink": "/flint-gate/docs/operations"
   }
 }

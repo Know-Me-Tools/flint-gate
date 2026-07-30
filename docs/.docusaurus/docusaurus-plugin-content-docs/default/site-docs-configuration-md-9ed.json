@@ -18,7 +18,7 @@
     "permalink": "/flint-gate/docs/getting-started"
   },
   "next": {
-    "title": "Admin API",
-    "permalink": "/flint-gate/docs/admin-api"
+    "title": "Forge Keys — Anon & Service-Role Key Management",
+    "permalink": "/flint-gate/docs/forge-keys"
   }
 }

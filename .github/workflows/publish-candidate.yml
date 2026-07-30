@@ -2,9 +2,6 @@ name: Publish candidate image
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - codex/deploy-flint-runtime-services
 
 permissions:
   contents: read

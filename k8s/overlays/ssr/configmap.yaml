@@ -7,6 +7,12 @@ data:
     server:
       listen: "0.0.0.0:4456"
       admin_listen: "0.0.0.0:4457"
+      admin_auth:
+        provider:
+          type: kratos
+          base_url: "http://kratos-public.iam.svc.cluster.local:4433"
+          forward_cookies: true
+          session_cookie: "ory_kratos_session"
       strict_agent_governance: true
       require_policies_at_startup: false
       tls:

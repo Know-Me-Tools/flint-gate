@@ -39,7 +39,7 @@ spec:
               app.kubernetes.io/name: flint-gate
       containers:
         - name: flint-gate
-          image: ghcr.io/know-me-tools/flint-gate@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          image: ghcr.io/know-me-tools/flint-gate@sha256:e67abd80b024cd85dd1cbb2615ab940510aa3b48b48c86454b32c5a646398511
           imagePullPolicy: IfNotPresent
           env:
             - name: FLINT_GATE_CONFIG

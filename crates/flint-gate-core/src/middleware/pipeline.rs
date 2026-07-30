@@ -320,7 +320,11 @@ async fn handle_request(
                     if mint_cfg.enabled {
                         let minter_guard = state.jwt_minter.read().await;
                         if let Some(minter) = minter_guard.as_ref() {
-                            match minter.mint(&identity, Some(&mint_cfg.additional_claims), None) {
+                            let rendered_claims = TemplateEngine::render_value(
+                                &mint_cfg.additional_claims,
+                                &template_ctx,
+                            );
+                            match minter.mint(&identity, Some(&rendered_claims), None) {
                                 Ok(token) => {
                                     minted_jwt = Some(token);
                                 }

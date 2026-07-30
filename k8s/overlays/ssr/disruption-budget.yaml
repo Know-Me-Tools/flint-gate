@@ -1,0 +1,19 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: flint-gate
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flint-gate
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: flint-gate-postgres
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flint-gate-postgres

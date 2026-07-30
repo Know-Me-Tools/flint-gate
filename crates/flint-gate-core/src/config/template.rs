@@ -68,6 +68,28 @@ impl TemplateEngine {
         .into_owned()
     }
 
+    /// Recursively render every string in a JSON value while preserving arrays,
+    /// objects, booleans, and numbers. This is used for structured JWT claims.
+    #[must_use]
+    pub fn render_value(value: &Value, ctx: &TemplateContext) -> Value {
+        match value {
+            Value::String(template) => Value::String(Self::render(template, ctx)),
+            Value::Array(values) => Value::Array(
+                values
+                    .iter()
+                    .map(|value| Self::render_value(value, ctx))
+                    .collect(),
+            ),
+            Value::Object(values) => Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::render_value(value, ctx)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
     /// Evaluate a single expression against the context.
     fn eval_expr(expr: &str, ctx: &TemplateContext) -> String {
         // coalesce(a, b, 'literal')
@@ -305,6 +327,23 @@ mod tests {
     fn render_no_expressions() {
         let result = TemplateEngine::render("plain string", &ctx());
         assert_eq!(result, "plain string");
+    }
+
+    #[test]
+    fn render_value_preserves_structure_and_renders_nested_strings() {
+        let value = json!({
+            "tenant_id": "{{ identity.metadata_public.org_id }}",
+            "aud": ["frf-gateway"],
+            "enabled": true
+        });
+        assert_eq!(
+            TemplateEngine::render_value(&value, &ctx()),
+            json!({
+                "tenant_id": "org-456",
+                "aud": ["frf-gateway"],
+                "enabled": true
+            })
+        );
     }
 
     #[test]

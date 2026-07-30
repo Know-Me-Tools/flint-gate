@@ -64,6 +64,15 @@ struct Cli {
     #[arg(long, env = "DATABASE_URL", value_name = "URL")]
     database_url: Option<String>,
 
+    /// Refuse to serve when PostgreSQL is configured but unavailable.
+    #[arg(long, env = "FLINT_GATE_REQUIRE_DATABASE", default_value_t = false)]
+    require_database: bool,
+
+    /// Apply forward-only SQLx migrations, optionally seed the configured signing
+    /// key, and exit without opening either HTTP listener.
+    #[arg(long, default_value_t = false)]
+    database_init_only: bool,
+
     /// Tracing filter (EnvFilter syntax). E.g. `debug`, `info,flint_gate=trace`.
     #[arg(
         long,
@@ -80,6 +89,15 @@ struct Cli {
     /// Path to PEM private key for RS256/ES256 JWT signing. Overrides jwt.signing_key_path.
     #[arg(long, env = "FLINT_GATE_JWT_KEY_PATH", value_name = "PATH")]
     jwt_key_path: Option<String>,
+
+    /// Path to the public PEM paired with `jwt_key_path`; used only by
+    /// `--database-init-only` to seed the JWKS publication record.
+    #[arg(
+        long,
+        env = "FLINT_GATE_JWT_PUBLIC_KEY_PATH",
+        value_name = "PATH"
+    )]
+    jwt_public_key_path: Option<String>,
 
     /// Approval store backend: `memory` or `postgres`. Overrides approval.backend in config.yaml.
     #[arg(long, env = "FLINT_APPROVAL_BACKEND", value_name = "BACKEND")]
@@ -235,6 +253,11 @@ async fn main() -> Result<()> {
 
     // 5. Connect to database
     let db = if initial_config.database.url.is_empty() {
+        if cli.require_database || cli.database_init_only {
+            anyhow::bail!(
+                "database is required but database.url/DATABASE_URL is empty"
+            );
+        }
         info!("no database URL configured; DB features disabled");
         None
     } else {
@@ -250,11 +273,50 @@ async fn main() -> Result<()> {
                 Some(Arc::new(d))
             }
             Err(e) => {
+                if cli.require_database || cli.database_init_only {
+                    return Err(e).context(
+                        "database is required but flint-gate could not connect",
+                    );
+                }
                 warn!(error = %e, "database connection failed; running without DB features");
                 None
             }
         }
     };
+
+    if cli.database_init_only {
+        let db = db
+            .as_deref()
+            .context("database initialization completed without a database handle")?;
+        if let Some(private_key_path) = initial_config.jwt.signing_key_path.as_deref() {
+            let public_key_path = cli.jwt_public_key_path.as_deref().context(
+                "--database-init-only with an asymmetric signing key requires \
+                 FLINT_GATE_JWT_PUBLIC_KEY_PATH/--jwt-public-key-path",
+            )?;
+            let private_key = tokio::fs::read_to_string(private_key_path)
+                .await
+                .with_context(|| format!("reading private signing key from {private_key_path}"))?;
+            let public_key = tokio::fs::read_to_string(public_key_path)
+                .await
+                .with_context(|| format!("reading public signing key from {public_key_path}"))?;
+            let key_id = initial_config
+                .jwt
+                .signing_key_id
+                .as_deref()
+                .unwrap_or(flint_gate_core::auth::jwt_mint::DEFAULT_KEY_ID);
+            db.insert_signing_key(
+                key_id,
+                &initial_config.jwt.signing_algorithm,
+                &public_key,
+                &private_key,
+            )
+            .await
+            .context("seeding durable JWT signing key")?;
+            info!(key_id, "durable JWT signing key seeded");
+        }
+        info!("database initialization complete");
+        return Ok(());
+    }
 
     // 6. Build authenticators
     let http_client = reqwest::Client::builder()

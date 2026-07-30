@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flint-gate-config
+data:
+  config.yaml: |
+    server:
+      listen: "0.0.0.0:4456"
+      admin_listen: "0.0.0.0:4457"
+      admin_auth:
+        provider:
+          type: kratos
+          base_url: "http://kratos-public.iam.svc.cluster.local:4433"
+          forward_cookies: true
+          session_cookie: "ory_kratos_session"
+      strict_agent_governance: true
+      require_policies_at_startup: false
+      tls:
+        enabled: false
+    database:
+      url: ""
+      max_connections: 10
+      override_yaml: false
+    cache:
+      l1:
+        max_capacity: 1000
+        ttl_seconds: 30
+    jwt:
+      signing_algorithm: "RS256"
+      signing_key_path: "/var/run/secrets/flint-gate/private.pem"
+      signing_key_id: "sansaba-ssr-rs256-v1"
+      issuer: "https://workspace-ssr.prometheusags.ai/flint-gate"
+      default_ttl_seconds: 300
+    auth_providers:
+      kratos_session:
+        type: kratos
+        base_url: "http://kratos-public.iam.svc.cluster.local:4433"
+        forward_cookies: true
+        session_cookie: "ory_kratos_session"
+    sites:
+      - id: "sansaba-runtime"
+        domains:
+          - "flint-gate-proxy"
+          - "flint-gate-proxy.ssr"
+          - "flint-gate-proxy.ssr.svc.cluster.local"
+        default_auth: kratos_session
+        default_upstream: "http://frf-gateway:8080"
+    routes:
+      - id: "sansaba-frf"
+        site: "sansaba-runtime"
+        match:
+          path: "/**"
+          methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+        upstream: "http://frf-gateway:8080"
+        auth: kratos_session
+        priority: 10
+        hooks:
+          pre_request:
+            - type: claims_enhancement
+              config:
+                inject_headers:
+                  X-Authenticated-Subject: "{{ identity.id }}"
+                mint_jwt:
+                  enabled: true
+                  additional_claims:
+                    aud: ["frf-gateway"]
+                    tenant_id: "{{ identity.metadata_public.tenant_id }}"
+                    role: "{{ coalesce(identity.metadata_public.role, 'user') }}"
+                    flint:
+                      user_id: "{{ identity.id }}"

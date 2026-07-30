@@ -1,0 +1,11 @@
+.git
+.github
+.claude
+.codex
+.kbd-orchestrator
+.prometheus
+target
+k8s
+docs
+openspec
+*.md

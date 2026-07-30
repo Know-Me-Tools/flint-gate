@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flint-gate-proxy
+  labels:
+    app.kubernetes.io/name: flint-gate
+    app.kubernetes.io/component: proxy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: flint-gate
+  ports:
+    - name: proxy
+      port: 4456
+      targetPort: proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flint-gate-admin
+  labels:
+    app.kubernetes.io/name: flint-gate
+    app.kubernetes.io/component: admin
+  annotations:
+    prometheusags.ai/exposure: private-cluster-only
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: flint-gate
+  ports:
+    - name: admin
+      port: 4457
+      targetPort: admin

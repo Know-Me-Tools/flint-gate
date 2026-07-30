@@ -46,6 +46,7 @@ bcrypt = "0.19"
 url = "2"
 hex = "0.4"
 rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
 redis = { version = "1", features = ["tokio-comp", "connection-manager"], optional = true }
 governor = "0.10"
 tower_governor = "0.8"

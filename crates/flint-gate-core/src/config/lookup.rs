@@ -135,6 +135,9 @@ pub fn collect_hook_templates(hooks: &[crate::config::types::PreRequestHook]) ->
                 for v in config.inject_headers.values() {
                     out.push(v.clone());
                 }
+                if let Some(mint) = &config.mint_jwt {
+                    collect_json_templates(&mint.additional_claims, &mut out);
+                }
             }
             crate::config::types::PreRequestHook::BodyTransform { config } => {
                 for v in config.set_fields.values() {
@@ -162,6 +165,23 @@ pub fn collect_hook_templates(hooks: &[crate::config::types::PreRequestHook]) ->
         }
     }
     out
+}
+
+fn collect_json_templates(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(template) => out.push(template.clone()),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_json_templates(value, out);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_json_templates(value, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

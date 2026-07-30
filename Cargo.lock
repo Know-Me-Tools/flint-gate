@@ -1164,6 +1164,7 @@ dependencies = [
  "redis",
  "regex",
  "reqwest",
+ "rsa",
  "rust-embed",
  "serde",
  "serde_json",

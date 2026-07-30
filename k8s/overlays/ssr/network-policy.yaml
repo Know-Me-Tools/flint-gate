@@ -1,0 +1,110 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flint-gate-default-deny
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: sansaba-workspace
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flint-gate-db-init
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: flint-gate-db-init
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: flint-gate-postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flint-gate-runtime
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: flint-gate
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sansaba-workspace
+      ports:
+        - port: 4456
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              prometheusags.ai/control-plane-access: "true"
+      ports:
+        - port: 4457
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: flint-gate-postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frf-gateway
+      ports:
+        - port: 8080
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: iam
+      ports:
+        - port: 4433
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flint-gate-postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: flint-gate-postgres
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ["flint-gate", "flint-gate-db-init"]
+      ports:
+        - port: 5432
+          protocol: TCP
+  egress: []

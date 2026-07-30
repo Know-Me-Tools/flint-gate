@@ -885,7 +885,12 @@ impl Database {
 
         sqlx::query(
             "INSERT INTO jwt_signing_keys (id, algorithm, public_key, private_key, active) \
-             VALUES ($1, $2, $3, $4, true)",
+             VALUES ($1, $2, $3, $4, true) \
+             ON CONFLICT (id) DO UPDATE SET \
+               algorithm = EXCLUDED.algorithm, \
+               public_key = EXCLUDED.public_key, \
+               private_key = EXCLUDED.private_key, \
+               active = true",
         )
         .bind(id)
         .bind(algorithm)

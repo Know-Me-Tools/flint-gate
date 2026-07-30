@@ -11,5 +11,14 @@
   "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/operations.md",
   "tags": [],
   "version": "current",
-  "frontMatter": {}
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Flutter SDK",
+    "permalink": "/flint-gate/docs/sdks/flutter"
+  },
+  "next": {
+    "title": "Cedar Policies Reference",
+    "permalink": "/flint-gate/docs/cedar-policies"
+  }
 }

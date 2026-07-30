@@ -14,8 +14,8 @@
   "frontMatter": {},
   "sidebar": "docsSidebar",
   "previous": {
-    "title": "Configuration Reference",
-    "permalink": "/flint-gate/docs/configuration"
+    "title": "Forge Keys — Anon & Service-Role Key Management",
+    "permalink": "/flint-gate/docs/forge-keys"
   },
   "next": {
     "title": "SDKs",

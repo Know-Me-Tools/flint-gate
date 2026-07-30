@@ -1,0 +1,24 @@
+{
+  "id": "forge-keys",
+  "title": "Forge Keys — Anon & Service-Role Key Management",
+  "description": "Flint Gate is the platform home of the Forge key-minting utility:",
+  "source": "@site/docs/forge-keys.md",
+  "sourceDirName": ".",
+  "slug": "/forge-keys",
+  "permalink": "/flint-gate/docs/forge-keys",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/forge-keys.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Configuration Reference",
+    "permalink": "/flint-gate/docs/configuration"
+  },
+  "next": {
+    "title": "Admin API",
+    "permalink": "/flint-gate/docs/admin-api"
+  }
+}

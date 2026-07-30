@@ -7,6 +7,11 @@ project keys.
 
 - `FLINT_ANON_KEY`: publishable JWT/API key, maps to role `anon`.
 - `FLINT_SERVICE_ROLE_KEY`: server-only key, maps to role `service_role`.
+
+Both are minted by `scripts/generate-forge-keys.mjs` — creation, JWKS
+serving, rotation (including the JWKS-cache revocation-latency window), and
+best practices are documented in the Docusaurus site under **Forge Keys**
+(`docs/docs/forge-keys.md`).
 - Future opaque keys use `flint_pk_...` and `flint_sk_...` prefixes.
 
 API-key rows preserve the role and principal type:

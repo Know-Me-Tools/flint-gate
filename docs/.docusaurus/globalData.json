@@ -17,11 +17,17 @@
             },
             {
               "id": "cedar-policies",
-              "path": "/flint-gate/docs/cedar-policies"
+              "path": "/flint-gate/docs/cedar-policies",
+              "sidebar": "docsSidebar"
             },
             {
               "id": "configuration",
               "path": "/flint-gate/docs/configuration",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "forge-keys",
+              "path": "/flint-gate/docs/forge-keys",
               "sidebar": "docsSidebar"
             },
             {
@@ -36,11 +42,13 @@
             },
             {
               "id": "metrics",
-              "path": "/flint-gate/docs/metrics"
+              "path": "/flint-gate/docs/metrics",
+              "sidebar": "docsSidebar"
             },
             {
               "id": "operations",
-              "path": "/flint-gate/docs/operations"
+              "path": "/flint-gate/docs/operations",
+              "sidebar": "docsSidebar"
             },
             {
               "id": "sdks/flutter",

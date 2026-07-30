@@ -4,15 +4,15 @@ import ComponentCreator from '@docusaurus/ComponentCreator';
 export default [
   {
     path: '/flint-gate/docs',
-    component: ComponentCreator('/flint-gate/docs', '0bc'),
+    component: ComponentCreator('/flint-gate/docs', '289'),
     routes: [
       {
         path: '/flint-gate/docs',
-        component: ComponentCreator('/flint-gate/docs', '15c'),
+        component: ComponentCreator('/flint-gate/docs', '9f2'),
         routes: [
           {
             path: '/flint-gate/docs',
-            component: ComponentCreator('/flint-gate/docs', '7e6'),
+            component: ComponentCreator('/flint-gate/docs', 'c20'),
             routes: [
               {
                 path: '/flint-gate/docs/admin-api',
@@ -22,12 +22,19 @@ export default [
               },
               {
                 path: '/flint-gate/docs/cedar-policies',
-                component: ComponentCreator('/flint-gate/docs/cedar-policies', '1a2'),
-                exact: true
+                component: ComponentCreator('/flint-gate/docs/cedar-policies', '142'),
+                exact: true,
+                sidebar: "docsSidebar"
               },
               {
                 path: '/flint-gate/docs/configuration',
                 component: ComponentCreator('/flint-gate/docs/configuration', '5ce'),
+                exact: true,
+                sidebar: "docsSidebar"
+              },
+              {
+                path: '/flint-gate/docs/forge-keys',
+                component: ComponentCreator('/flint-gate/docs/forge-keys', '99a'),
                 exact: true,
                 sidebar: "docsSidebar"
               },
@@ -45,13 +52,15 @@ export default [
               },
               {
                 path: '/flint-gate/docs/metrics',
-                component: ComponentCreator('/flint-gate/docs/metrics', '8a4'),
-                exact: true
+                component: ComponentCreator('/flint-gate/docs/metrics', '35b'),
+                exact: true,
+                sidebar: "docsSidebar"
               },
               {
                 path: '/flint-gate/docs/operations',
-                component: ComponentCreator('/flint-gate/docs/operations', '072'),
-                exact: true
+                component: ComponentCreator('/flint-gate/docs/operations', '1fc'),
+                exact: true,
+                sidebar: "docsSidebar"
               },
               {
                 path: '/flint-gate/docs/sdks/',

@@ -11,5 +11,14 @@
   "editUrl": "https://github.com/know-me-tools/flint-gate/tree/main/docs/docs/cedar-policies.md",
   "tags": [],
   "version": "current",
-  "frontMatter": {}
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Operations Runbook",
+    "permalink": "/flint-gate/docs/operations"
+  },
+  "next": {
+    "title": "Metrics Reference",
+    "permalink": "/flint-gate/docs/metrics"
+  }
 }

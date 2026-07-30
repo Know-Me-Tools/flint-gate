@@ -4,7 +4,7 @@
 - Baseline source SHA: `f1113c28323eec18bd2811f8236ac67e80c23f63`
 - License: MIT
 - Build input: repository `Dockerfile`, production defaults, `linux/amd64`;
-  `rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0`
+  `rust:1.94-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55`
   and
   `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818`
 - Candidate image: `ghcr.io/know-me-tools/flint-gate`

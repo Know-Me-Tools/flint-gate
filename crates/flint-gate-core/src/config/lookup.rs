@@ -138,6 +138,8 @@ pub fn collect_hook_templates(hooks: &[crate::config::types::PreRequestHook]) ->
                 if let Some(mint) = &config.mint_jwt {
                     collect_json_templates(&mint.additional_claims, &mut out);
                 }
+                // ASO replica grant configuration is fixed and never rendered
+                // from request or identity templates.
             }
             crate::config::types::PreRequestHook::BodyTransform { config } => {
                 for v in config.set_fields.values() {
@@ -159,6 +161,8 @@ pub fn collect_hook_templates(hooks: &[crate::config::types::PreRequestHook]) ->
             // The authorize hook builds its Cedar context inline from the
             // identity, route, and request — it has no templated lookups.
             crate::config::types::PreRequestHook::Authorize { .. } => {}
+            // ASO receives original credentials and request metadata only.
+            crate::config::types::PreRequestHook::AsoClinicalAuthorize { .. } => {}
             // Guardrails inspect body content directly and do not use template
             // lookups. Any future guard that needs lookups will add them here.
             crate::config::types::PreRequestHook::Guardrail { .. } => {}

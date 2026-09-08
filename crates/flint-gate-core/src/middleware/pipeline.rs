@@ -11,12 +11,12 @@
 use crate::auth::{AuthError, AuthMethod, Authenticator, Identity, SharedJwtMinter};
 use crate::cache::GateCache;
 use crate::config::{
+    LookupRegistry, TemplateContext, TemplateEngine,
     lookup::collect_hook_templates,
     types::{BudgetWindow, GateConfig, MaxTokenBudgetConfig, PostResponseHook, PreRequestHook},
-    LookupRegistry, TemplateContext, TemplateEngine,
 };
 use crate::db::{AuthzAuditDecision, AuthzAuditRecord, Database, UsageEvent};
-use crate::guardrail::{build_guardrail, GuardrailInput, GuardrailOutcome};
+use crate::guardrail::{GuardrailInput, GuardrailOutcome, build_guardrail};
 use crate::proxy::SharedRouter;
 use crate::stream::{NdjsonStreamProcessor, SseStreamProcessor, StreamProcessor};
 use axum::{
@@ -255,6 +255,7 @@ async fn handle_request(
         }
     };
 
+    let auth_method = auth_result.method;
     let identity = auth_result.identity;
     info!(
         request_id = %request_id,
@@ -279,7 +280,7 @@ async fn handle_request(
     };
 
     let mut api_key_ctx = HashMap::new();
-    if let AuthMethod::ApiKey { client_id, scopes } = &auth_result.method {
+    if let AuthMethod::ApiKey { client_id, scopes } = &auth_method {
         api_key_ctx.insert("client_id".to_string(), client_id.clone());
         api_key_ctx.insert("scopes".to_string(), scopes.join(","));
     }
@@ -309,14 +310,64 @@ async fn handle_request(
 
     for hook in &matched_route.config.hooks.pre_request {
         match hook {
+            PreRequestHook::AsoClinicalAuthorize { config } => {
+                // Every request receives a fresh ASO decision, including Gate
+                // identity-cache hits. Never use injected identity hints here.
+                if let Err(status) = super::aso_clinical_authorize::authorize(
+                    config,
+                    method_str,
+                    uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(path),
+                    &headers,
+                )
+                .await
+                {
+                    let error = if status == StatusCode::SERVICE_UNAVAILABLE {
+                        "clinical_authorization_unavailable"
+                    } else {
+                        "clinical_authorization_denied"
+                    };
+                    return Ok((
+                        status,
+                        [
+                            (http::header::CACHE_CONTROL, "no-store"),
+                            (http::header::VARY, "Cookie, Authorization, X-Session-Token"),
+                        ],
+                        axum::Json(serde_json::json!({ "error": error })),
+                    )
+                        .into_response());
+                }
+            }
             PreRequestHook::ClaimsEnhancement { config } => {
                 // Inject headers via template
                 for (header_name, template) in &config.inject_headers {
                     let value = TemplateEngine::render(template, &template_ctx);
                     injected_headers.insert(header_name.clone(), value);
                 }
-                // Optionally mint a JWT
-                if let Some(mint_cfg) = &config.mint_jwt {
+                if let Some(replica_cfg) = &config.aso_replica_grant {
+                    // A route cannot combine the fixed ASO token contract with
+                    // the free-form generic minter.
+                    if config.mint_jwt.is_some() {
+                        return Ok(aso_replica_error(StatusCode::SERVICE_UNAVAILABLE));
+                    }
+                    let minter_guard = state.jwt_minter.read().await;
+                    let Some(minter) = minter_guard.as_ref() else {
+                        return Ok(aso_replica_error(StatusCode::SERVICE_UNAVAILABLE));
+                    };
+                    minted_jwt = match super::aso_replica_grant::mint(
+                        replica_cfg,
+                        &auth_method,
+                        &identity,
+                        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(path),
+                        &headers,
+                        minter,
+                    )
+                    .await
+                    {
+                        Ok(token) => Some(token),
+                        Err(status) => return Ok(aso_replica_error(status)),
+                    };
+                // Optionally mint a generic JWT.
+                } else if let Some(mint_cfg) = &config.mint_jwt {
                     if mint_cfg.enabled {
                         let minter_guard = state.jwt_minter.read().await;
                         if let Some(minter) = minter_guard.as_ref() {
@@ -718,7 +769,8 @@ async fn handle_request(
         // in-stream tool call and to `list_tools` visibility. Routes without an
         // enforcing Authorize hook get `None` — completely unaffected.
         let tool_authz_ctx =
-            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id).await;
+            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id)
+                .await;
 
         // Human-in-the-loop approvals: each stream gets a private notification
         // channel. The shared ApprovalManager routes Admin API decisions back
@@ -732,9 +784,7 @@ async fn handle_request(
         let approval_cfg = state.config.read().await.approval.clone();
         let (approval_tx, mut approval_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, crate::approval::ApprovalDecision)>();
-        let approval_ttl_override = approval_cfg
-            .ttl_seconds
-            .map(std::time::Duration::from_secs);
+        let approval_ttl_override = approval_cfg.ttl_seconds.map(std::time::Duration::from_secs);
         let approval_handle = if approval_cfg.enabled {
             Some((
                 state.approval_manager.clone(),
@@ -1009,6 +1059,23 @@ async fn handle_request(
         error!(error = %e, "failed to build response");
         StatusCode::INTERNAL_SERVER_ERROR
     })
+}
+
+fn aso_replica_error(status: StatusCode) -> Response {
+    let error = if status == StatusCode::SERVICE_UNAVAILABLE {
+        "replica_grant_unavailable"
+    } else {
+        "replica_grant_denied"
+    };
+    (
+        status,
+        [
+            (http::header::CACHE_CONTROL, "no-store"),
+            (http::header::VARY, "Cookie, Authorization, X-Session-Token"),
+        ],
+        axum::Json(serde_json::json!({ "error": error })),
+    )
+        .into_response()
 }
 
 /// Collect the `(scope, window, resolved_id)` triples for every windowed
@@ -1357,10 +1424,7 @@ async fn resolve_budget_usage(
     template_ctx: &TemplateContext,
 ) -> BudgetUsage {
     if config.window == BudgetWindow::Lifetime {
-        return BudgetUsage::Known(lifetime_usage_from_lookups(
-            &template_ctx.lookups,
-            user_id,
-        ));
+        return BudgetUsage::Known(lifetime_usage_from_lookups(&template_ctx.lookups, user_id));
     }
 
     // Windowed: prefer the shared Redis counter, fall back to Postgres.

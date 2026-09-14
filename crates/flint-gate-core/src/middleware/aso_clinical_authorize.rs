@@ -4,12 +4,16 @@ use http::{HeaderMap, StatusCode};
 use std::{sync::LazyLock, time::Duration};
 
 const CREDENTIAL_HEADERS: [&str; 3] = ["cookie", "authorization", "x-session-token"];
+// The pipeline's 4,500 ms absolute request deadline owns protected-request
+// expiry. This transport ceiling remains below 5 seconds but cannot win the
+// same-poll race and relabel request deadline expiry as callback unavailability.
+const AUTHORIZATION_TIMEOUT: Duration = Duration::from_millis(4_750);
 static AUTHORIZATION_CLIENT: LazyLock<Result<reqwest::Client, ()>> = LazyLock::new(|| {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .retry(reqwest::retry::never())
-        .timeout(Duration::from_secs(5))
+        .timeout(AUTHORIZATION_TIMEOUT)
         .build()
         .map_err(|_| ())
 });

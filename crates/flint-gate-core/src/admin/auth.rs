@@ -239,7 +239,10 @@ mod tests {
 
     #[tokio::test]
     async fn protected_and_fallback_pass_when_auth_accepts() {
-        assert_eq!(status_of(composed_app(true), "/config").await, StatusCode::OK);
+        assert_eq!(
+            status_of(composed_app(true), "/config").await,
+            StatusCode::OK
+        );
         assert_eq!(
             status_of(composed_app(true), "/some/spa/route").await,
             StatusCode::OK

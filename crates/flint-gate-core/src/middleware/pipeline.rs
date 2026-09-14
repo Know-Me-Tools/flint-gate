@@ -8,15 +8,18 @@
 /// 5. Pre-request hook execution
 /// 6. Upstream proxying (streaming or buffered)
 /// 7. Response forwarding + post-response usage logging
+use crate::auth::kratos::KratosCredential;
 use crate::auth::{AuthError, AuthMethod, Authenticator, Identity, SharedJwtMinter};
 use crate::cache::GateCache;
+#[cfg(feature = "redis-l2")]
+use crate::cache::{AuthoritySessionCacheKey, CredentialKind};
 use crate::config::{
-    LookupRegistry, TemplateContext, TemplateEngine,
     lookup::collect_hook_templates,
     types::{BudgetWindow, GateConfig, MaxTokenBudgetConfig, PostResponseHook, PreRequestHook},
+    LookupRegistry, TemplateContext, TemplateEngine,
 };
 use crate::db::{AuthzAuditDecision, AuthzAuditRecord, Database, UsageEvent};
-use crate::guardrail::{GuardrailInput, GuardrailOutcome, build_guardrail};
+use crate::guardrail::{build_guardrail, GuardrailInput, GuardrailOutcome};
 use crate::proxy::SharedRouter;
 use crate::stream::{NdjsonStreamProcessor, SseStreamProcessor, StreamProcessor};
 use axum::{
@@ -34,6 +37,165 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use uuid::Uuid;
+
+const ASO_PROTECTED_DECISION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(4_500);
+
+#[cfg(feature = "redis-l2")]
+#[derive(Clone)]
+struct AuthorityWatchdogProbe {
+    key: AuthoritySessionCacheKey,
+    expected: crate::authority::AuthorityHighWater,
+    generation: u64,
+}
+
+#[derive(Clone)]
+struct KratosWatchdogProbe {
+    authenticator: Arc<dyn Authenticator>,
+    credential: KratosCredential,
+}
+
+struct StreamWatchdog {
+    cancel: tokio_util::sync::CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl StreamWatchdog {
+    fn new(
+        cancel: tokio_util::sync::CancellationToken,
+        task: Option<tokio::task::JoinHandle<()>>,
+    ) -> Self {
+        Self { cancel, task }
+    }
+
+    fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.cancel.clone()
+    }
+}
+
+impl Drop for StreamWatchdog {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+async fn forward_streaming_response<S, E>(
+    stream_watchdog: StreamWatchdog,
+    stream_cancel: tokio_util::sync::CancellationToken,
+    mut processor: Box<dyn StreamProcessor>,
+    byte_stream: S,
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+    mut approval_rx: tokio::sync::mpsc::UnboundedReceiver<(
+        String,
+        crate::approval::ApprovalDecision,
+    )>,
+    term_payload: Vec<u8>,
+) -> u64
+where
+    S: futures::Stream<Item = Result<Bytes, E>> + Send,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let _stream_watchdog = stream_watchdog;
+    let mut byte_stream = Box::pin(byte_stream);
+    loop {
+        // When approvals are pending we pause upstream reads and wait
+        // for decisions. This keeps the buffered tool call from
+        // receiving further events until the human/frontend resolves it.
+        if processor.pending_approvals().is_empty() {
+            tokio::select! {
+                biased;
+                _ = stream_cancel.cancelled() => {
+                    let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                    break;
+                }
+                _ = tx.closed() => break,
+                chunk = byte_stream.next() => {
+                    match chunk {
+                        Some(Ok(bytes)) => {
+                            match processor.process_chunk(&bytes) {
+                                Some(processed) if !processed.is_empty() => {
+                                    if tx.send(Ok(processed)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => {
+                                    let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                                    break;
+                                }
+                                Some(_) => {}
+                            }
+                        }
+                        Some(Err(e)) => {
+                            let _ = tx.send(Err(std::io::Error::other(e))).await;
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        } else {
+            // Bound the wait by the nearest pending approval's expiry. An
+            // undecided approval that reaches its TTL is AUTO-DENIED (never
+            // hangs, never silently allows) — the held call is resolved as
+            // Deny, its deny event is emitted, and the loop resumes to a
+            // clean termination. `sleep_until` far in the future when no
+            // expiry is known keeps the select! well-formed.
+            // Use the processor's own stored deadline — independent of
+            // the shared ApprovalManager — to avoid a race where the
+            // janitor purges an entry and causes the select! to fall
+            // back to the 3600 s sentinel (M1 fix).
+            let deadline = processor
+                .earliest_pending_deadline()
+                .map(tokio::time::Instant::from)
+                .unwrap_or_else(|| {
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(3600)
+                });
+            tokio::select! {
+                biased;
+                _ = stream_cancel.cancelled() => {
+                    let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
+                    break;
+                }
+                _ = tx.closed() => break,
+                decision = approval_rx.recv() => {
+                    match decision {
+                        Some((approval_id, dec)) => {
+                            if let Some(bytes) = processor.resolve_approval(&approval_id, dec) {
+                                if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    // TTL elapsed with no decision — fail closed: DENY every
+                    // still-pending held call and emit its deny event, then
+                    // let the loop re-evaluate (pending now drained → resume
+                    // to termination). Never a silent drop, never half-open.
+                    let mut send_failed = false;
+                    for approval_id in processor.pending_approvals() {
+                        if let Some(bytes) = processor
+                            .resolve_approval(&approval_id, crate::approval::ApprovalDecision::Deny)
+                        {
+                            if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
+                                send_failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if send_failed {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    processor.metrics().estimated_tokens
+}
 
 /// Headers that must not be forwarded to the upstream (hop-by-hop).
 const HOP_BY_HOP: &[&str] = &[
@@ -89,8 +251,9 @@ pub async fn proxy_handler(
         uri = %req.uri(),
     );
     let _enter = span.enter();
+    let aso_request_deadline = tokio::time::Instant::now() + ASO_PROTECTED_DECISION_TIMEOUT;
 
-    match handle_request(state, req, &request_id).await {
+    match handle_request(state, req, &request_id, aso_request_deadline).await {
         Ok(response) => response,
         Err(status) => {
             warn!(request_id = %request_id, status = %status, "request failed");
@@ -103,6 +266,7 @@ async fn handle_request(
     state: Arc<AppState>,
     req: axum::extract::Request,
     request_id: &str,
+    aso_request_deadline: tokio::time::Instant,
 ) -> Result<Response, StatusCode> {
     // ── 1. Extract request parts ───────────────────────────────────────────
     let (parts, body) = req.into_parts();
@@ -121,6 +285,11 @@ async fn handle_request(
     let method_str = method.as_str();
 
     // ── 2. Route matching ──────────────────────────────────────────────────
+    let configuration_guard =
+        match configuration_snapshot_or_unavailable(&state.cache, aso_request_deadline).await {
+            Ok(guard) => guard,
+            Err(response) => return Ok(response),
+        };
     let router = state.router.read().await;
     let matched_route = match router.match_route(&host, path, method_str) {
         Some(r) => r.clone(),
@@ -129,7 +298,9 @@ async fn handle_request(
             return Err(StatusCode::NOT_FOUND);
         }
     };
+    let request_authz = Arc::new(state.authz.pinned_snapshot());
     drop(router);
+    drop(configuration_guard);
 
     let route_id = matched_route.config.id.clone();
     info!(
@@ -159,24 +330,142 @@ async fn handle_request(
         };
     let is_mcp_auth = mcp_provider_cfg.is_some();
 
-    // Extract the raw credential for cache key derivation (Authorization or Cookie).
-    let raw_credential = parts
-        .headers
-        .get(http::header::AUTHORIZATION)
-        .or_else(|| parts.headers.get(http::header::COOKIE))
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let mut legacy_watchdog_credential: Option<String> = None;
+    let mut kratos_watchdog_probe: Option<KratosWatchdogProbe> = None;
+    let authority_mode = state.cache.authority_readiness().is_some();
+    // The deadline belongs to the route's fresh authority decision, regardless
+    // of which authenticator (including anonymous) supplies its identity.
+    let enforce_aso_request_deadline =
+        has_fresh_aso_decision(&matched_route.config.hooks.pre_request);
+    #[cfg(feature = "redis-l2")]
+    let mut authority_watchdog_probe: Option<AuthorityWatchdogProbe> = None;
 
     let auth_result = if let Some(provider_name) = auth_provider_name {
         match state.auth_providers.get(provider_name) {
             Some(auth) => {
+                let kratos_context = auth.kratos_cache_context();
+                if state.cache.authority_readiness().is_some()
+                    && kratos_context.is_some()
+                    && !has_fresh_aso_decision(&matched_route.config.hooks.pre_request)
+                {
+                    error!(request_id = %request_id, route_id = %route_id, "authority-enabled Kratos route has no fresh ASO decision");
+                    return Ok(authority_decision_unavailable());
+                }
+                let kratos_credential = kratos_context
+                    .and_then(|context| context.select_credential(&parts.headers).ok());
+                if authority_mode {
+                    kratos_watchdog_probe =
+                        kratos_credential
+                            .clone()
+                            .map(|credential| KratosWatchdogProbe {
+                                authenticator: Arc::clone(auth),
+                                credential,
+                            });
+                }
                 // Fast path: check session cache before hitting the upstream auth provider.
                 // Only cache Kratos-style session results; JWT and API key authenticators
                 // manage their own caching internally.
-                let cached = if let Some(ref cred) = raw_credential {
-                    state.cache.get_session(cred).await
+                let session_generation = state.cache.session_generation();
+                let legacy_credential = kratos_credential
+                    .as_ref()
+                    .and_then(|credential| String::from_utf8(credential.cache_value.clone()).ok());
+                legacy_watchdog_credential = legacy_credential.clone();
+
+                #[cfg(feature = "redis-l2")]
+                let authority_plan = state
+                    .cache
+                    .authority_readiness()
+                    .is_some()
+                    .then(|| {
+                        let context = kratos_context?;
+                        let issuer = context.issuer()?;
+                        let credential = kratos_credential.as_ref()?;
+                        let expected = state.cache.authority_cache_high_water()?;
+                        let kind = match credential.kind {
+                            crate::auth::kratos::KratosCredentialKind::Authorization => {
+                                CredentialKind::Authorization
+                            }
+                            crate::auth::kratos::KratosCredentialKind::Cookie => {
+                                CredentialKind::Cookie
+                            }
+                        };
+                        let key = AuthoritySessionCacheKey::identity(
+                            provider_name,
+                            issuer,
+                            kind,
+                            &credential.cache_value,
+                        )
+                        .ok()?;
+                        Some(AuthorityWatchdogProbe {
+                            key,
+                            expected,
+                            generation: session_generation,
+                        })
+                    })
+                    .flatten();
+                #[cfg(feature = "redis-l2")]
+                {
+                    authority_watchdog_probe = authority_plan.clone();
+                }
+
+                #[cfg(feature = "redis-l2")]
+                let cache_lookup = async {
+                    if state.cache.authority_readiness().is_some() {
+                        if let Some(plan) = &authority_plan {
+                            state
+                                .cache
+                                .get_versioned_session_if_current(
+                                    &plan.key,
+                                    &plan.expected,
+                                    plan.generation,
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        }
+                    } else if let Some(ref cred) = legacy_credential {
+                        state
+                            .cache
+                            .get_session_if_current(cred, session_generation)
+                            .await
+                    } else {
+                        None
+                    }
+                };
+                #[cfg(feature = "redis-l2")]
+                let cached = if enforce_aso_request_deadline {
+                    match complete_before_authority_deadline(aso_request_deadline, cache_lookup)
+                        .await
+                    {
+                        Ok(cached) => cached,
+                        Err(response) => return Ok(response),
+                    }
                 } else {
-                    None
+                    cache_lookup.await
+                };
+                #[cfg(not(feature = "redis-l2"))]
+                let cache_lookup = async {
+                    if let Some(ref cred) = legacy_credential {
+                        state
+                            .cache
+                            .get_session_if_current(cred, session_generation)
+                            .await
+                    } else {
+                        None
+                    }
+                };
+                #[cfg(not(feature = "redis-l2"))]
+                let cached = if enforce_aso_request_deadline {
+                    match complete_before_authority_deadline(aso_request_deadline, cache_lookup)
+                        .await
+                    {
+                        Ok(cached) => cached,
+                        Err(response) => return Ok(response),
+                    }
+                } else {
+                    cache_lookup.await
                 };
 
                 if let Some(cached_identity) = cached {
@@ -186,12 +475,67 @@ async fn handle_request(
                         method: AuthMethod::KratosSession,
                     }
                 } else {
-                    match auth.authenticate(&parts).await {
+                    let authentication = if enforce_aso_request_deadline {
+                        tokio::time::timeout_at(aso_request_deadline, auth.authenticate(&parts))
+                            .await
+                    } else {
+                        Ok(auth.authenticate(&parts).await)
+                    };
+                    let authentication = match authentication {
+                        Ok(result) => result,
+                        Err(_) => return Ok(authority_decision_unavailable()),
+                    };
+                    match authentication {
                         Ok(result) => {
                             // Populate session cache for Kratos results.
                             if matches!(result.method, AuthMethod::KratosSession) {
-                                if let Some(ref cred) = raw_credential {
-                                    state.cache.put_session(cred, &result.identity).await;
+                                let cache_publication = async {
+                                    #[cfg(feature = "redis-l2")]
+                                    if let Some(plan) = &authority_plan {
+                                        let _ = state
+                                            .cache
+                                            .put_versioned_session_if_current(
+                                                &plan.key,
+                                                &result.identity,
+                                                &plan.expected,
+                                                plan.generation,
+                                            )
+                                            .await;
+                                    } else if state.cache.authority_readiness().is_none() {
+                                        if let Some(ref cred) = legacy_credential {
+                                            let _ = state
+                                                .cache
+                                                .put_session_if_current(
+                                                    cred,
+                                                    &result.identity,
+                                                    session_generation,
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                    #[cfg(not(feature = "redis-l2"))]
+                                    if let Some(ref cred) = legacy_credential {
+                                        let _ = state
+                                            .cache
+                                            .put_session_if_current(
+                                                cred,
+                                                &result.identity,
+                                                session_generation,
+                                            )
+                                            .await;
+                                    }
+                                };
+                                if enforce_aso_request_deadline {
+                                    if let Err(response) = complete_before_authority_deadline(
+                                        aso_request_deadline,
+                                        cache_publication,
+                                    )
+                                    .await
+                                    {
+                                        return Ok(response);
+                                    }
+                                } else {
+                                    cache_publication.await;
                                 }
                             }
                             result
@@ -265,12 +609,23 @@ async fn handle_request(
 
     // ── 4. Read request body ───────────────────────────────────────────────
     const MAX_BODY_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
-    let body_bytes = axum::body::to_bytes(body, MAX_BODY_SIZE)
+    let body_read = if enforce_aso_request_deadline {
+        match complete_before_authority_deadline(
+            aso_request_deadline,
+            axum::body::to_bytes(body, MAX_BODY_SIZE),
+        )
         .await
-        .map_err(|e| {
-            warn!(request_id = %request_id, error = %e, "failed to read request body");
-            StatusCode::BAD_REQUEST
-        })?;
+        {
+            Ok(body_read) => body_read,
+            Err(response) => return Ok(response),
+        }
+    } else {
+        axum::body::to_bytes(body, MAX_BODY_SIZE).await
+    };
+    let body_bytes = body_read.map_err(|e| {
+        warn!(request_id = %request_id, error = %e, "failed to read request body");
+        StatusCode::BAD_REQUEST
+    })?;
 
     // ── 5. Build template context ──────────────────────────────────────────
     let body_value = if body_bytes.is_empty() {
@@ -296,10 +651,17 @@ async fn handle_request(
     {
         let hook_templates = collect_hook_templates(&matched_route.config.hooks.pre_request);
         let template_refs: Vec<&str> = hook_templates.iter().map(String::as_str).collect();
-        let resolved = state
+        let lookup = state
             .lookup_registry
-            .resolve_all(&template_refs, &template_ctx)
-            .await;
+            .resolve_all(&template_refs, &template_ctx);
+        let resolved = if enforce_aso_request_deadline {
+            match complete_before_authority_deadline(aso_request_deadline, lookup).await {
+                Ok(resolved) => resolved,
+                Err(response) => return Ok(response),
+            }
+        } else {
+            lookup.await
+        };
         template_ctx.lookups = resolved;
     }
 
@@ -307,20 +669,29 @@ async fn handle_request(
     let mut injected_headers: HashMap<String, String> = HashMap::new();
     let mut body_overrides: HashMap<String, String> = HashMap::new();
     let mut minted_jwt: Option<String> = None;
-
     for hook in &matched_route.config.hooks.pre_request {
+        if enforce_aso_request_deadline && tokio::time::Instant::now() >= aso_request_deadline {
+            return Ok(authority_decision_unavailable());
+        }
         match hook {
             PreRequestHook::AsoClinicalAuthorize { config } => {
                 // Every request receives a fresh ASO decision, including Gate
                 // identity-cache hits. Never use injected identity hints here.
-                if let Err(status) = super::aso_clinical_authorize::authorize(
-                    config,
-                    method_str,
-                    uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(path),
-                    &headers,
+                let decision = match complete_before_authority_deadline(
+                    aso_request_deadline,
+                    super::aso_clinical_authorize::authorize(
+                        config,
+                        method_str,
+                        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(path),
+                        &headers,
+                    ),
                 )
                 .await
                 {
+                    Ok(decision) => decision,
+                    Err(response) => return Ok(response),
+                };
+                if let Err(status) = decision {
                     let error = if status == StatusCode::SERVICE_UNAVAILABLE {
                         "clinical_authorization_unavailable"
                     } else {
@@ -349,27 +720,55 @@ async fn handle_request(
                     if config.mint_jwt.is_some() {
                         return Ok(aso_replica_error(StatusCode::SERVICE_UNAVAILABLE));
                     }
-                    let minter_guard = state.jwt_minter.read().await;
+                    let minter_guard = if enforce_aso_request_deadline {
+                        match tokio::time::timeout_at(aso_request_deadline, state.jwt_minter.read())
+                            .await
+                        {
+                            Ok(guard) => guard,
+                            Err(_) => return Ok(authority_decision_unavailable()),
+                        }
+                    } else {
+                        state.jwt_minter.read().await
+                    };
                     let Some(minter) = minter_guard.as_ref() else {
                         return Ok(aso_replica_error(StatusCode::SERVICE_UNAVAILABLE));
                     };
-                    minted_jwt = match super::aso_replica_grant::mint(
-                        replica_cfg,
-                        &auth_method,
-                        &identity,
-                        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(path),
-                        &headers,
-                        minter,
+                    let grant = match complete_before_authority_deadline(
+                        aso_request_deadline,
+                        super::aso_replica_grant::mint(
+                            replica_cfg,
+                            &auth_method,
+                            &identity,
+                            uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(path),
+                            &headers,
+                            minter,
+                        ),
                     )
                     .await
                     {
+                        Ok(grant) => grant,
+                        Err(response) => return Ok(response),
+                    };
+                    minted_jwt = match grant {
                         Ok(token) => Some(token),
                         Err(status) => return Ok(aso_replica_error(status)),
                     };
                 // Optionally mint a generic JWT.
                 } else if let Some(mint_cfg) = &config.mint_jwt {
                     if mint_cfg.enabled {
-                        let minter_guard = state.jwt_minter.read().await;
+                        let minter_guard = if enforce_aso_request_deadline {
+                            match tokio::time::timeout_at(
+                                aso_request_deadline,
+                                state.jwt_minter.read(),
+                            )
+                            .await
+                            {
+                                Ok(guard) => guard,
+                                Err(_) => return Ok(authority_decision_unavailable()),
+                            }
+                        } else {
+                            state.jwt_minter.read().await
+                        };
                         if let Some(minter) = minter_guard.as_ref() {
                             let rendered_claims = TemplateEngine::render_value(
                                 &mint_cfg.additional_claims,
@@ -404,7 +803,19 @@ async fn handle_request(
                 // the token amount the metering step must INCR, nor branch on
                 // Redis-vs-Postgres. This arm is already async, so inline async
                 // resolution is both correct and simpler than a second lookup.
-                let usage = resolve_budget_usage(&state, config, &user_id, &template_ctx).await;
+                let usage = if enforce_aso_request_deadline {
+                    match tokio::time::timeout_at(
+                        aso_request_deadline,
+                        resolve_budget_usage(&state, config, &user_id, &template_ctx),
+                    )
+                    .await
+                    {
+                        Ok(usage) => usage,
+                        Err(_) => return Ok(authority_decision_unavailable()),
+                    }
+                } else {
+                    resolve_budget_usage(&state, config, &user_id, &template_ctx).await
+                };
                 let used = match usage {
                     BudgetUsage::Known(u) => u,
                     BudgetUsage::Unavailable => {
@@ -471,12 +882,24 @@ async fn handle_request(
                     principal_kind,
                     crate::authz::PrincipalKind::Agent | crate::authz::PrincipalKind::Service
                 ) {
-                    match &state.db {
-                        Some(db) => db.is_agent_revoked(&identity.id).await.unwrap_or_else(|e| {
-                            warn!(error = %e, principal = %identity.id, "revocation check failed — denying (fail-closed)");
-                            true
-                        }),
-                        None => false,
+                    let check = async {
+                        match &state.db {
+                            Some(db) => {
+                                db.is_agent_revoked(&identity.id).await.unwrap_or_else(|e| {
+                                    warn!(error = %e, principal = %identity.id, "revocation check failed — denying (fail-closed)");
+                                    true
+                                })
+                            }
+                            None => false,
+                        }
+                    };
+                    if enforce_aso_request_deadline {
+                        match tokio::time::timeout_at(aso_request_deadline, check).await {
+                            Ok(revoked) => revoked,
+                            Err(_) => return Ok(authority_decision_unavailable()),
+                        }
+                    } else {
+                        check.await
                     }
                 } else {
                     false
@@ -484,7 +907,7 @@ async fn handle_request(
                 let decision = if nhi_revoked {
                     crate::authz::AuthzDecision::Deny
                 } else {
-                    state.authz.authorize_as(
+                    request_authz.authorize_as(
                         principal_kind,
                         &identity.id,
                         &config.action,
@@ -579,7 +1002,15 @@ async fn handle_request(
                         .collect(),
                     body: body_value.clone(),
                 };
-                let outcome = guard.inspect(&input).await;
+                let outcome = if enforce_aso_request_deadline {
+                    match tokio::time::timeout_at(aso_request_deadline, guard.inspect(&input)).await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(_) => return Ok(authority_decision_unavailable()),
+                    }
+                } else {
+                    guard.inspect(&input).await
+                };
                 match outcome {
                     GuardrailOutcome::Allow => {}
                     GuardrailOutcome::Block { reason } => {
@@ -768,9 +1199,15 @@ async fn handle_request(
         // Cedar authz; per-tool authz extends the same policy bundle to each
         // in-stream tool call and to `list_tools` visibility. Routes without an
         // enforcing Authorize hook get `None` — completely unaffected.
-        let tool_authz_ctx =
-            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id)
-                .await;
+        let tool_authz_ctx = build_tool_authz_context(
+            &state,
+            &matched_route,
+            &request_authz,
+            &identity,
+            &route_id,
+            request_id,
+        )
+        .await;
 
         // Human-in-the-loop approvals: each stream gets a private notification
         // channel. The shared ApprovalManager routes Admin API decisions back
@@ -782,7 +1219,7 @@ async fn handle_request(
         // path — which DENIES the call (never pauses, never allows). An operator
         // who cannot service approvals denies rather than hangs.
         let approval_cfg = state.config.read().await.approval.clone();
-        let (approval_tx, mut approval_rx) =
+        let (approval_tx, approval_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, crate::approval::ApprovalDecision)>();
         let approval_ttl_override = approval_cfg.ttl_seconds.map(std::time::Duration::from_secs);
         let approval_handle = if approval_cfg.enabled {
@@ -826,20 +1263,62 @@ async fn handle_request(
 
         // Session watchdog: spawn a periodic re-validation task when enabled
         let watchdog_cancel = tokio_util::sync::CancellationToken::new();
-        if let Some(ref sw) = stream_config.ai.session_watchdog {
+        let watchdog_task = if let Some(ref sw) = stream_config.ai.session_watchdog {
             if sw.enabled {
                 let interval_secs = sw.check_interval_seconds;
-                let credential = raw_credential.clone();
+                let credential = legacy_watchdog_credential.clone();
+                let kratos_probe = kratos_watchdog_probe.clone();
+                #[cfg(feature = "redis-l2")]
+                let authority_probe = authority_watchdog_probe.clone();
                 let cache = state.cache.clone();
                 let cancel = watchdog_cancel.clone();
 
-                tokio::spawn(async move {
+                Some(tokio::spawn(async move {
                     let mut ticker =
                         tokio::time::interval(std::time::Duration::from_secs(interval_secs));
                     ticker.tick().await; // skip immediate first tick
                     loop {
                         tokio::select! {
                             _ = ticker.tick() => {
+                                #[cfg(feature = "redis-l2")]
+                                if let Some(ref probe) = authority_probe {
+                                    if cache
+                                        .get_versioned_session_if_current(
+                                            &probe.key,
+                                            &probe.expected,
+                                            probe.generation,
+                                        )
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .is_none()
+                                    {
+                                        tracing::warn!(
+                                            "session watchdog: authority session no longer current — terminating stream"
+                                        );
+                                        cancel.cancel();
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                if authority_mode {
+                                    let still_valid = if let Some(ref probe) = kratos_probe {
+                                        let mut request = http::Request::new(());
+                                        probe.credential.insert_header(request.headers_mut());
+                                        let (parts, _) = request.into_parts();
+                                        probe.authenticator.authenticate(&parts).await.is_ok()
+                                    } else {
+                                        false
+                                    };
+                                    if !still_valid {
+                                        tracing::warn!(
+                                            "session watchdog: fresh Kratos validation failed — terminating stream"
+                                        );
+                                        cancel.cancel();
+                                        break;
+                                    }
+                                    continue;
+                                }
                                 if let Some(ref cred) = credential {
                                     match cache.get_session(cred).await {
                                         Some(_) => { /* session still cached — valid */ }
@@ -856,115 +1335,34 @@ async fn handle_request(
                             _ = cancel.cancelled() => break,
                         }
                     }
-                });
+                }))
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
-        let mut processor = processor;
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
         // oneshot channel: streaming task sends total tokens when stream is done
         let (metrics_tx, metrics_rx) = tokio::sync::oneshot::channel::<u64>();
 
-        let stream_cancel = watchdog_cancel.clone();
+        let stream_watchdog = StreamWatchdog::new(watchdog_cancel, watchdog_task);
+        let stream_cancel = stream_watchdog.cancellation_token();
         let term_payload = processor.termination_payload();
 
         tokio::spawn(async move {
-            let mut byte_stream = upstream_response.bytes_stream();
-            loop {
-                // When approvals are pending we pause upstream reads and wait
-                // for decisions. This keeps the buffered tool call from
-                // receiving further events until the human/frontend resolves it.
-                if processor.pending_approvals().is_empty() {
-                    tokio::select! {
-                        biased;
-                        _ = stream_cancel.cancelled() => {
-                            let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
-                            break;
-                        }
-                        chunk = byte_stream.next() => {
-                            match chunk {
-                                Some(Ok(bytes)) => {
-                                    match processor.process_chunk(&bytes) {
-                                        Some(processed) if !processed.is_empty() => {
-                                            if tx.send(Ok(processed)).await.is_err() {
-                                                break;
-                                            }
-                                        }
-                                        None => {
-                                            let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
-                                            break;
-                                        }
-                                        Some(_) => {}
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    let _ = tx.send(Err(std::io::Error::other(e))).await;
-                                    break;
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                } else {
-                    // Bound the wait by the nearest pending approval's expiry. An
-                    // undecided approval that reaches its TTL is AUTO-DENIED (never
-                    // hangs, never silently allows) — the held call is resolved as
-                    // Deny, its deny event is emitted, and the loop resumes to a
-                    // clean termination. `sleep_until` far in the future when no
-                    // expiry is known keeps the select! well-formed.
-                    // Use the processor's own stored deadline — independent of
-                    // the shared ApprovalManager — to avoid a race where the
-                    // janitor purges an entry and causes the select! to fall
-                    // back to the 3600 s sentinel (M1 fix).
-                    let deadline = processor
-                        .earliest_pending_deadline()
-                        .map(tokio::time::Instant::from)
-                        .unwrap_or_else(|| {
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(3600)
-                        });
-                    tokio::select! {
-                        biased;
-                        _ = stream_cancel.cancelled() => {
-                            let _ = tx.send(Ok(Bytes::from(term_payload.clone()))).await;
-                            break;
-                        }
-                        decision = approval_rx.recv() => {
-                            match decision {
-                                Some((approval_id, dec)) => {
-                                    if let Some(bytes) = processor.resolve_approval(&approval_id, dec) {
-                                        if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                }
-                                None => break,
-                            }
-                        }
-                        _ = tokio::time::sleep_until(deadline) => {
-                            // TTL elapsed with no decision — fail closed: DENY every
-                            // still-pending held call and emit its deny event, then
-                            // let the loop re-evaluate (pending now drained → resume
-                            // to termination). Never a silent drop, never half-open.
-                            let mut send_failed = false;
-                            for approval_id in processor.pending_approvals() {
-                                if let Some(bytes) = processor
-                                    .resolve_approval(&approval_id, crate::approval::ApprovalDecision::Deny)
-                                {
-                                    if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
-                                        send_failed = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if send_failed {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            // Send total token count to the post-response task
-            let _ = metrics_tx.send(processor.metrics().estimated_tokens);
+            let tokens = forward_streaming_response(
+                stream_watchdog,
+                stream_cancel,
+                processor,
+                upstream_response.bytes_stream(),
+                tx,
+                approval_rx,
+                term_payload,
+            )
+            .await;
+            let _ = metrics_tx.send(tokens);
         });
 
         // Post-response: log usage only when a StreamMeter hook with log_to_db=true is configured.
@@ -1036,8 +1434,15 @@ async fn handle_request(
         // per-tool authz (an enforcing Authorize hook); otherwise forward
         // untouched. `filter_list_tools_body` returns `None` for any body that
         // is not a tools/list result, so non-listing responses are unaffected.
-        let bytes = if let Some(ctx) =
-            build_tool_authz_context(&state, &matched_route, &identity, &route_id, request_id).await
+        let bytes = if let Some(ctx) = build_tool_authz_context(
+            &state,
+            &matched_route,
+            &request_authz,
+            &identity,
+            &route_id,
+            request_id,
+        )
+        .await
         {
             match crate::authz::filter_list_tools_body(
                 &bytes,
@@ -1076,6 +1481,43 @@ fn aso_replica_error(status: StatusCode) -> Response {
         axum::Json(serde_json::json!({ "error": error })),
     )
         .into_response()
+}
+
+fn authority_decision_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(http::header::CACHE_CONTROL, "no-store")],
+        axum::Json(serde_json::json!({
+            "error": "authority_decision_unavailable"
+        })),
+    )
+        .into_response()
+}
+
+async fn complete_before_authority_deadline<T>(
+    deadline: tokio::time::Instant,
+    operation: impl std::future::Future<Output = T>,
+) -> Result<T, Response> {
+    tokio::time::timeout_at(deadline, operation)
+        .await
+        .map_err(|_| authority_decision_unavailable())
+}
+
+async fn configuration_snapshot_or_unavailable(
+    cache: &crate::cache::GateCache,
+    deadline: tokio::time::Instant,
+) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Response> {
+    tokio::time::timeout_at(deadline, cache.configuration_snapshot_guard())
+        .await
+        .map_err(|_| authority_decision_unavailable())
+}
+
+fn has_fresh_aso_decision(hooks: &[PreRequestHook]) -> bool {
+    hooks.iter().any(|hook| match hook {
+        PreRequestHook::AsoClinicalAuthorize { .. } => true,
+        PreRequestHook::ClaimsEnhancement { config } => config.aso_replica_grant.is_some(),
+        _ => false,
+    })
 }
 
 /// Collect the `(scope, window, resolved_id)` triples for every windowed
@@ -1291,6 +1733,7 @@ fn trusted_flint_headers(identity: &Identity) -> Vec<(&'static str, String)> {
 async fn build_tool_authz_context(
     state: &Arc<AppState>,
     matched_route: &crate::proxy::router::CompiledRoute,
+    request_authz: &Arc<crate::authz::AuthzEngine>,
     identity: &Identity,
     route_id: &str,
     request_id: &str,
@@ -1332,7 +1775,7 @@ async fn build_tool_authz_context(
     };
 
     Some(crate::authz::ToolAuthzContext {
-        engine: state.authz.clone(),
+        engine: Arc::clone(request_authz),
         principal_kind,
         principal_id: identity.id.clone(),
         route_id: route_id.to_string(),
@@ -1494,6 +1937,207 @@ fn apply_body_transforms(body: &Bytes, overrides: &HashMap<String, String>) -> B
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    struct ProbeRelease(Arc<AtomicBool>);
+
+    impl Drop for ProbeRelease {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    async fn new_watchdog_probe() -> (
+        StreamWatchdog,
+        tokio_util::sync::CancellationToken,
+        Arc<AtomicBool>,
+    ) {
+        let released = Arc::new(AtomicBool::new(false));
+        let probe = ProbeRelease(Arc::clone(&released));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _probe = probe;
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let watchdog = StreamWatchdog::new(cancel.clone(), Some(task));
+        (watchdog, cancel, released)
+    }
+
+    async fn assert_probe_released(
+        cancel: &tokio_util::sync::CancellationToken,
+        released: &AtomicBool,
+    ) {
+        for _ in 0..10 {
+            if released.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(cancel.is_cancelled());
+        assert!(released.load(Ordering::SeqCst));
+    }
+
+    struct TestStreamProcessor {
+        metrics: crate::stream::StreamMetrics,
+        pending_approval: bool,
+    }
+
+    impl StreamProcessor for TestStreamProcessor {
+        fn process_chunk(&mut self, chunk: &[u8]) -> Option<Bytes> {
+            Some(Bytes::copy_from_slice(chunk))
+        }
+
+        fn metrics(&self) -> &crate::stream::StreamMetrics {
+            &self.metrics
+        }
+
+        fn terminated_by_limit(&self) -> bool {
+            false
+        }
+
+        fn termination_payload(&self) -> Vec<u8> {
+            b"terminated".to_vec()
+        }
+
+        fn pending_approvals(&self) -> Vec<String> {
+            self.pending_approval
+                .then(|| "pending-approval".to_string())
+                .into_iter()
+                .collect()
+        }
+
+        fn earliest_pending_deadline(&self) -> Option<std::time::Instant> {
+            self.pending_approval
+                .then(|| std::time::Instant::now() + Duration::from_secs(3600))
+        }
+    }
+
+    async fn assert_forwarding_releases_watchdog(pending_approval: bool, disconnect_client: bool) {
+        let (watchdog, cancel, released) = new_watchdog_probe().await;
+        let stream_cancel = watchdog.cancellation_token();
+        let processor: Box<dyn StreamProcessor> = Box::new(TestStreamProcessor {
+            metrics: crate::stream::StreamMetrics::default(),
+            pending_approval,
+        });
+        let upstream: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>> =
+            if disconnect_client {
+                futures::stream::pending().boxed()
+            } else {
+                futures::stream::empty().boxed()
+            };
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let (_approval_tx, approval_rx) = tokio::sync::mpsc::unbounded_channel();
+        let forwarding = tokio::spawn(forward_streaming_response(
+            watchdog,
+            stream_cancel,
+            processor,
+            upstream,
+            tx,
+            approval_rx,
+            b"terminated".to_vec(),
+        ));
+
+        if disconnect_client {
+            drop(rx);
+        }
+        tokio::time::timeout(Duration::from_millis(100), forwarding)
+            .await
+            .expect("production forwarding loop must exit")
+            .expect("forwarding task must exit normally");
+        assert_probe_released(&cancel, &released).await;
+    }
+
+    #[tokio::test]
+    async fn stream_watchdog_releases_probe_on_normal_and_client_disconnect_exit() {
+        assert_forwarding_releases_watchdog(false, false).await;
+        assert_forwarding_releases_watchdog(false, true).await;
+        assert_forwarding_releases_watchdog(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn configuration_publication_wait_denies_at_the_request_deadline() {
+        let cache =
+            crate::cache::GateCache::from_config(&crate::config::types::CacheConfig::default());
+        let _publication_guard = cache.configuration_publication_guard().await;
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_millis(30);
+
+        let response = match configuration_snapshot_or_unavailable(&cache, deadline).await {
+            Ok(_) => panic!("snapshot acquisition must not pass a held publication guard"),
+            Err(response) => response,
+        };
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("authority-unavailable response body");
+        let payload: Value = serde_json::from_slice(&body).expect("authority-unavailable JSON");
+        assert_eq!(payload["error"], "authority_decision_unavailable");
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(25));
+        assert!(elapsed < Duration::from_millis(250));
+    }
+
+    #[tokio::test]
+    async fn cache_deadline_wrapper_uses_only_the_remaining_request_budget() {
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_millis(80);
+        // Model authentication consuming most of the shared request budget
+        // before a cache read or publication begins.
+        tokio::time::sleep(Duration::from_millis(55)).await;
+        let cache_started = tokio::time::Instant::now();
+
+        let response = complete_before_authority_deadline(
+            deadline,
+            tokio::time::sleep(Duration::from_millis(100)),
+        )
+        .await
+        .expect_err("cache work must use the remaining absolute deadline");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("authority-unavailable response body");
+        let payload: Value = serde_json::from_slice(&body).expect("authority-unavailable JSON");
+        assert_eq!(payload["error"], "authority_decision_unavailable");
+        assert!(cache_started.elapsed() < Duration::from_millis(75));
+        assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn aso_protected_routes_name_their_fresh_decision_hook() {
+        use crate::config::types::{
+            AsoClinicalAuthorizeConfig, AsoReplicaGrantConfig, ClaimsEnhancementConfig,
+        };
+        let clinical = PreRequestHook::AsoClinicalAuthorize {
+            config: AsoClinicalAuthorizeConfig {
+                url: "https://aso.example.test/internal/gate/authorize".to_string(),
+            },
+        };
+        let replica = PreRequestHook::ClaimsEnhancement {
+            config: ClaimsEnhancementConfig {
+                aso_replica_grant: Some(AsoReplicaGrantConfig {
+                    url: "https://aso.example.test/api/session/replica-grant".to_string(),
+                    audience: "frf-gateway".to_string(),
+                    max_ttl_seconds: 3,
+                }),
+                ..Default::default()
+            },
+        };
+        let generic = PreRequestHook::ClaimsEnhancement {
+            config: ClaimsEnhancementConfig::default(),
+        };
+
+        assert!(has_fresh_aso_decision(&[clinical]));
+        assert!(has_fresh_aso_decision(&[replica]));
+        assert!(!has_fresh_aso_decision(&[generic]));
+        assert!(!has_fresh_aso_decision(&[]));
+    }
 
     #[test]
     fn body_transform_sets_field() {

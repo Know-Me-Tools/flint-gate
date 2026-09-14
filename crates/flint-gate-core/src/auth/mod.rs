@@ -19,7 +19,7 @@ pub use api_key::ApiKeyAuthenticator;
 pub use identity::Identity;
 pub use jwt_mint::{JwtMinter, SharedJwtMinter};
 pub use jwt_verify::JwtVerifyAuthenticator;
-pub use kratos::KratosAuthenticator;
+pub use kratos::{KratosAuthenticator, KratosCacheContext};
 pub use mcp::McpAuthenticator;
 
 use crate::config::types::AuthProviderConfig;
@@ -79,6 +79,11 @@ pub trait Authenticator: Send + Sync {
     ///
     /// Returns the resolved [`AuthResult`] on success or an [`AuthError`] on failure.
     async fn authenticate(&self, parts: &Parts) -> Result<AuthResult, AuthError>;
+
+    /// Trusted Kratos metadata used to bind distributed session-cache keys.
+    fn kratos_cache_context(&self) -> Option<&KratosCacheContext> {
+        None
+    }
 }
 
 /// Anonymous authenticator — always succeeds with a configurable subject.

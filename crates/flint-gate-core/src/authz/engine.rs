@@ -184,15 +184,15 @@ impl Default for ReloadStatus {
 
 /// The embedded authorization engine.
 ///
-/// Holds the live [`CedarBundle`] behind an [`ArcSwap`] so readers on the
-/// request path load a consistent snapshot without a lock, while a background
-/// reload can atomically replace it.
+/// Holds the live [`CedarBundle`] behind an [`ArcSwap`] so request readers load
+/// a consistent snapshot without a lock. Production replacements are prepared
+/// and installed only by the revision-fenced configuration publisher. The
+/// direct reload helpers are compiled for tests only.
 ///
 /// ## Hot-reload atomicity guarantee
 ///
-/// All reload paths — [`Self::reload_from_records`] (strict) and
-/// [`Self::reload_from_records_lenient`] (lenient / NOTIFY-driven) — share
-/// the same atomic-swap contract:
+/// The publisher and test-only reload helpers share the same atomic-swap
+/// contract:
 ///
 /// 1. **Parse before swap**: the new [`CedarBundle`] is compiled entirely in a
 ///    local value *before* the live pointer is touched. If compilation fails,
@@ -274,6 +274,19 @@ impl AuthzEngine {
         self.bundle.load_full()
     }
 
+    /// Create a request-scoped engine pinned to the current immutable bundle.
+    /// The proxy captures this under the same publication guard as its matched
+    /// route, so later configuration swaps cannot mix route and policy revisions
+    /// during long authentication or streaming work.
+    pub(crate) fn pinned_snapshot(&self) -> Self {
+        Self {
+            bundle: ArcSwap::new(self.snapshot()),
+            authorizer: Authorizer::new(),
+            sugar: Vec::new(),
+            last_reload_status: Arc::new(Mutex::new(ReloadStatus::default())),
+        }
+    }
+
     /// Load enabled policies from the database and build the initial bundle.
     ///
     /// Uses the LENIENT loader: individual poisoned rows are skipped (logged),
@@ -322,32 +335,23 @@ impl AuthzEngine {
         }
     }
 
-    /// Reload from the database: parse-before-swap, fail-closed (retain
-    /// last-good on a DB-load failure). Individual poisoned rows are skipped via
-    /// the lenient loader so one bad row (possibly written by another replica)
-    /// cannot black-hole a peer's authorization. Returns the DB error, if any,
-    /// so callers can surface a load failure.
-    pub async fn reload_from_database(&self, db: &crate::db::Database) -> Result<(), AuthzError> {
-        let rows = db
-            .load_enabled_policies()
-            .await
-            .map_err(|e| AuthzError::Load(e.to_string()))?;
-        let records: Vec<PolicyRecord> = rows.into_iter().map(|r| r.into_record()).collect();
-        // Lenient parse-before-swap: build the survivors' bundle, then store.
-        self.reload_from_records_lenient(&records);
-        Ok(())
+    /// Test-only lenient swap from in-memory records. Production configuration
+    /// publication prepares through [`Self::prepare_records_lenient`] and can
+    /// install only from the revision-fenced cache reconciler.
+    #[cfg(test)]
+    pub(crate) fn reload_from_records_lenient(&self, records: &[PolicyRecord]) {
+        let new_bundle = self.prepare_records_lenient(records);
+        self.install_prepared_bundle(new_bundle);
     }
 
-    /// Lenient parse-before-swap reload from in-memory records. Poisoned rows
-    /// are skipped (logged) and the engine is rebuilt from the survivors, then
-    /// the new bundle is atomically stored. This is the shared core of
-    /// [`Self::reload_from_database`] and is directly testable without a live DB
-    /// (it is what a "policies" NOTIFY drives on every replica — C1).
-    pub fn reload_from_records_lenient(&self, records: &[PolicyRecord]) {
+    pub(crate) fn prepare_records_lenient(&self, records: &[PolicyRecord]) -> CedarBundle {
         // Re-apply the immutable sugar overlay on every reload — otherwise a
         // DB-only reload would drop the config tool-scopes.
         let combined = concat_records(records, &self.sugar);
-        let new_bundle = CedarBundle::from_records_lenient(&combined);
+        CedarBundle::from_records_lenient(&combined)
+    }
+
+    pub(crate) fn install_prepared_bundle(&self, new_bundle: CedarBundle) {
         let policy_count = new_bundle.policies().policies().count();
         self.bundle.store(Arc::new(new_bundle));
         if let Ok(mut status) = self.last_reload_status.lock() {
@@ -362,7 +366,8 @@ impl AuthzEngine {
     /// succeeds is it atomically stored. On any parse/validation failure the
     /// last-good bundle is RETAINED and the error is returned — a bad reload can
     /// never blank the policy set.
-    pub fn reload_from_records(&self, records: &[PolicyRecord]) -> Result<(), AuthzError> {
+    #[cfg(test)]
+    pub(crate) fn reload_from_records(&self, records: &[PolicyRecord]) -> Result<(), AuthzError> {
         // Re-apply the immutable sugar overlay (strict build) on every reload.
         let combined = concat_records(records, &self.sugar);
         match CedarBundle::from_records(&combined) {
@@ -394,7 +399,13 @@ impl AuthzEngine {
         resource_id: &str,
         context: &Value,
     ) -> AuthzDecision {
-        self.authorize_as(PrincipalKind::User, principal_id, action, resource_id, context)
+        self.authorize_as(
+            PrincipalKind::User,
+            principal_id,
+            action,
+            resource_id,
+            context,
+        )
     }
 
     /// Authorize a request with an explicit principal **kind** (User / Agent /
@@ -602,12 +613,24 @@ mod tests {
 
         // Agent "bot-7" → allowed.
         assert_eq!(
-            engine.authorize_as(PrincipalKind::Agent, "bot-7", DEFAULT_ACTION, "r1", &json!({})),
+            engine.authorize_as(
+                PrincipalKind::Agent,
+                "bot-7",
+                DEFAULT_ACTION,
+                "r1",
+                &json!({})
+            ),
             AuthzDecision::Allow
         );
         // User "bot-7" (same id, different type) → denied.
         assert_eq!(
-            engine.authorize_as(PrincipalKind::User, "bot-7", DEFAULT_ACTION, "r1", &json!({})),
+            engine.authorize_as(
+                PrincipalKind::User,
+                "bot-7",
+                DEFAULT_ACTION,
+                "r1",
+                &json!({})
+            ),
             AuthzDecision::Deny
         );
         // The back-compat `authorize` (User) is likewise denied.
@@ -627,11 +650,23 @@ mod tests {
         .expect("compiles");
 
         assert_eq!(
-            engine.authorize_as(PrincipalKind::User, "alice", DEFAULT_ACTION, "r1", &json!({})),
+            engine.authorize_as(
+                PrincipalKind::User,
+                "alice",
+                DEFAULT_ACTION,
+                "r1",
+                &json!({})
+            ),
             AuthzDecision::Allow
         );
         assert_eq!(
-            engine.authorize_as(PrincipalKind::Agent, "alice", DEFAULT_ACTION, "r1", &json!({})),
+            engine.authorize_as(
+                PrincipalKind::Agent,
+                "alice",
+                DEFAULT_ACTION,
+                "r1",
+                &json!({})
+            ),
             AuthzDecision::Deny
         );
     }
@@ -644,11 +679,23 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            engine.authorize_as(PrincipalKind::Service, "deploy-svc", DEFAULT_ACTION, "r1", &json!({})),
+            engine.authorize_as(
+                PrincipalKind::Service,
+                "deploy-svc",
+                DEFAULT_ACTION,
+                "r1",
+                &json!({})
+            ),
             AuthzDecision::Allow
         );
         assert_eq!(
-            engine.authorize_as(PrincipalKind::Agent, "deploy-svc", DEFAULT_ACTION, "r1", &json!({})),
+            engine.authorize_as(
+                PrincipalKind::Agent,
+                "deploy-svc",
+                DEFAULT_ACTION,
+                "r1",
+                &json!({})
+            ),
             AuthzDecision::Deny
         );
     }
@@ -872,7 +919,8 @@ mod tests {
     fn second_engine_reflects_change_after_reload() {
         // Simulates C1: two independent engine instances (as on two replicas).
         // A policy change reloaded into the "peer" is reflected in its decisions
-        // — the mechanism a "policies" NOTIFY drives via reload_from_database.
+        // — the mechanism a "policies" NOTIFY drives through the fenced
+        // configuration publisher.
         let primary =
             AuthzEngine::from_records(&[record("p", r#"permit(principal, action, resource);"#)])
                 .expect("compiles");
@@ -914,15 +962,25 @@ mod tests {
     }
 
     fn agent_can_call(engine: &AuthzEngine, agent: &str, tool: &str) -> bool {
-        authorize_tool_call(engine, PrincipalKind::Agent, agent, tool, &json!({}), "route-1")
-            .is_allow()
+        authorize_tool_call(
+            engine,
+            PrincipalKind::Agent,
+            agent,
+            tool,
+            &json!({}),
+            "route-1",
+        )
+        .is_allow()
     }
 
     #[test]
     fn sugar_overlay_enforced_alongside_db_records() {
         // Simulates the DB-present engine: DB rows seed the bundle, the sugar is
         // the overlay. Both are enforced.
-        let db = record("db-perm", r#"permit(principal, action == Action::"call_tool", resource == Route::"db_tool");"#);
+        let db = record(
+            "db-perm",
+            r#"permit(principal, action == Action::"call_tool", resource == Route::"db_tool");"#,
+        );
         let engine = AuthzEngine::from_records_with_sugar(
             std::slice::from_ref(&db),
             sugar("ci-bot", &["deploy"], &[]),
@@ -940,9 +998,8 @@ mod tests {
     fn sugar_overlay_survives_a_reload() {
         // The overlay must NOT be dropped when a "policies" reload rebuilds from
         // DB rows only — the exact bug this change fixes.
-        let engine =
-            AuthzEngine::from_records_with_sugar(&[], sugar("ci-bot", &["deploy"], &[]))
-                .expect("builds");
+        let engine = AuthzEngine::from_records_with_sugar(&[], sugar("ci-bot", &["deploy"], &[]))
+            .expect("builds");
         assert!(agent_can_call(&engine, "ci-bot", "deploy"));
         // Simulate a DB-driven reload carrying an unrelated DB policy (no sugar).
         engine.reload_from_records_lenient(&[record(
@@ -1004,9 +1061,11 @@ mod tests {
     #[test]
     fn config_only_sugar_still_enforces() {
         // No DB records — the config-only deployment path.
-        let engine =
-            AuthzEngine::from_records_with_sugar(&[], sugar("reader", &["read_*"], &["read_secret"]))
-                .expect("builds");
+        let engine = AuthzEngine::from_records_with_sugar(
+            &[],
+            sugar("reader", &["read_*"], &["read_secret"]),
+        )
+        .expect("builds");
         assert!(agent_can_call(&engine, "reader", "read_file")); // glob allow
         assert!(!agent_can_call(&engine, "reader", "read_secret")); // deny wins
         assert!(!agent_can_call(&engine, "reader", "write_file")); // not allowed

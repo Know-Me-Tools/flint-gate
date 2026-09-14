@@ -14,6 +14,8 @@ pub struct GateConfig {
     #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
+    pub authority: AuthorityConfig,
+    #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
     pub approval: ApprovalConfig,
@@ -745,6 +747,41 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// Separate read-only connection to the ASO authority database.
+///
+/// This connection never receives Gate's schema migrations. Its runtime login
+/// must be an unprivileged member of `aso_authority_event_reader`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub database_url: String,
+    #[serde(default = "default_authority_source_key")]
+    pub source_key: String,
+    #[serde(default = "default_authority_max_connections")]
+    pub max_connections: u32,
+}
+
+fn default_authority_source_key() -> String {
+    "aso".to_string()
+}
+
+fn default_authority_max_connections() -> u32 {
+    2
+}
+
+impl Default for AuthorityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            database_url: String::new(),
+            source_key: default_authority_source_key(),
+            max_connections: default_authority_max_connections(),
+        }
+    }
+}
+
 /// Cache configuration (moka L1 + optional Redis L2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
@@ -821,6 +858,11 @@ pub enum AuthProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KratosAuthConfig {
     pub base_url: String,
+    /// Canonical issuer recorded by ASO for durable session authority events.
+    /// When omitted, authentication remains available but the distributed
+    /// authority session cache is bypassed.
+    #[serde(default)]
+    pub issuer: Option<String>,
     /// Forward the incoming session cookie to Kratos.
     #[serde(default = "default_true")]
     pub forward_cookies: bool,

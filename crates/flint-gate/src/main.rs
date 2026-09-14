@@ -4,10 +4,20 @@
 //!   CLI flags  >  environment variables  >  config.yaml
 
 use flint_gate_core::admin::{AdminEvent, AdminState};
-use flint_gate_core::approval::durable::{ApprovalStore, MemoryApprovalStore, PostgresApprovalStore};
+use flint_gate_core::approval::durable::{
+    ApprovalStore, MemoryApprovalStore, PostgresApprovalStore,
+};
 use flint_gate_core::auth::{build_authenticators, JwtMinter, SharedJwtMinter};
+use flint_gate_core::authority::{
+    AuthorityConsumer, AuthorityFenceStore, AuthorityReadiness, PostgresAuthorityCursorStore,
+    PostgresAuthoritySource, UnavailableAuthorityFence,
+};
 use flint_gate_core::authz::AuthzEngine;
-use flint_gate_core::cache::{start_cache_invalidation_listener, GateCache};
+#[cfg(feature = "redis-l2")]
+use flint_gate_core::cache::RedisAuthorityFence;
+use flint_gate_core::cache::{
+    initialize_configuration, start_cache_invalidation_listener, GateCache,
+};
 use flint_gate_core::config::{load_config, GateConfig, LookupRegistry};
 use flint_gate_core::db::Database;
 use flint_gate_core::middleware::{proxy_handler, AppState};
@@ -64,6 +74,14 @@ struct Cli {
     #[arg(long, env = "DATABASE_URL", value_name = "URL")]
     database_url: Option<String>,
 
+    /// Read-only ASO authority database URL. Overrides authority.database_url.
+    #[arg(
+        long,
+        env = "FLINT_GATE_ASO_AUTHORITY_DATABASE_URL",
+        value_name = "URL"
+    )]
+    aso_authority_database_url: Option<String>,
+
     /// Refuse to serve when PostgreSQL is configured but unavailable.
     #[arg(long, env = "FLINT_GATE_REQUIRE_DATABASE", default_value_t = false)]
     require_database: bool,
@@ -92,11 +110,7 @@ struct Cli {
 
     /// Path to the public PEM paired with `jwt_key_path`; used only by
     /// `--database-init-only` to seed the JWKS publication record.
-    #[arg(
-        long,
-        env = "FLINT_GATE_JWT_PUBLIC_KEY_PATH",
-        value_name = "PATH"
-    )]
+    #[arg(long, env = "FLINT_GATE_JWT_PUBLIC_KEY_PATH", value_name = "PATH")]
     jwt_public_key_path: Option<String>,
 
     /// Approval store backend: `memory` or `postgres`. Overrides approval.backend in config.yaml.
@@ -106,8 +120,7 @@ struct Cli {
 
 /// Apply CLI / env-var overrides onto a loaded [`GateConfig`].
 ///
-/// Invoked at startup and after every YAML hot-reload so that CLI-supplied
-/// values always win over what is on disk.
+/// Invoked at startup so CLI-supplied values win over what is on disk.
 fn apply_overrides(mut cfg: GateConfig, cli: &Cli) -> GateConfig {
     if let Some(v) = &cli.listen {
         cfg.server.listen = v.clone();
@@ -117,6 +130,9 @@ fn apply_overrides(mut cfg: GateConfig, cli: &Cli) -> GateConfig {
     }
     if let Some(v) = &cli.database_url {
         cfg.database.url = v.clone();
+    }
+    if let Some(v) = &cli.aso_authority_database_url {
+        cfg.authority.database_url = v.clone();
     }
     if let Some(v) = &cli.jwt_secret {
         cfg.jwt.signing_key_secret = Some(v.clone());
@@ -186,9 +202,7 @@ fn multi_replica_count() -> Option<usize> {
 /// environment — the condition where per-replica counters diverge and agents
 /// can exceed the configured budget by issuing requests across replicas.
 fn rate_limit_needs_redis_warning(rate_limit_enabled: bool, redis_url_configured: bool) -> bool {
-    rate_limit_enabled
-        && !redis_url_configured
-        && std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
+    rate_limit_enabled && !redis_url_configured && std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -238,12 +252,11 @@ async fn main() -> Result<()> {
     // sugar block that compiles to invalid Cedar refuses start (fail-closed — a
     // bad policy never loads). The sugar is a validated front-end over the Cedar
     // the engine already runs, not a second authority.
-    let sugar_policies = match flint_gate_core::authz::compile_and_validate(
-        &initial_config.agent_tool_policies,
-    ) {
-        Ok(records) => records,
-        Err(e) => anyhow::bail!("refusing to start: invalid agent_tool_policies — {e}"),
-    };
+    let sugar_policies =
+        match flint_gate_core::authz::compile_and_validate(&initial_config.agent_tool_policies) {
+            Ok(records) => records,
+            Err(e) => anyhow::bail!("refusing to start: invalid agent_tool_policies — {e}"),
+        };
     if !sugar_policies.is_empty() {
         info!(
             count = sugar_policies.len(),
@@ -254,13 +267,16 @@ async fn main() -> Result<()> {
     // 5. Connect to database
     let db = if initial_config.database.url.is_empty() {
         if cli.require_database || cli.database_init_only {
-            anyhow::bail!(
-                "database is required but database.url/DATABASE_URL is empty"
-            );
+            anyhow::bail!("database is required but database.url/DATABASE_URL is empty");
         }
         info!("no database URL configured; DB features disabled");
         None
     } else {
+        if initial_config.database.max_connections < 2 {
+            anyhow::bail!(
+                "database.max_connections must be at least 2: the durable configuration listener holds one connection"
+            );
+        }
         match Database::connect(
             &initial_config.database.url,
             initial_config.database.max_connections,
@@ -274,9 +290,7 @@ async fn main() -> Result<()> {
             }
             Err(e) => {
                 if cli.require_database || cli.database_init_only {
-                    return Err(e).context(
-                        "database is required but flint-gate could not connect",
-                    );
+                    return Err(e).context("database is required but flint-gate could not connect");
                 }
                 warn!(error = %e, "database connection failed; running without DB features");
                 None
@@ -318,6 +332,35 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let authority_parts = if initial_config.authority.enabled {
+        if initial_config.authority.database_url.is_empty() {
+            anyhow::bail!(
+                "authority.enabled requires authority.database_url or \
+                 FLINT_GATE_ASO_AUTHORITY_DATABASE_URL"
+            );
+        }
+        let gate_db = db
+            .as_ref()
+            .context("authority.enabled requires Gate database storage for the durable cursor")?;
+        let source = Arc::new(
+            PostgresAuthoritySource::connect(
+                &initial_config.authority.database_url,
+                initial_config.authority.max_connections,
+            )
+            .await
+            .context("connecting the restricted ASO authority reader")?,
+        );
+        let readiness = AuthorityReadiness::new();
+        Some((
+            initial_config.authority.source_key.clone(),
+            source,
+            Arc::new(PostgresAuthorityCursorStore::new(gate_db.pool())),
+            readiness.clone(),
+        ))
+    } else {
+        None
+    };
+
     // 6. Build authenticators
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -346,28 +389,11 @@ async fn main() -> Result<()> {
         info!("no JWT signing key configured; JWT minting disabled");
     }
 
-    // 8. Compute the merged (YAML + DB) route set, then build the router from it.
-    // Merging into an explicit Vec (rather than straight into the router) lets the
-    // agent-governance lint below inspect the exact routes that will be served.
-    let merged_routes: Vec<flint_gate_core::config::types::RouteConfig> =
-        if initial_config.database.override_yaml {
-            if let Some(ref d) = db {
-                match d.load_routes().await {
-                    Ok(db_routes) => {
-                        info!(count = db_routes.len(), "loaded DB routes for override mode");
-                        flint_gate_core::proxy::merge_routes(&initial_config, &db_routes)
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "failed to load DB routes — falling back to YAML only");
-                        initial_config.routes.clone()
-                    }
-                }
-            } else {
-                initial_config.routes.clone()
-            }
-        } else {
-            initial_config.routes.clone()
-        };
+    // 8. Build a startup-only router from immutable file configuration. When a
+    // database is present, the stable-revision reconciler below replaces this
+    // placeholder with the route/Cedar pair prepared under one durable revision
+    // before either HTTP listener is bound.
+    let merged_routes = initial_config.routes.clone();
 
     // 8b. Agent-governance lint over the MERGED route set (YAML + DB), so a
     // DB-only under-governed agent route is surfaced too. WARN by default; refuse
@@ -398,27 +424,85 @@ async fn main() -> Result<()> {
     // `mut` is only needed by `connect_l2` under the `redis-l2` feature.
     #[cfg_attr(not(feature = "redis-l2"), allow(unused_mut))]
     let mut cache = GateCache::from_config(&initial_config.cache);
+    if let Some((_, _, _, readiness)) = &authority_parts {
+        cache.set_authority_readiness(readiness.clone());
+    }
     #[cfg(feature = "redis-l2")]
     {
         if let Err(e) = cache.connect_l2(&initial_config.cache).await {
-            warn!(error = %e, "Redis L2 cache connection failed — continuing with L1 only");
+            if initial_config.authority.enabled {
+                warn!(error = %e, "Redis L2 cache connection failed — authority cache remains bypassed");
+            } else {
+                warn!(error = %e, "Redis L2 cache connection failed — continuing with L1 only");
+            }
         }
     }
+
+    #[cfg(feature = "redis-l2")]
+    let mut authority_invalidation_fence: Option<Arc<RedisAuthorityFence>> = None;
+    let authority_runtime = if let Some((source_key, source, cursors, readiness)) = authority_parts
+    {
+        #[cfg(feature = "redis-l2")]
+        let fence: Arc<dyn AuthorityFenceStore> = if let (Some(client), Some(connection)) =
+            (cache.l2_client(), cache.l2_connection())
+        {
+            let redis_fence = Arc::new(
+                RedisAuthorityFence::new(client, connection, &source_key)
+                    .context("building the shared Redis authority fence")?,
+            );
+            cache.set_redis_authority_fence(Arc::clone(&redis_fence));
+            authority_invalidation_fence = Some(Arc::clone(&redis_fence));
+            redis_fence
+        } else {
+            warn!(source = %source_key, "Redis is unavailable — ASO authority cache remains bypassed");
+            Arc::new(UnavailableAuthorityFence)
+        };
+        #[cfg(not(feature = "redis-l2"))]
+        let fence: Arc<dyn AuthorityFenceStore> = {
+            warn!(source = %source_key, "Redis support is disabled — ASO authority cache remains bypassed");
+            Arc::new(UnavailableAuthorityFence)
+        };
+        let consumer = Arc::new(AuthorityConsumer::new(
+            source_key,
+            source,
+            cursors,
+            fence,
+            readiness.clone(),
+        ));
+        Some((readiness, consumer))
+    } else {
+        None
+    };
     let cache = Arc::new(cache);
 
-    // Build the embedded Cedar authorization engine BEFORE the LISTEN/NOTIFY
-    // listener so its handle can be threaded in — a "policies" NOTIFY on any
-    // replica must reload this engine (multi-replica hot-reload). The validated
+    // A Redis-backed configuration epoch shares the ASO fence namespace, so
+    // establish its durable deployment/incarnation fields before publishing
+    // the first route/Cedar revision. The consumer loop observes this ready
+    // snapshot and continues with synchronization instead of bootstrapping it
+    // a second time.
+    #[cfg(feature = "redis-l2")]
+    if authority_invalidation_fence.is_some() {
+        if let Some((_, consumer)) = &authority_runtime {
+            consumer
+                .bootstrap()
+                .await
+                .context("bootstrapping ASO authority before configuration publication")?;
+        }
+    }
+
+    // Build a startup-only Cedar engine before the durable reconciler. The validated
     // `agent_tool_policies` sugar is carried as an IMMUTABLE OVERLAY on the engine
     // and re-applied on every reload, so config tool-scopes enforce ALONGSIDE the
     // DB policies (Cedar forbid-overrides-permit resolves cross-source conflicts).
-    // With a database: initial bundle = DB rows ++ sugar overlay (lenient — bad
-    // rows skipped). Without: seed from the sugar overlay alone (pure-config
-    // deployment), else empty (default-deny).
+    // With a database, the reconciler prepares DB rows plus this sugar overlay
+    // under one stable durable revision. Without a database, this startup bundle
+    // is the final pure-config engine.
     let authz = match &db {
-        Some(d) => Arc::new(
-            AuthzEngine::from_database_with_sugar(d, sugar_policies.clone()).await,
+        Some(_) if !sugar_policies.is_empty() => Arc::new(
+            AuthzEngine::from_records_with_sugar(&[], sugar_policies.clone())
+                .map_err(|e| anyhow::anyhow!("failed to build authz engine from sugar: {e}"))?,
         ),
+        Some(_) => Arc::new(AuthzEngine::empty()),
         None if !sugar_policies.is_empty() => Arc::new(
             AuthzEngine::from_records_with_sugar(&[], sugar_policies.clone())
                 .map_err(|e| anyhow::anyhow!("failed to build authz engine from sugar: {e}"))?,
@@ -426,39 +510,42 @@ async fn main() -> Result<()> {
         None => Arc::new(AuthzEngine::empty()),
     };
 
-    // Fail-closed startup gate: when require_policies_at_startup is true and
-    // the loaded engine carries zero policies, refuse to start. This is only
-    // checked when a DB is configured (no-DB deployments load from config sugar
-    // alone; they should set sugar policies, not this flag).
-    if initial_config.server.require_policies_at_startup && db.is_some() {
-        let policy_count = authz.snapshot().policies().policies().count();
-        if policy_count == 0 {
-            tracing::error!(
-                "require_policies_at_startup is true but no policies are loaded — refusing to start"
-            );
-            std::process::exit(1);
-        }
-    }
-
     // Admin event broadcast channel — shared between the cache invalidation
     // listener (emitter) and the admin SSE endpoint (subscriber).
     let (admin_event_tx, _admin_event_rx) = tokio::sync::broadcast::channel::<AdminEvent>(256);
 
     if let Some(ref d) = db {
         let ch = initial_config.cache.invalidation_channel.clone();
-        // When override_yaml is enabled, pass the router + config + DB so the
-        // listener can rebuild the router on every "routes" NOTIFY.
-        let router_ctx = if initial_config.database.override_yaml {
-            Some((
-                Arc::clone(&shared_router),
-                Arc::clone(&shared_config),
-                Arc::clone(d),
-            ))
-        } else {
-            None
-        };
-        // Thread the authz engine + DB so a "policies" NOTIFY reloads it.
+        let configuration_pool = d.pool();
+        let router_ctx = Some((
+            Arc::clone(&shared_router),
+            Arc::clone(&shared_config),
+            Arc::clone(d),
+        ));
         let authz_ctx = Some((Arc::clone(&authz), Arc::clone(d)));
+
+        if !initialize_configuration(
+            &configuration_pool,
+            &cache,
+            router_ctx.clone(),
+            authz_ctx.clone(),
+            Some(admin_event_tx.clone()),
+        )
+        .await
+        {
+            anyhow::bail!(
+                "refusing to start: durable route and Cedar configuration could not be published"
+            );
+        }
+
+        if initial_config.server.require_policies_at_startup
+            && authz.snapshot().policies().policies().count() == 0
+        {
+            anyhow::bail!(
+                "require_policies_at_startup is true but no policies are loaded — refusing to start"
+            );
+        }
+
         start_cache_invalidation_listener(
             d.pool(),
             Arc::clone(&cache),
@@ -576,12 +663,19 @@ async fn main() -> Result<()> {
 
     let shutdown_timeout = initial_config.server.shutdown_timeout_secs;
     let token = CancellationToken::new();
+    if let Some((_, consumer)) = authority_runtime {
+        tokio::spawn(consumer.run(token.child_token()));
+    }
+    #[cfg(feature = "redis-l2")]
+    if let Some(fence) = authority_invalidation_fence {
+        tokio::spawn(fence.run_invalidation_listener(Arc::clone(&cache), token.child_token()));
+    }
 
     // 12. Start proxy server — with /health shortcut and optional TLS
     let proxy_listen = initial_config.server.listen.clone();
     // RFC 9728 Protected Resource Metadata — served on the PUBLIC proxy surface
-    // (MCP clients must reach it) rather than the private admin port. Captures
-    // the shared config so a hot-reload of MCP providers is reflected live.
+    // (MCP clients must reach it) rather than the private admin port. It reads
+    // the immutable startup provider configuration shared by the proxy.
     let metadata_config = Arc::clone(&shared_config);
     let mut proxy_app = Router::new()
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
@@ -647,7 +741,9 @@ async fn main() -> Result<()> {
         let tx_cfg = &initial_config.token_exchange;
         let token_exchange = if tx_cfg.enabled {
             let provider_name = tx_cfg.subject_token_provider.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("token_exchange.enabled is true but subject_token_provider is not set")
+                anyhow::anyhow!(
+                    "token_exchange.enabled is true but subject_token_provider is not set"
+                )
             })?;
             let provider_cfg = initial_config
                 .auth_providers
@@ -661,7 +757,9 @@ async fn main() -> Result<()> {
                 anyhow::bail!("refusing to enable token exchange: {reason}");
             }
             let verifier = auth_providers.get(provider_name).cloned().ok_or_else(|| {
-                anyhow::anyhow!("subject_token_provider {provider_name:?} authenticator was not built")
+                anyhow::anyhow!(
+                    "subject_token_provider {provider_name:?} authenticator was not built"
+                )
             })?;
             // Optional Hydra-delegate: proxy the exchange to a configured Hydra
             // token endpoint (federate-first). Requires delegate_to_hydra + a URL.
@@ -1033,7 +1131,10 @@ async fn main() -> Result<()> {
         let host = if let Some(rest) = admin_listen.strip_prefix('[') {
             rest.split_once(']').map(|(h, _)| h).unwrap_or("")
         } else {
-            admin_listen.rsplit_once(':').map(|(h, _)| h).unwrap_or(admin_listen.as_str())
+            admin_listen
+                .rsplit_once(':')
+                .map(|(h, _)| h)
+                .unwrap_or(admin_listen.as_str())
         };
         host.eq_ignore_ascii_case("localhost")
             || host == "127.0.0.1"
@@ -1086,29 +1187,38 @@ async fn main() -> Result<()> {
     }
 
     // Admin per-replica rate-limit (optional; disabled on loopback-dev by default).
-    let admin_rate_layer = initial_config.server.admin_rate_limit.as_ref().and_then(|rl| {
-        if !rl.enabled {
-            return None;
-        }
-        match flint_gate_core::ratelimit::build_governor_layer(rl.per_second, rl.burst) {
-            Some(layer) => {
-                info!(
-                    per_second = rl.per_second,
-                    burst = rl.burst,
-                    "admin in-process rate limiter enabled"
-                );
-                Some(layer)
+    let admin_rate_layer = initial_config
+        .server
+        .admin_rate_limit
+        .as_ref()
+        .and_then(|rl| {
+            if !rl.enabled {
+                return None;
             }
-            None => {
-                warn!("admin_rate_limit enabled but config was degenerate — limiter not applied");
-                None
+            match flint_gate_core::ratelimit::build_governor_layer(rl.per_second, rl.burst) {
+                Some(layer) => {
+                    info!(
+                        per_second = rl.per_second,
+                        burst = rl.burst,
+                        "admin in-process rate limiter enabled"
+                    );
+                    Some(layer)
+                }
+                None => {
+                    warn!(
+                        "admin_rate_limit enabled but config was degenerate — limiter not applied"
+                    );
+                    None
+                }
             }
-        }
-    });
+        });
 
-    let admin_app =
-        flint_gate_core::admin::admin_router_with_auth(admin_state, admin_authenticator, admin_rate_layer)
-            .layer(TraceLayer::new_for_http());
+    let admin_app = flint_gate_core::admin::admin_router_with_auth(
+        admin_state,
+        admin_authenticator,
+        admin_rate_layer,
+    )
+    .layer(TraceLayer::new_for_http());
     let admin_listener = tokio::net::TcpListener::bind(&admin_listen)
         .await
         .with_context(|| format!("binding admin server to {admin_listen}"))?;
@@ -1123,39 +1233,14 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 14. Config hot-reload — re-apply CLI overrides after every file change
-    let reload_router = Arc::clone(&shared_router);
-    let reload_shared = Arc::clone(&shared_config);
-    let reload_db = db.clone();
-    let cli_for_reload = cli.clone();
+    // 14. File-backed configuration changes require restart. Live route and
+    // policy mutations are published through GateCache's serialized database
+    // configuration path so requests cannot observe a mixed route/Cedar pair.
     let mut config_watcher = tokio::spawn(async move {
         while config_rx.changed().await.is_ok() {
-            let new_config = apply_overrides(config_rx.borrow().clone(), &cli_for_reload);
-            info!("config changed — rebuilding router");
-            *reload_shared.write().await = new_config.clone();
-
-            // Merge DB routes if override_yaml is active.
-            let r = if new_config.database.override_yaml {
-                if let Some(ref d) = reload_db {
-                    match d.load_routes().await {
-                        Ok(db_routes) => {
-                            GateRouter::from_config_and_db_routes(&new_config, &db_routes)
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "failed to reload DB routes on config change — using YAML only");
-                            GateRouter::from_config(&new_config)
-                        }
-                    }
-                } else {
-                    GateRouter::from_config(&new_config)
-                }
-            } else {
-                GateRouter::from_config(&new_config)
-            };
-
-            let n = r.route_count();
-            *reload_router.write().await = r;
-            info!(route_count = n, "router rebuilt");
+            warn!(
+                "configuration file changed — restart required; live route, auth provider, and Cedar snapshots unchanged"
+            );
         }
         warn!("config watch channel closed");
     });
@@ -1296,9 +1381,13 @@ mod tests {
             listen: listen.map(str::to_string),
             admin_listen: None,
             database_url: db_url.map(str::to_string),
+            aso_authority_database_url: None,
+            require_database: false,
+            database_init_only: false,
             log: "info".to_string(),
             jwt_secret: secret.map(str::to_string),
             jwt_key_path: None,
+            jwt_public_key_path: None,
             approval_backend: None,
         }
     }
@@ -1313,6 +1402,13 @@ mod tests {
     fn cli_db_url_wins() {
         let cfg = apply_overrides(base_config(), &cli(None, Some("postgres://new"), None));
         assert_eq!(cfg.database.url, "postgres://new");
+    }
+    #[test]
+    fn cli_authority_url_wins() {
+        let mut args = cli(None, None, None);
+        args.aso_authority_database_url = Some("postgres://authority".to_string());
+        let cfg = apply_overrides(base_config(), &args);
+        assert_eq!(cfg.authority.database_url, "postgres://authority");
     }
     #[test]
     fn cli_jwt_secret_wins() {
@@ -1338,7 +1434,10 @@ mod tests {
             fail_open: false,
         };
         let result = check_tls_config(&tls);
-        assert!(result.is_err(), "expected error when fail_open=false and paths missing");
+        assert!(
+            result.is_err(),
+            "expected error when fail_open=false and paths missing"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("tls.fail_open is false"),
@@ -1474,7 +1573,10 @@ mod tests {
         std::env::set_var("KUBERNETES_SERVICE_HOST", "10.96.0.1");
         let result = rate_limit_needs_redis_warning(true, false);
         std::env::remove_var("KUBERNETES_SERVICE_HOST");
-        assert!(result, "should warn when rate limiting enabled, no Redis, in K8s");
+        assert!(
+            result,
+            "should warn when rate limiting enabled, no Redis, in K8s"
+        );
     }
 
     #[test]

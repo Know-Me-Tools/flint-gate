@@ -83,6 +83,16 @@ database:
   # When true, routes stored in gate_routes take precedence over YAML routes.
   override_yaml: false
 
+# Optional ASO authority-event source. This is a separate, read-only database
+# connection; set its URL with FLINT_GATE_ASO_AUTHORITY_DATABASE_URL so the
+# runtime credential does not live in this file. The Gate database above owns
+# the durable cursor, while every process performs its own snapshot and replay.
+authority:
+  enabled: false
+  database_url: ""
+  source_key: "aso"
+  max_connections: 2
+
 cache:
   l1:
     max_capacity: 10000
@@ -105,6 +115,7 @@ auth_providers:
   kratos_session:
     type: kratos
     base_url: "http://kratos:4433"
+    issuer: "https://identity.example.com"
     forward_cookies: true
     session_cookie: "ory_kratos_session"
 

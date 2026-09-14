@@ -597,6 +597,7 @@ mod tests {
     fn subject_provider_rejects_kratos_and_api_key() {
         let kratos = AuthProviderConfig::Kratos(KratosAuthConfig {
             base_url: "http://kratos".into(),
+            issuer: Some("https://identity.example.test".into()),
             forward_cookies: true,
             session_cookie: "s".into(),
         });

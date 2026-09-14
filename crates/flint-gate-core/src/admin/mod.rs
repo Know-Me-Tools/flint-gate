@@ -24,11 +24,11 @@ pub mod auth;
 use crate::approval::{ApprovalDecision, ApprovalError, ApprovalStore};
 use crate::auth::Identity;
 use crate::authz::{
-    compile_and_validate, policy_warnings, validate_policy_for_gateway,
-    AuthzEngine, PolicyParseError, PolicyRecord, ReloadStatus, SUGAR_ID_PREFIX,
+    compile_and_validate, policy_warnings, validate_policy_for_gateway, AuthzEngine,
+    PolicyParseError, PolicyRecord, ReloadStatus, SUGAR_ID_PREFIX,
 };
-use crate::config::types::AgentToolPolicy;
 use crate::cache::GateCache;
+use crate::config::types::AgentToolPolicy;
 use crate::config::SharedConfig;
 use crate::db::{AuditQuery, AuthzAuditDecision, Database};
 use crate::proxy::SharedRouter;
@@ -41,13 +41,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use governor::middleware::NoOpMiddleware;
-use tower_governor::GovernorLayer;
 use chrono::{DateTime, Utc};
+use governor::middleware::NoOpMiddleware;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use tower_governor::GovernorLayer;
 #[allow(unused_imports)]
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -172,14 +172,8 @@ pub fn admin_router_with_auth(
             get(list_policies_handler).post(create_policy_handler),
         )
         .route("/policies/validate", post(validate_policy_handler))
-        .route(
-            "/policies/{id}/history",
-            get(list_policy_history_handler),
-        )
-        .route(
-            "/policies/{id}/rollback",
-            post(rollback_policy_handler),
-        )
+        .route("/policies/{id}/history", get(list_policy_history_handler))
+        .route("/policies/{id}/rollback", post(rollback_policy_handler))
         .route(
             "/policies/{id}",
             get(get_policy_handler)
@@ -695,6 +689,25 @@ fn default_policy_enabled() -> bool {
     true
 }
 
+async fn publish_policy_configuration(state: &AdminState, db: &Arc<Database>) -> bool {
+    let publish_routes = state.config.read().await.database.override_yaml;
+    let router = publish_routes.then(|| {
+        (
+            Arc::clone(&state.router),
+            Arc::clone(&state.config),
+            Arc::clone(db),
+        )
+    });
+    crate::cache::reconcile_configuration_after_mutation(
+        &db.pool(),
+        &state.cache,
+        router,
+        Some((Arc::clone(&state.authz), Arc::clone(db))),
+        state.admin_events.clone(),
+    )
+    .await
+}
+
 // ── Policy version history ────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -733,7 +746,11 @@ async fn list_policy_history_handler(
     };
     match db.get_policy(&id).await {
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(json!({"error": "policy not found"}))).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "policy not found"})),
+            )
+                .into_response();
         }
         Err(e) => return internal_error(&e.to_string()),
         Ok(Some(_)) => {}
@@ -845,32 +862,36 @@ async fn rollback_policy_handler(
 
     // 5. Determine to_version: the new highest version_num after the upsert.
     let to_version = match db.list_policy_versions(&id, 0, 1).await {
-        Ok(rows) => rows.first().map(|r| r.version_num).unwrap_or(from_version + 1),
+        Ok(rows) => rows
+            .first()
+            .map(|r| r.version_num)
+            .unwrap_or(from_version + 1),
         Err(e) => return internal_error(&e.to_string()),
     };
 
-    // 6. Reload the live Cedar engine.
-    match state.authz.reload_from_database(db).await {
-        Ok(()) => Json(RollbackResponse {
+    // 6. Publish the committed revision through the shared fence.
+    if publish_policy_configuration(&state, db).await {
+        Json(RollbackResponse {
             status: "rolled_back".to_string(),
             policy_id: id,
             from_version,
             to_version,
             reloaded: true,
         })
-        .into_response(),
-        Err(e) => (
+        .into_response()
+    } else {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "error": "stored_but_not_reloaded",
-                "message": format!("policy restored but engine reload failed: {e}"),
+                "message": "policy restored but fenced configuration publication failed",
                 "policy_id": id,
                 "from_version": from_version,
                 "to_version": to_version,
                 "reloaded": false,
             })),
         )
-            .into_response(),
+            .into_response()
     }
 }
 
@@ -1145,9 +1166,7 @@ async fn admin_events_handler(
                         Ok(event) => {
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             return Some((
-                                Ok::<_, std::convert::Infallible>(
-                                    sse::Event::default().data(data),
-                                ),
+                                Ok::<_, std::convert::Infallible>(sse::Event::default().data(data)),
                                 rx,
                             ));
                         }
@@ -1222,9 +1241,7 @@ async fn upsert_policy_inner(
     };
     if let Err(e) = validate_policy_for_gateway(&record) {
         let (status, error_code) = match &e {
-            crate::authz::AuthzError::PolicyParse(_) => {
-                (StatusCode::BAD_REQUEST, "invalid_policy")
-            }
+            crate::authz::AuthzError::PolicyParse(_) => (StatusCode::BAD_REQUEST, "invalid_policy"),
             // Schema validation errors (wrong entity types, unknown actions,
             // unknown annotations) → 422 Unprocessable Entity.
             _ => (StatusCode::UNPROCESSABLE_ENTITY, "policy_schema_violation"),
@@ -1263,27 +1280,26 @@ async fn upsert_policy_inner(
         return internal_error(&e.to_string());
     }
 
-    // 3. Reload the live engine (parse-before-swap, lenient, retains last-good
-    // on a DB-load failure). If the reload could not run, the policy is stored
-    // but NOT active on this replica — surface that as a 500 so a non-loading
-    // bundle can't ship silently (H1).
-    match state.authz.reload_from_database(db).await {
-        Ok(()) => (
+    // 3. Publish through the durable revision and shared Redis fence. If the
+    // publication fails, the policy remains stored but no surface is exposed.
+    if publish_policy_configuration(state, db).await {
+        (
             StatusCode::OK,
             Json(json!({"status": "ok", "id": id, "reloaded": true, "warnings": warnings})),
         )
-            .into_response(),
-        Err(e) => (
+            .into_response()
+    } else {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "error": "stored_but_not_activated",
-                "message": format!("policy stored but engine reload failed: {e}"),
+                "message": "policy stored but fenced configuration publication failed",
                 "id": id,
                 "reloaded": false,
                 "warnings": warnings,
             })),
         )
-            .into_response(),
+            .into_response()
     }
 }
 
@@ -1296,21 +1312,22 @@ async fn delete_policy_handler(
         return db_not_configured();
     };
     match db.delete_policy(&id).await {
-        Ok(true) => match state.authz.reload_from_database(db).await {
-            Ok(()) => {
+        Ok(true) => {
+            if publish_policy_configuration(&state, db).await {
                 Json(json!({"status": "deleted", "id": id, "reloaded": true})).into_response()
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": "deleted_but_not_reloaded",
+                        "message": "policy deleted but fenced configuration publication failed",
+                        "id": id,
+                        "reloaded": false,
+                    })),
+                )
+                    .into_response()
             }
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "deleted_but_not_reloaded",
-                    "message": format!("policy deleted but engine reload failed: {e}"),
-                    "id": id,
-                    "reloaded": false,
-                })),
-            )
-                .into_response(),
-        },
+        }
         Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -1365,7 +1382,10 @@ fn compile_tool_scope(req: &ToolScopeRequest) -> Result<(String, String), ToolSc
     let compiled = compile_and_validate(std::slice::from_ref(&entry))
         .map_err(|e| ToolScopeError::Invalid(e.to_string()))?;
     let record = compiled.into_iter().next().ok_or(ToolScopeError::Empty)?;
-    Ok((format!("{TOOL_SCOPE_ID_PREFIX}{}", req.agent), record.policy_text))
+    Ok((
+        format!("{TOOL_SCOPE_ID_PREFIX}{}", req.agent),
+        record.policy_text,
+    ))
 }
 
 /// `GET /tool-scopes` — list UI-authored tool-scope policy rows (the compiled
@@ -1430,22 +1450,23 @@ async fn upsert_tool_scope_handler(
         return internal_error(&e.to_string());
     }
 
-    match state.authz.reload_from_database(db).await {
-        Ok(()) => (
+    if publish_policy_configuration(&state, db).await {
+        (
             StatusCode::OK,
             Json(json!({"status": "ok", "agent": payload.agent, "id": db_id, "reloaded": true})),
         )
-            .into_response(),
-        Err(e) => (
+            .into_response()
+    } else {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "error": "stored_but_not_activated",
-                "message": format!("tool scope stored but engine reload failed: {e}"),
+                "message": "tool scope stored but fenced configuration publication failed",
                 "id": db_id,
                 "reloaded": false,
             })),
         )
-            .into_response(),
+            .into_response()
     }
 }
 
@@ -1459,20 +1480,21 @@ async fn delete_tool_scope_handler(
     };
     let db_id = format!("{TOOL_SCOPE_ID_PREFIX}{agent}");
     match db.delete_policy(&db_id).await {
-        Ok(true) => match state.authz.reload_from_database(db).await {
-            Ok(()) => {
+        Ok(true) => {
+            if publish_policy_configuration(&state, db).await {
                 Json(json!({"status": "deleted", "agent": agent, "reloaded": true})).into_response()
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": "deleted_but_not_reloaded",
+                        "message": "tool scope deleted but fenced configuration publication failed",
+                        "agent": agent,
+                    })),
+                )
+                    .into_response()
             }
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "deleted_but_not_reloaded",
-                    "message": format!("tool scope deleted but engine reload failed: {e}"),
-                    "agent": agent,
-                })),
-            )
-                .into_response(),
-        },
+        }
         Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -1726,7 +1748,6 @@ struct IssueAgentIdentityRequest {
     label: Option<String>,
 }
 
-
 /// `GET /agent-identities` — list all non-human identities.
 async fn list_agent_identities_handler(State(state): State<AdminState>) -> impl IntoResponse {
     let Some(db) = &state.db else {
@@ -1859,7 +1880,10 @@ mod tests {
         assert_eq!(id, format!("{TOOL_SCOPE_ID_PREFIX}ci-bot"));
         // Structured-only → compiled Cedar; deny-wins is preserved (a forbid is emitted).
         assert!(text.contains("permit"), "text:\n{text}");
-        assert!(text.contains("forbid"), "deny must compile to a forbid:\n{text}");
+        assert!(
+            text.contains("forbid"),
+            "deny must compile to a forbid:\n{text}"
+        );
         // The stored id is NOT in the reserved config-overlay namespace.
         assert!(!id.starts_with(SUGAR_ID_PREFIX));
     }
@@ -1912,7 +1936,9 @@ mod tests {
     fn reserved_policy_id_rejects_sugar_namespace() {
         // A DB write using the compiled-sugar id prefix must be rejected so it
         // cannot collide with (and silently suppress) a sugar overlay policy.
-        assert!(is_reserved_policy_id(&format!("{SUGAR_ID_PREFIX}ci-bot::0")));
+        assert!(is_reserved_policy_id(&format!(
+            "{SUGAR_ID_PREFIX}ci-bot::0"
+        )));
         assert!(is_reserved_policy_id(SUGAR_ID_PREFIX));
         // Ordinary operator ids are allowed.
         assert!(!is_reserved_policy_id("allow-deploy"));
@@ -2051,7 +2077,10 @@ mod tests {
     #[test]
     fn analytics_limit_clamps_to_cap_and_floor() {
         assert_eq!(super::clamp_analytics_limit(50), 50);
-        assert_eq!(super::clamp_analytics_limit(10_000), super::ANALYTICS_MAX_LIMIT);
+        assert_eq!(
+            super::clamp_analytics_limit(10_000),
+            super::ANALYTICS_MAX_LIMIT
+        );
         assert_eq!(super::clamp_analytics_limit(0), 1);
         assert_eq!(super::clamp_analytics_limit(-9), 1);
     }
@@ -2121,7 +2150,12 @@ mod tests {
             "a1".to_string(),
             Instant::now() + Duration::from_secs(60),
             tx,
-            ("bob", "tool:write_file", "fs:/etc", Some("needs review".to_string())),
+            (
+                "bob",
+                "tool:write_file",
+                "fs:/etc",
+                Some("needs review".to_string()),
+            ),
         )
         .unwrap();
 
@@ -2213,7 +2247,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), http::StatusCode::OK, "/health must bypass rate-limit");
+        assert_eq!(
+            res.status(),
+            http::StatusCode::OK,
+            "/health must bypass rate-limit"
+        );
 
         // Protected route: first request passes, second should 429.
         let protected_req = || {
@@ -2225,10 +2263,18 @@ mod tests {
         };
         let first = app.clone().oneshot(protected_req()).await.unwrap();
         // Without auth the handler returns 401/404 but NOT 429 on first hit.
-        assert_ne!(first.status(), http::StatusCode::TOO_MANY_REQUESTS, "first request must not be rate-limited");
+        assert_ne!(
+            first.status(),
+            http::StatusCode::TOO_MANY_REQUESTS,
+            "first request must not be rate-limited"
+        );
 
         let second = app.clone().oneshot(protected_req()).await.unwrap();
-        assert_eq!(second.status(), http::StatusCode::TOO_MANY_REQUESTS, "second request should be rate-limited");
+        assert_eq!(
+            second.status(),
+            http::StatusCode::TOO_MANY_REQUESTS,
+            "second request should be rate-limited"
+        );
     }
 
     #[tokio::test]
@@ -2312,7 +2358,10 @@ mod tests {
 
     // ── POST /policies/validate tests ─────────────────────────────────────────
 
-    async fn validate_request(policy: &str, schema: Option<serde_json::Value>) -> serde_json::Value {
+    async fn validate_request(
+        policy: &str,
+        schema: Option<serde_json::Value>,
+    ) -> serde_json::Value {
         let app = admin_router_with_auth(minimal_admin_state(), None, None);
         let body = if let Some(s) = schema {
             serde_json::json!({ "policy": policy, "schema": s })
@@ -2331,7 +2380,9 @@ mod tests {
             http::StatusCode::OK,
             "/policies/validate always returns 200 (valid or not)"
         );
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -2339,7 +2390,11 @@ mod tests {
     async fn validate_endpoint_returns_valid_true_for_good_policy() {
         let resp = validate_request("permit(principal, action, resource);", None).await;
         assert_eq!(resp["valid"], true, "parseable policy must be valid");
-        assert_eq!(resp["errors"], serde_json::json!([]), "no errors for valid policy");
+        assert_eq!(
+            resp["errors"],
+            serde_json::json!([]),
+            "no errors for valid policy"
+        );
     }
 
     #[tokio::test]
@@ -2352,7 +2407,10 @@ mod tests {
         // The structured error must carry a non-empty message.
         let first = &errors[0];
         assert!(
-            first["message"].as_str().map(|m| !m.is_empty()).unwrap_or(false),
+            first["message"]
+                .as_str()
+                .map(|m| !m.is_empty())
+                .unwrap_or(false),
             "error message must be non-empty"
         );
         // line/column/length fields must be present (may be 0 when Cedar provides no span).
@@ -2371,8 +2429,12 @@ mod tests {
         let resp = validate_request(
             r#"permit(principal, action == Action::"delete_everything", resource);"#,
             Some(schema),
-        ).await;
-        assert_eq!(resp["valid"], false, "unknown action must fail schema validation");
+        )
+        .await;
+        assert_eq!(
+            resp["valid"], false,
+            "unknown action must fail schema validation"
+        );
         let errors = resp["errors"].as_array().expect("errors must be array");
         assert!(!errors.is_empty(), "at least one validation error required");
     }
@@ -2412,7 +2474,10 @@ mod tests {
             .uri("/policies/validate")
             .header("content-type", "application/json")
             .body(axum::body::Body::from(
-                serde_json::to_vec(&serde_json::json!({"policy": "permit(principal, action, resource);"})).unwrap(),
+                serde_json::to_vec(
+                    &serde_json::json!({"policy": "permit(principal, action, resource);"}),
+                )
+                .unwrap(),
             ))
             .unwrap();
         let res2 = app2.oneshot(req2).await.unwrap();
@@ -2421,9 +2486,14 @@ mod tests {
             http::StatusCode::OK,
             "/policies/validate POST with a 'policy' key must hit the validate handler"
         );
-        let bytes = axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res2.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["valid"], true, "validate handler must report valid=true for good policy");
+        assert_eq!(
+            json["valid"], true,
+            "validate handler must report valid=true for good policy"
+        );
     }
 
     // ── Hot-reload observability tests ────────────────────────────────────────
@@ -2450,7 +2520,8 @@ mod tests {
         // Engine updated its last_reload_status; now manually send an event
         // as the cache invalidation listener would.
         let policy_count = engine.snapshot().policies().policies().count();
-        tx.send(AdminEvent::PolicyReloadOk { policy_count }).unwrap();
+        tx.send(AdminEvent::PolicyReloadOk { policy_count })
+            .unwrap();
 
         let event = rx.try_recv().expect("event must be in channel");
         match event {
@@ -2470,12 +2541,19 @@ mod tests {
         tx.send(AdminEvent::PolicyReloadError {
             skipped_count: 0,
             db_error: Some("connection refused".to_string()),
-        }).unwrap();
+        })
+        .unwrap();
 
         let event = rx.try_recv().expect("event must be in channel");
         match event {
-            AdminEvent::PolicyReloadError { db_error: Some(ref msg), .. } => {
-                assert!(msg.contains("connection refused"), "error message must propagate");
+            AdminEvent::PolicyReloadError {
+                db_error: Some(ref msg),
+                ..
+            } => {
+                assert!(
+                    msg.contains("connection refused"),
+                    "error message must propagate"
+                );
             }
             other => panic!("expected PolicyReloadError, got {other:?}"),
         }
@@ -2483,12 +2561,12 @@ mod tests {
 
     #[tokio::test]
     async fn reload_status_endpoint_reflects_last_reload() {
-        use std::sync::Arc;
-        use crate::authz::{AuthzEngine, PolicyRecord};
         use crate::approval::ApprovalManager;
+        use crate::authz::{AuthzEngine, PolicyRecord};
         use crate::cache::GateCache;
         use crate::config::types::{CacheConfig, GateConfig};
         use crate::proxy::router::Router as GateRouter;
+        use std::sync::Arc;
 
         // Build an engine and trigger a lenient reload so last_reload_status is set.
         let engine = Arc::new(AuthzEngine::empty());
@@ -2502,7 +2580,9 @@ mod tests {
 
         let gate_config = GateConfig::default();
         let config = Arc::new(tokio::sync::RwLock::new(gate_config.clone()));
-        let router = Arc::new(tokio::sync::RwLock::new(GateRouter::from_config(&gate_config)));
+        let router = Arc::new(tokio::sync::RwLock::new(GateRouter::from_config(
+            &gate_config,
+        )));
         let state = AdminState {
             cache: Arc::new(GateCache::from_config(&CacheConfig::default())),
             db: None,
@@ -2519,13 +2599,28 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
-        assert_eq!(res.status(), http::StatusCode::OK, "reload-status must return 200");
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            res.status(),
+            http::StatusCode::OK,
+            "reload-status must return 200"
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"], true, "after successful reload, ok must be true");
-        assert_eq!(json["policy_count"], 1, "policy count must reflect reload result");
-        assert!(json["last_reload_at"].is_string(), "last_reload_at must be set");
-        assert!(json["last_error"].is_null(), "no error after successful reload");
+        assert_eq!(
+            json["policy_count"], 1,
+            "policy count must reflect reload result"
+        );
+        assert!(
+            json["last_reload_at"].is_string(),
+            "last_reload_at must be set"
+        );
+        assert!(
+            json["last_error"].is_null(),
+            "no error after successful reload"
+        );
     }
 
     #[test]
@@ -2553,12 +2648,12 @@ mod tests {
     // ── POST /policies/simulate tests ─────────────────────────────────────────
 
     async fn simulate_request(body: serde_json::Value) -> (http::StatusCode, serde_json::Value) {
-        use std::sync::Arc;
-        use crate::authz::{AuthzEngine, PolicyRecord};
         use crate::approval::ApprovalManager;
+        use crate::authz::{AuthzEngine, PolicyRecord};
         use crate::cache::GateCache;
         use crate::config::types::{CacheConfig, GateConfig};
         use crate::proxy::router::Router as GateRouter;
+        use std::sync::Arc;
 
         // Build an engine with one permit policy so we can test both allow and deny.
         let engine = Arc::new(AuthzEngine::empty());
@@ -2568,7 +2663,8 @@ mod tests {
   principal == User::"alice",
   action == Action::"read",
   resource == Document::"report"
-);"#.to_string(),
+);"#
+            .to_string(),
             schema_json: None,
             entities_json: None,
         }];
@@ -2576,7 +2672,9 @@ mod tests {
 
         let gate_config = GateConfig::default();
         let config = Arc::new(tokio::sync::RwLock::new(gate_config.clone()));
-        let router = Arc::new(tokio::sync::RwLock::new(GateRouter::from_config(&gate_config)));
+        let router = Arc::new(tokio::sync::RwLock::new(GateRouter::from_config(
+            &gate_config,
+        )));
         let state = AdminState {
             cache: Arc::new(GateCache::from_config(&CacheConfig::default())),
             db: None,
@@ -2596,7 +2694,9 @@ mod tests {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         (status, json)
     }
@@ -2607,9 +2707,13 @@ mod tests {
             "principal": r#"User::"alice""#,
             "action": r#"Action::"read""#,
             "resource": r#"Document::"report""#,
-        })).await;
+        }))
+        .await;
         assert_eq!(status, http::StatusCode::OK, "simulate must return 200");
-        assert_eq!(json["decision"], "Allow", "matching permit must yield Allow");
+        assert_eq!(
+            json["decision"], "Allow",
+            "matching permit must yield Allow"
+        );
     }
 
     #[tokio::test]
@@ -2618,11 +2722,17 @@ mod tests {
             "principal": r#"User::"alice""#,
             "action": r#"Action::"read""#,
             "resource": r#"Document::"report""#,
-        })).await;
+        }))
+        .await;
         assert_eq!(status, http::StatusCode::OK);
-        let reasons = json["reasons"].as_array().expect("reasons must be an array");
+        let reasons = json["reasons"]
+            .as_array()
+            .expect("reasons must be an array");
         assert!(
-            reasons.iter().any(|r| r.as_str().map(|s| s.starts_with("test-permit")).unwrap_or(false)),
+            reasons.iter().any(|r| r
+                .as_str()
+                .map(|s| s.starts_with("test-permit"))
+                .unwrap_or(false)),
             "matching policy id must appear in reasons (Cedar may suffix #N); got: {reasons:?}",
         );
     }
@@ -2633,10 +2743,20 @@ mod tests {
             "principal": r#"User::"bob""#,
             "action": r#"Action::"read""#,
             "resource": r#"Document::"report""#,
-        })).await;
-        assert_eq!(status, http::StatusCode::OK, "simulate must return 200 even on deny");
-        assert_eq!(json["decision"], "Deny", "non-matching principal must yield Deny");
-        let reasons = json["reasons"].as_array().expect("reasons must be an array");
+        }))
+        .await;
+        assert_eq!(
+            status,
+            http::StatusCode::OK,
+            "simulate must return 200 even on deny"
+        );
+        assert_eq!(
+            json["decision"], "Deny",
+            "non-matching principal must yield Deny"
+        );
+        let reasons = json["reasons"]
+            .as_array()
+            .expect("reasons must be an array");
         assert!(reasons.is_empty(), "deny has no reasons; got: {reasons:?}");
     }
 
@@ -2646,14 +2766,21 @@ mod tests {
             "principal": "not-a-valid-uid",
             "action": r#"Action::"read""#,
             "resource": r#"Document::"report""#,
-        })).await;
+        }))
+        .await;
         assert_eq!(
             status,
             http::StatusCode::UNPROCESSABLE_ENTITY,
             "malformed EntityUid must return 422; body: {json}"
         );
-        assert_eq!(json["error"], "invalid_entity_uid", "error field must identify the issue");
-        assert_eq!(json["field"], "principal", "field must identify which field failed to parse");
+        assert_eq!(
+            json["error"], "invalid_entity_uid",
+            "error field must identify the issue"
+        );
+        assert_eq!(
+            json["field"], "principal",
+            "field must identify which field failed to parse"
+        );
     }
 
     // ── GET /policies/{id}/history route tests ───────────────────────────────
@@ -2711,8 +2838,16 @@ mod tests {
         // The test confirms both routes are registered and neither 404s.
         let res_history = app.clone().oneshot(req_history).await.unwrap();
         let res_id = app.oneshot(req_id).await.unwrap();
-        assert_ne!(res_history.status(), http::StatusCode::NOT_FOUND, "/history must be a registered route");
-        assert_ne!(res_id.status(), http::StatusCode::NOT_FOUND, "/{{id}} must still be a registered route");
+        assert_ne!(
+            res_history.status(),
+            http::StatusCode::NOT_FOUND,
+            "/history must be a registered route"
+        );
+        assert_ne!(
+            res_id.status(),
+            http::StatusCode::NOT_FOUND,
+            "/{{id}} must still be a registered route"
+        );
     }
 
     #[tokio::test]
@@ -2729,7 +2864,11 @@ mod tests {
         // The clamping happens at handler level; verify the value reaches the struct.
         assert_eq!(params_over.limit, 9999, "struct accepts the raw value");
         // And confirm min(9999, 100) is what the handler would pass to the DB.
-        assert_eq!(params_over.limit.min(100), 100, "effective_limit must be clamped to 100");
+        assert_eq!(
+            params_over.limit.min(100),
+            100,
+            "effective_limit must be clamped to 100"
+        );
     }
 
     // ── GET /policies/{id}/history integration tests (require live DB) ────────
@@ -2797,8 +2936,16 @@ mod tests {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
         // Without DB it returns 501, NOT 404 or 405 — confirms the route is registered.
-        assert_ne!(res.status(), http::StatusCode::NOT_FOUND, "/rollback must be a registered route");
-        assert_ne!(res.status(), http::StatusCode::METHOD_NOT_ALLOWED, "/rollback must accept POST");
+        assert_ne!(
+            res.status(),
+            http::StatusCode::NOT_FOUND,
+            "/rollback must be a registered route"
+        );
+        assert_ne!(
+            res.status(),
+            http::StatusCode::METHOD_NOT_ALLOWED,
+            "/rollback must accept POST"
+        );
     }
 
     #[tokio::test]

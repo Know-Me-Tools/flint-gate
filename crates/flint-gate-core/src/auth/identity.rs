@@ -1,4 +1,6 @@
-/// Universal identity representation returned by all authenticators.
+//! Universal identity representation returned by all authenticators.
+
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -33,6 +35,9 @@ pub struct Identity {
     pub schema_id: Option<String>,
     /// Session ID (for Kratos sessions).
     pub session_id: Option<String>,
+    /// Authoritative Kratos expiry. Cached sessions cannot outlive this instant.
+    #[serde(default)]
+    pub session_expires_at: Option<DateTime<Utc>>,
     /// Authentication assurance level.
     pub aal: Option<String>,
     /// Arbitrary extra key/value data from the authenticator.
@@ -62,6 +67,7 @@ impl Identity {
             "metadata_public": self.metadata_public,
             "schema_id": self.schema_id,
             "session_id": self.session_id,
+            "session_expires_at": self.session_expires_at,
             "aal": self.aal,
         })
     }
@@ -99,7 +105,11 @@ impl Identity {
         if self.kind != IdentityKind::User {
             return self.kind;
         }
-        match self.metadata_public.get(FLINT_KIND_CLAIM).and_then(Value::as_str) {
+        match self
+            .metadata_public
+            .get(FLINT_KIND_CLAIM)
+            .and_then(Value::as_str)
+        {
             Some("agent") => return IdentityKind::Agent,
             Some("service") => return IdentityKind::Service,
             _ => {}
@@ -189,10 +199,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(id.derived_kind(), IdentityKind::Agent);
-        assert_eq!(
-            principal_kind_for(&id),
-            crate::authz::PrincipalKind::Agent
-        );
+        assert_eq!(principal_kind_for(&id), crate::authz::PrincipalKind::Agent);
     }
 
     #[test]
@@ -254,7 +261,10 @@ mod tests {
         // derived_kind to escalate a human into a non-human principal.
         let mut meta = json!({ "flint_kind": "service", "org": "acme" });
         strip_untrusted_kind(&mut meta);
-        assert!(meta.get("flint_kind").is_none(), "flint_kind must be stripped");
+        assert!(
+            meta.get("flint_kind").is_none(),
+            "flint_kind must be stripped"
+        );
         assert_eq!(meta["org"], json!("acme"), "other metadata preserved");
         // A stripped identity classifies as User, not the forged Service.
         let id = Identity {

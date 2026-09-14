@@ -97,7 +97,6 @@ fn is_publishable(algorithm: &str) -> bool {
 ///
 /// HMAC keys are filtered out (see [`is_publishable`]), so a gate configured
 /// for HS256 yields `{"keys":[]}` rather than leaking a shared secret.
-#[must_use]
 pub fn build_jwks(keys: &[crate::db::JwtSigningKeyPublic]) -> anyhow::Result<JwkSet> {
     let mut jwks = Vec::new();
     for key in keys.iter().filter(|k| is_publishable(&k.algorithm)) {
@@ -291,6 +290,42 @@ mod tests {
                 .expect("usable EC verification key");
         }
         assert!(build_jwks(&[key("wrong-curve", "ES256")]).is_err());
+    }
+
+    #[test]
+    fn ec_jwks_verifies_a_signed_identity() {
+        use p256::pkcs8::EncodePrivateKey;
+        let private = p256::SecretKey::random(&mut rand::thread_rng());
+        let public = private
+            .public_key()
+            .to_public_key_pem(Default::default())
+            .expect("public PEM");
+        let private_pem = private
+            .to_pkcs8_pem(Default::default())
+            .expect("private PEM");
+        let mut row = key("ec", "ES256");
+        row.public_key = public;
+        let set = build_jwks(&[row]).expect("JWKS");
+        let standard: jsonwebtoken::jwk::JwkSet =
+            serde_json::from_value(serde_json::to_value(set).expect("JSON")).expect("standard JWK");
+        let decoding = jsonwebtoken::DecodingKey::from_jwk(standard.find("ec").expect("kid"))
+            .expect("decode key");
+        let encoding =
+            jsonwebtoken::EncodingKey::from_ec_pem(private_pem.as_bytes()).expect("encode key");
+        let claims = json!({"sub":"test-user","exp":Utc::now().timestamp()+60});
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256),
+            &claims,
+            &encoding,
+        )
+        .expect("signed JWT");
+        let verified = jsonwebtoken::decode::<serde_json::Value>(
+            &token,
+            &decoding,
+            &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256),
+        )
+        .expect("verified identity");
+        assert_eq!(verified.claims["sub"], "test-user");
     }
 
     #[test]

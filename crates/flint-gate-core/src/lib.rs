@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod approval;
 pub mod auth;
+pub mod authority;
 pub mod authz;
 pub mod cache;
 pub mod config;

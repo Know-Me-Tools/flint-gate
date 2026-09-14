@@ -5,9 +5,11 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use tracing::{debug, info};
 use uuid::Uuid;
+
+pub(crate) const CONFIGURATION_PUBLICATION_LOCK: i64 = 0x464C_494E_5443_4647;
 
 /// SHA-256 of `input`, hex-encoded. Used to store API-key hashes so raw secrets
 /// are never persisted. (Client secrets now use [`SecretHash`] — bcrypt.)
@@ -347,6 +349,11 @@ impl Database {
         config: &serde_json::Value,
         priority: i32,
     ) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("beginning route upsert transaction")?;
         sqlx::query(
             "INSERT INTO gate_routes (id, config, priority, updated_at) VALUES ($1, $2, $3, NOW())
              ON CONFLICT (id) DO UPDATE SET config = $2, priority = $3, updated_at = NOW()",
@@ -354,26 +361,33 @@ impl Database {
         .bind(id)
         .bind(config)
         .bind(priority)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("upserting route")?;
-
-        self.notify("routes").await?;
+        Self::record_config_change(&mut tx, "routes").await?;
+        tx.commit().await.context("committing route upsert")?;
         Ok(())
     }
 
     /// Delete a route by ID.
     pub async fn delete_route(&self, id: &str) -> Result<bool> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("beginning route delete transaction")?;
         let result = sqlx::query("DELETE FROM gate_routes WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .context("deleting route")?;
 
         if result.rows_affected() > 0 {
-            self.notify("routes").await?;
+            Self::record_config_change(&mut tx, "routes").await?;
+            tx.commit().await.context("committing route delete")?;
             Ok(true)
         } else {
+            tx.commit().await.context("committing empty route delete")?;
             Ok(false)
         }
     }
@@ -598,13 +612,12 @@ impl Database {
         // verify — best-effort: a failed upgrade never fails the auth.
         if SecretHash::needs_rehash(&stored_hash) {
             if let Ok(new_hash) = SecretHash::hash(client_secret) {
-                if let Err(e) = sqlx::query(
-                    "UPDATE oauth_clients SET secret_hash = $1 WHERE id = $2",
-                )
-                .bind(&new_hash)
-                .bind(id)
-                .execute(&self.pool)
-                .await
+                if let Err(e) =
+                    sqlx::query("UPDATE oauth_clients SET secret_hash = $1 WHERE id = $2")
+                        .bind(&new_hash)
+                        .bind(id)
+                        .execute(&self.pool)
+                        .await
                 {
                     tracing::warn!(error = %e, client_id, "client secret re-hash to bcrypt failed (ignored)");
                 } else {
@@ -734,13 +747,11 @@ impl Database {
     /// treated as **not revoked** here (unknown ids are governed by policy, not
     /// the revocation list); only an explicit `revoked` row denies.
     pub async fn is_agent_revoked(&self, id: &str) -> Result<bool> {
-        let row = sqlx::query(
-            "SELECT status FROM agent_identities WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("checking agent identity revocation")?;
+        let row = sqlx::query("SELECT status FROM agent_identities WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("checking agent identity revocation")?;
         Ok(row
             .map(|r| r.try_get::<String, _>("status").map(|s| s == "revoked"))
             .transpose()?
@@ -808,14 +819,28 @@ impl Database {
         Ok(total)
     }
 
-    /// Send a Postgres NOTIFY on the invalidation channel.
-    async fn notify(&self, payload: &str) -> Result<()> {
-        sqlx::query("SELECT pg_notify('flintgate_config_changed', $1)")
-            .bind(payload)
-            .execute(&self.pool)
+    /// Advance the durable configuration revision and enqueue its notification
+    /// in the same transaction as the configuration mutation. PostgreSQL sends
+    /// the notification only if the transaction commits.
+    async fn record_config_change(tx: &mut Transaction<'_, Postgres>, kind: &str) -> Result<i64> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(CONFIGURATION_PUBLICATION_LOCK)
+            .execute(&mut **tx)
             .await
-            .context("sending pg_notify")?;
-        Ok(())
+            .context("acquiring configuration publication lock")?;
+        let revision: i64 = sqlx::query_scalar(
+            "UPDATE config_revision SET revision = revision + 1
+             WHERE singleton = true RETURNING revision",
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .context("advancing durable configuration revision")?;
+        sqlx::query("SELECT pg_notify('flintgate_config_changed', $1)")
+            .bind(format!("{kind}:{revision}"))
+            .execute(&mut **tx)
+            .await
+            .context("enqueuing configuration notification")?;
+        Ok(revision)
     }
 
     /// Get the active JWT signing key from the database.
@@ -904,25 +929,34 @@ impl Database {
             .await
             .context("committing signing key rotation")?;
 
-        self.notify("signing_keys").await?;
         info!(key_id = id, algorithm, "JWT signing key activated");
         Ok(())
     }
 
     /// Deactivate a JWT signing key by ID.
     pub async fn deactivate_signing_key(&self, id: &str) -> Result<bool> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("beginning signing key deactivation transaction")?;
         let result = sqlx::query(
             "UPDATE jwt_signing_keys SET active = false WHERE id = $1 AND active = true",
         )
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("deactivating signing key")?;
 
         if result.rows_affected() > 0 {
-            self.notify("signing_keys").await?;
+            tx.commit()
+                .await
+                .context("committing signing key deactivation")?;
             Ok(true)
         } else {
+            tx.commit()
+                .await
+                .context("committing empty signing key deactivation")?;
             Ok(false)
         }
     }
@@ -1019,7 +1053,11 @@ impl Database {
         enabled: bool,
         written_by: Option<&str>,
     ) -> Result<()> {
-        let mut tx = self.pool.begin().await.context("beginning upsert_policy transaction")?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("beginning upsert_policy transaction")?;
 
         sqlx::query(
             "INSERT INTO authz_policies (id, policy_text, schema_json, entities_json, enabled, updated_at) \
@@ -1059,25 +1097,41 @@ impl Database {
         .await
         .context("inserting policy version row")?;
 
-        tx.commit().await.context("committing upsert_policy transaction")?;
+        Self::record_config_change(&mut tx, "policies").await?;
+        tx.commit()
+            .await
+            .context("committing upsert_policy transaction")?;
 
-        self.notify("policies").await?;
-        info!(policy_id = id, enabled, version = next_version, "authz policy upserted");
+        info!(
+            policy_id = id,
+            enabled,
+            version = next_version,
+            "authz policy upserted"
+        );
         Ok(())
     }
 
     /// Delete an authorization policy by id. Returns `false` if not found.
     pub async fn delete_policy(&self, id: &str) -> Result<bool> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("beginning policy delete transaction")?;
         let result = sqlx::query("DELETE FROM authz_policies WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .context("deleting authz policy")?;
 
         if result.rows_affected() > 0 {
-            self.notify("policies").await?;
+            Self::record_config_change(&mut tx, "policies").await?;
+            tx.commit().await.context("committing policy delete")?;
             Ok(true)
         } else {
+            tx.commit()
+                .await
+                .context("committing empty policy delete")?;
             Ok(false)
         }
     }
@@ -1668,7 +1722,10 @@ mod tests {
     #[test]
     fn secret_hash_verify_never_panics_on_garbage() {
         // An unparseable / truncated hash → false, never a panic.
-        assert!(!super::SecretHash::verify("x", "$2b$not-a-real-bcrypt-hash"));
+        assert!(!super::SecretHash::verify(
+            "x",
+            "$2b$not-a-real-bcrypt-hash"
+        ));
         assert!(!super::SecretHash::verify("x", ""));
         assert!(!super::SecretHash::verify("x", "short"));
     }
@@ -1861,7 +1918,11 @@ mod tests {
         assert_eq!(v2.written_by.as_deref(), Some("test-user"));
 
         // Unknown version returns None
-        assert!(db.get_policy_version(&policy_id, 99).await.unwrap().is_none());
+        assert!(db
+            .get_policy_version(&policy_id, 99)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     /// ON DELETE CASCADE: deleting a policy removes all its version rows.
@@ -1875,12 +1936,26 @@ mod tests {
         db.migrate().await.unwrap();
 
         let policy_id = format!("cascade-test-{}", uuid::Uuid::new_v4());
-        db.upsert_policy(&policy_id, "permit(principal, action, resource);", None, None, true, None)
-            .await
-            .unwrap();
-        db.upsert_policy(&policy_id, "forbid(principal, action, resource);", None, None, true, None)
-            .await
-            .unwrap();
+        db.upsert_policy(
+            &policy_id,
+            "permit(principal, action, resource);",
+            None,
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        db.upsert_policy(
+            &policy_id,
+            "forbid(principal, action, resource);",
+            None,
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Two version rows exist before delete
         let before = db.list_policy_versions(&policy_id, 0, 10).await.unwrap();
@@ -1890,13 +1965,12 @@ mod tests {
         assert!(db.delete_policy(&policy_id).await.unwrap());
 
         // Version rows are gone (ON DELETE CASCADE)
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM cedar_policy_versions WHERE policy_id = $1",
-        )
-        .bind(&policy_id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cedar_policy_versions WHERE policy_id = $1")
+                .bind(&policy_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
         assert_eq!(count, 0, "cascade delete must remove all version rows");
     }
 }

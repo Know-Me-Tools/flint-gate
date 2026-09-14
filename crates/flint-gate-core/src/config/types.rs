@@ -14,6 +14,8 @@ pub struct GateConfig {
     #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
+    pub authority: AuthorityConfig,
+    #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
     pub approval: ApprovalConfig,
@@ -161,15 +163,14 @@ impl GateConfig {
         }
         // Non-loopback exposure: require BOTH guards. `introspect_auth` only
         // matters when the introspection endpoint is actually mounted.
-        let introspect_guarded =
-            !self.oauth.introspection_enabled || self.oauth.introspect_auth;
+        let introspect_guarded = !self.oauth.introspection_enabled || self.oauth.introspect_auth;
         let rate_limited = self.oauth.rate_limit.enabled;
         // Strict cross-replica mode: when the operator demands a shared limiter
         // (`oauth.rate_limit.require_shared_backend`) but none is configured, the
         // per-replica governor cannot deliver the cross-replica ceiling they asked
         // for — refuse rather than silently under-enforce.
-        let shared_backend_ok = !self.oauth.rate_limit.require_shared_backend
-            || self.has_shared_ratelimit_backend();
+        let shared_backend_ok =
+            !self.oauth.rate_limit.require_shared_backend || self.has_shared_ratelimit_backend();
         if introspect_guarded && rate_limited && shared_backend_ok {
             OAuthExposurePosture::Enforce
         } else {
@@ -185,9 +186,7 @@ impl GateConfig {
     /// (`require_shared_backend`) genuinely refuses to start rather than falsely
     /// reporting a cross-replica limit that does not exist.
     pub fn has_shared_ratelimit_backend(&self) -> bool {
-        cfg!(feature = "redis-l2")
-            && self.cache.l2.enabled
-            && self.cache.l2.redis_url.is_some()
+        cfg!(feature = "redis-l2") && self.cache.l2.enabled && self.cache.l2.redis_url.is_some()
     }
 
     /// Lint the config for **under-governed agent surfaces** — operator
@@ -219,10 +218,7 @@ impl GateConfig {
 
     /// Lint an explicit route set against this config's sites + providers. Pure;
     /// deduplicates findings per `(route_id, reason)`.
-    pub fn agent_governance_lint_routes(
-        &self,
-        routes: &[RouteConfig],
-    ) -> Vec<GovernanceFinding> {
+    pub fn agent_governance_lint_routes(&self, routes: &[RouteConfig]) -> Vec<GovernanceFinding> {
         use std::collections::{HashMap, HashSet};
         let site_default: HashMap<&str, Option<&str>> = self
             .sites
@@ -232,9 +228,8 @@ impl GateConfig {
 
         let mut findings = Vec::new();
         let mut seen: HashSet<(String, GovernanceReason)> = HashSet::new();
-        let mut push = |findings: &mut Vec<GovernanceFinding>,
-                        route_id: &str,
-                        reason: GovernanceReason| {
+        let mut push =
+            |findings: &mut Vec<GovernanceFinding>, route_id: &str, reason: GovernanceReason| {
             if seen.insert((route_id.to_string(), reason)) {
                 findings.push(GovernanceFinding {
                     route_id: route_id.to_string(),
@@ -262,10 +257,7 @@ impl GateConfig {
             let agent_reachable = provider_name
                 .and_then(|n| self.auth_providers.get(n))
                 .is_some_and(|p| {
-                    matches!(
-                        p,
-                        AuthProviderConfig::Jwt(_) | AuthProviderConfig::Mcp(_)
-                    )
+                    matches!(p, AuthProviderConfig::Jwt(_) | AuthProviderConfig::Mcp(_))
                 });
 
             // The Lifetime+Agent finding is independent of reachability — it is
@@ -564,9 +556,7 @@ pub fn validate_upstream_url_scheme(
             ))
         }
     } else {
-        Err(format!(
-            "{field} must be an https:// URL (got {url:?})"
-        ))
+        Err(format!("{field} must be an https:// URL (got {url:?})"))
     }
 }
 
@@ -757,6 +747,41 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// Separate read-only connection to the ASO authority database.
+///
+/// This connection never receives Gate's schema migrations. Its runtime login
+/// must be an unprivileged member of `aso_authority_event_reader`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub database_url: String,
+    #[serde(default = "default_authority_source_key")]
+    pub source_key: String,
+    #[serde(default = "default_authority_max_connections")]
+    pub max_connections: u32,
+}
+
+fn default_authority_source_key() -> String {
+    "aso".to_string()
+}
+
+fn default_authority_max_connections() -> u32 {
+    2
+}
+
+impl Default for AuthorityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            database_url: String::new(),
+            source_key: default_authority_source_key(),
+            max_connections: default_authority_max_connections(),
+        }
+    }
+}
+
 /// Cache configuration (moka L1 + optional Redis L2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
@@ -833,6 +858,11 @@ pub enum AuthProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KratosAuthConfig {
     pub base_url: String,
+    /// Canonical issuer recorded by ASO for durable session authority events.
+    /// When omitted, authentication remains available but the distributed
+    /// authority session cache is bypassed.
+    #[serde(default)]
+    pub issuer: Option<String>,
     /// Forward the incoming session cookie to Kratos.
     #[serde(default = "default_true")]
     pub forward_cookies: bool,
@@ -1041,8 +1071,17 @@ pub enum PreRequestHook {
     MaxTokenBudget { config: MaxTokenBudgetConfig },
     /// Evaluate an embedded Cedar authorization policy for this route.
     Authorize { config: AuthorizeConfig },
+    /// Ask ASO to freshly authorize the original clinical request.
+    AsoClinicalAuthorize { config: AsoClinicalAuthorizeConfig },
     /// Inspect the request with a guardrail and optionally block it.
     Guardrail { config: GuardrailHookConfig },
+}
+
+/// Trusted, fixed callback endpoint; never rendered from request templates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsoClinicalAuthorizeConfig {
+    pub url: String,
 }
 
 /// A single post-response hook step.
@@ -1060,6 +1099,16 @@ pub struct ClaimsEnhancementConfig {
     #[serde(default)]
     pub inject_headers: HashMap<String, String>,
     pub mint_jwt: Option<MintJwtConfig>,
+    /// Resolve a fresh ASO grant and mint the fixed FRF replica claim set.
+    pub aso_replica_grant: Option<AsoReplicaGrantConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsoReplicaGrantConfig {
+    pub url: String,
+    pub audience: String,
+    pub max_ttl_seconds: u64,
 }
 
 /// JWT minting sub-config within claims_enhancement.
@@ -1516,7 +1565,11 @@ config:
             .iter()
             .map(|s| s.tag())
             .collect();
-        assert_eq!(tags.len(), 3, "each scope must key into a distinct namespace");
+        assert_eq!(
+            tags.len(),
+            3,
+            "each scope must key into a distinct namespace"
+        );
     }
 
     #[test]
@@ -1676,7 +1729,12 @@ config:
         // `..Default::default()` MUST yield introspect_auth=true — a derived
         // Default would give false and silently disable the introspection gate.
         assert!(OAuthConfig::default().introspect_auth);
-        assert!(OAuthConfig { ..Default::default() }.introspect_auth);
+        assert!(
+            OAuthConfig {
+                ..Default::default()
+            }
+            .introspect_auth
+        );
     }
 
     // ── OAuth Redis-outage posture: fail-closed default + lowercase wire ──────
@@ -1705,7 +1763,10 @@ config:
     fn oauth_backend_unavailable_serde_lowercase() {
         let cfg: OAuthConfig =
             serde_yaml::from_str("on_backend_unavailable: degrade").expect("parses degrade");
-        assert_eq!(cfg.on_backend_unavailable, BackendUnavailablePosture::Degrade);
+        assert_eq!(
+            cfg.on_backend_unavailable,
+            BackendUnavailablePosture::Degrade
+        );
         let cfg: OAuthConfig =
             serde_yaml::from_str("on_backend_unavailable: deny").expect("parses deny");
         assert_eq!(cfg.on_backend_unavailable, BackendUnavailablePosture::Deny);
@@ -1772,19 +1833,28 @@ config:
     #[test]
     fn exposure_allows_loopback_bind() {
         let c = exposure_cfg("127.0.0.1:4456", true, false, false);
-        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::AllowLoopback);
+        assert_eq!(
+            c.oauth_exposure_posture(),
+            OAuthExposurePosture::AllowLoopback
+        );
     }
 
     #[test]
     fn exposure_refuses_non_loopback_missing_introspect_auth() {
         let c = exposure_cfg("0.0.0.0:4456", true, false, true);
-        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+        assert_eq!(
+            c.oauth_exposure_posture(),
+            OAuthExposurePosture::RefuseStart
+        );
     }
 
     #[test]
     fn exposure_refuses_non_loopback_missing_rate_limit() {
         let c = exposure_cfg("0.0.0.0:4456", true, true, false);
-        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+        assert_eq!(
+            c.oauth_exposure_posture(),
+            OAuthExposurePosture::RefuseStart
+        );
     }
 
     #[test]
@@ -1810,7 +1880,12 @@ config:
     #[test]
     fn require_shared_backend_defaults_false() {
         assert!(!RateLimitConfig::default().require_shared_backend);
-        assert!(!GateConfig::default().oauth.rate_limit.require_shared_backend);
+        assert!(
+            !GateConfig::default()
+                .oauth
+                .rate_limit
+                .require_shared_backend
+        );
     }
 
     #[test]
@@ -1820,7 +1895,10 @@ config:
         let mut c = exposure_cfg("0.0.0.0:4456", true, true, true);
         c.oauth.rate_limit.require_shared_backend = true;
         assert!(!c.has_shared_ratelimit_backend());
-        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+        assert_eq!(
+            c.oauth_exposure_posture(),
+            OAuthExposurePosture::RefuseStart
+        );
     }
 
     #[cfg(feature = "redis-l2")]
@@ -1846,7 +1924,10 @@ config:
         c.cache.l2.enabled = true;
         c.cache.l2.redis_url = Some("redis://localhost:6379".into());
         assert!(!c.has_shared_ratelimit_backend());
-        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::RefuseStart);
+        assert_eq!(
+            c.oauth_exposure_posture(),
+            OAuthExposurePosture::RefuseStart
+        );
     }
 
     #[test]
@@ -1855,7 +1936,10 @@ config:
         // enforced — local dev must still start.
         let mut c = exposure_cfg("127.0.0.1:4456", true, true, true);
         c.oauth.rate_limit.require_shared_backend = true;
-        assert_eq!(c.oauth_exposure_posture(), OAuthExposurePosture::AllowLoopback);
+        assert_eq!(
+            c.oauth_exposure_posture(),
+            OAuthExposurePosture::AllowLoopback
+        );
     }
 
     #[test]
@@ -1885,8 +1969,7 @@ config:
     #[test]
     fn require_shared_backend_parses_from_yaml() {
         let cfg: RateLimitConfig =
-            serde_yaml::from_str("enabled: true\nrequire_shared_backend: true")
-                .expect("parses");
+            serde_yaml::from_str("enabled: true\nrequire_shared_backend: true").expect("parses");
         assert!(cfg.require_shared_backend);
         // Absent key → false (non-breaking default).
         let d: RateLimitConfig = serde_yaml::from_str("enabled: true").expect("parses");
@@ -1981,10 +2064,14 @@ config:
 
     const BUDGET_USER: &str = "    hooks:\n      pre_request:\n        - type: max_token_budget\n          config: { limit: 100, window: hour, scope: user }";
     const BUDGET_AGENT: &str = "    hooks:\n      pre_request:\n        - type: max_token_budget\n          config: { limit: 100, window: hour, scope: agent }\n        - type: authorize\n          config: {}";
-    const AUTHORIZE_ONLY: &str = "    hooks:\n      pre_request:\n        - type: authorize\n          config: {}";
+    const AUTHORIZE_ONLY: &str =
+        "    hooks:\n      pre_request:\n        - type: authorize\n          config: {}";
 
     fn reasons(c: &GateConfig) -> Vec<GovernanceReason> {
-        c.agent_governance_lint().into_iter().map(|f| f.reason).collect()
+        c.agent_governance_lint()
+            .into_iter()
+            .map(|f| f.reason)
+            .collect()
     }
 
     #[test]
@@ -2085,12 +2172,17 @@ config:
             "agent-reachable route with no authorize hook must produce governance findings"
         );
         assert!(
-            findings.iter().any(|f| f.reason == GovernanceReason::NoAuthorizeHook),
+            findings
+                .iter()
+                .any(|f| f.reason == GovernanceReason::NoAuthorizeHook),
             "missing authorize hook must surface as NoAuthorizeHook finding"
         );
         // Confirm: with strict=true and findings, startup should refuse.
         // (The actual bail! is in main.rs; here we assert the condition is met.)
-        assert!(c.server.strict_agent_governance, "strict mode should default to true");
+        assert!(
+            c.server.strict_agent_governance,
+            "strict mode should default to true"
+        );
     }
 
     /// task 5: strict mode on + agent-reachable route WITH authorize hook → no findings.
@@ -2103,7 +2195,10 @@ config:
             "agent-reachable route WITH authorize hook must produce no governance findings: {:?}",
             findings
         );
-        assert!(c.server.strict_agent_governance, "strict mode should default to true");
+        assert!(
+            c.server.strict_agent_governance,
+            "strict mode should default to true"
+        );
     }
 
     #[test]
@@ -2124,7 +2219,8 @@ config:
             },
         }];
         let f = base.agent_governance_lint_routes(&[extra]);
-        assert!(f.iter().any(|x| x.route_id == "db-route"
-            && x.reason == GovernanceReason::NonAgentScopedBudget));
+        assert!(f.iter().any(
+            |x| x.route_id == "db-route" && x.reason == GovernanceReason::NonAgentScopedBudget
+        ));
     }
 }

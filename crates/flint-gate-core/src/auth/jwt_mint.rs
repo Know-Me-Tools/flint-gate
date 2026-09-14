@@ -12,6 +12,39 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+pub const ASO_REPLICA_SCOPE: &str = "aso.replica.read";
+pub const ASO_PROJECTION_REVISION: u32 = 1;
+
+/// Server-derived values accepted by the dedicated ASO replica minter.
+/// There is no free-form claim map on this path.
+pub struct ReplicaMintGrant {
+    pub subject: Uuid,
+    pub audience: String,
+    pub tenant_id: Uuid,
+    pub authorization_revision: String,
+    pub originating_session_id: Uuid,
+    pub projection_revision: u32,
+    pub projection_ids: Vec<String>,
+    pub expires_at: chrono::DateTime<Utc>,
+    pub max_ttl_seconds: u64,
+}
+
+#[derive(serde::Serialize)]
+struct ReplicaTokenClaims<'a> {
+    iss: &'a str,
+    sub: Uuid,
+    aud: &'a str,
+    iat: i64,
+    exp: i64,
+    jti: Uuid,
+    tenant_id: Uuid,
+    scope: &'static str,
+    authorization_revision: &'a str,
+    originating_session_id: Uuid,
+    projection_revision: u32,
+    projection_ids: &'a [String],
+}
+
 /// Default `kid` when an asymmetric key is configured without an explicit id.
 /// Must match what the JWKS endpoint advertises for the same key.
 pub const DEFAULT_KEY_ID: &str = "flint-gate-key";
@@ -19,10 +52,7 @@ pub const DEFAULT_KEY_ID: &str = "flint-gate-key";
 /// Whether an algorithm is asymmetric, and so needs a `kid` for key selection.
 /// HMAC verifiers share the secret and have no key to choose between.
 fn is_asymmetric(alg: Algorithm) -> bool {
-    !matches!(
-        alg,
-        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
-    )
+    !matches!(alg, Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512)
 }
 
 /// A configured JWT minter. Created from [`JwtConfig`] or a DB-sourced key.
@@ -242,12 +272,48 @@ impl JwtMinter {
         header.kid = self.key_id.clone();
         encode(&header, &claims, &self.encoding_key).context("encoding JWT")
     }
+
+    /// Mint the narrow token consumed by the ASO relational replica lane.
+    pub fn mint_replica(&self, grant: &ReplicaMintGrant) -> Result<String> {
+        if grant.projection_revision != ASO_PROJECTION_REVISION {
+            bail!("unsupported ASO projection revision");
+        }
+        if grant.audience.trim().is_empty() || grant.max_ttl_seconds == 0 {
+            bail!("replica audience and TTL are required");
+        }
+        let now = Utc::now().timestamp();
+        let ttl_expiry = now.saturating_add(
+            i64::try_from(grant.max_ttl_seconds).context("replica TTL exceeds i64")?,
+        );
+        let exp = grant.expires_at.timestamp().min(ttl_expiry);
+        if exp <= now {
+            bail!("replica grant is expired");
+        }
+        let claims = ReplicaTokenClaims {
+            iss: &self.issuer,
+            sub: grant.subject,
+            aud: &grant.audience,
+            iat: now,
+            exp,
+            jti: Uuid::new_v4(),
+            tenant_id: grant.tenant_id,
+            scope: ASO_REPLICA_SCOPE,
+            authorization_revision: &grant.authorization_revision,
+            originating_session_id: grant.originating_session_id,
+            projection_revision: grant.projection_revision,
+            projection_ids: &grant.projection_ids,
+        };
+        let mut header = Header::new(self.algorithm);
+        header.kid = self.key_id.clone();
+        encode(&header, &claims, &self.encoding_key).context("encoding ASO replica JWT")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::types::JwtConfig;
+    use jsonwebtoken::{decode, DecodingKey, Validation};
 
     fn hs256_config() -> JwtConfig {
         JwtConfig {
@@ -283,5 +349,64 @@ mod tests {
         let extra = json!({"scope": "chat", "org": "acme"});
         let token = minter.mint(&identity, Some(&extra), Some(60)).unwrap();
         assert!(!token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replica_mint_emits_only_the_typed_allowlist_and_bounds_expiry() {
+        let minter = JwtMinter::from_config(&hs256_config()).await.unwrap();
+        let grant = ReplicaMintGrant {
+            subject: Uuid::from_u128(1),
+            audience: "frf-gateway".into(),
+            tenant_id: Uuid::from_u128(2),
+            authorization_revision: "membership:synthetic".into(),
+            originating_session_id: Uuid::from_u128(3),
+            projection_revision: ASO_PROJECTION_REVISION,
+            projection_ids: vec!["cases".into()],
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            max_ttl_seconds: 60,
+        };
+        let token = minter.mint_replica(&grant).unwrap();
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&["frf-gateway"]);
+        validation.set_issuer(&["test-issuer"]);
+        let decoded = decode::<Value>(
+            &token,
+            &DecodingKey::from_secret("test-secret-key-minimum-length".as_bytes()),
+            &validation,
+        )
+        .unwrap()
+        .claims;
+        let keys = decoded
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            [
+                "aud",
+                "authorization_revision",
+                "exp",
+                "iat",
+                "iss",
+                "jti",
+                "originating_session_id",
+                "projection_ids",
+                "projection_revision",
+                "scope",
+                "sub",
+                "tenant_id"
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+        );
+        assert_eq!(decoded["scope"], ASO_REPLICA_SCOPE);
+        assert_eq!(
+            decoded["originating_session_id"],
+            Uuid::from_u128(3).to_string()
+        );
+        assert!(decoded["exp"].as_i64().unwrap() <= Utc::now().timestamp() + 60);
     }
 }

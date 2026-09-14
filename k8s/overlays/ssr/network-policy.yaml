@@ -45,9 +45,15 @@ spec:
   policyTypes: ["Ingress", "Egress"]
   ingress:
     - from:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sansaba-workspace
+          podSelector:
             matchLabels:
               app.kubernetes.io/name: sansaba-workspace
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frf-gateway
       ports:
         - port: 4456
           protocol: TCP

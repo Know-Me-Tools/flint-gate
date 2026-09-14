@@ -26,6 +26,7 @@
 
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use p256::elliptic_curve::sec1::ToEncodedPoint;
 use rsa::{
     pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts, RsaPublicKey,
 };
@@ -58,6 +59,13 @@ pub struct Jwk {
     /// consumers use the standard `n`/`e` members above.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pem: Option<String>,
+    /// Standard EC curve name and unsigned, fixed-width public coordinates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crv: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<String>,
 }
 
 /// The JWKS document.
@@ -99,6 +107,52 @@ pub fn build_jwks(keys: &[crate::db::JwtSigningKeyPublic]) -> anyhow::Result<Jwk
         } else {
             (None, None)
         };
+        let (crv, x, y) = match key.algorithm.as_str() {
+            "ES256" => {
+                let point =
+                    p256::PublicKey::from_public_key_pem(&key.public_key)?.to_encoded_point(false);
+                (
+                    Some("P-256".into()),
+                    Some(
+                        URL_SAFE_NO_PAD.encode(
+                            point
+                                .x()
+                                .ok_or_else(|| anyhow::anyhow!("missing EC x coordinate"))?,
+                        ),
+                    ),
+                    Some(
+                        URL_SAFE_NO_PAD.encode(
+                            point
+                                .y()
+                                .ok_or_else(|| anyhow::anyhow!("missing EC y coordinate"))?,
+                        ),
+                    ),
+                )
+            }
+            "ES384" => {
+                let point =
+                    p384::PublicKey::from_public_key_pem(&key.public_key)?.to_encoded_point(false);
+                (
+                    Some("P-384".into()),
+                    Some(
+                        URL_SAFE_NO_PAD.encode(
+                            point
+                                .x()
+                                .ok_or_else(|| anyhow::anyhow!("missing EC x coordinate"))?,
+                        ),
+                    ),
+                    Some(
+                        URL_SAFE_NO_PAD.encode(
+                            point
+                                .y()
+                                .ok_or_else(|| anyhow::anyhow!("missing EC y coordinate"))?,
+                        ),
+                    ),
+                )
+            }
+            algorithm if algorithm.starts_with("ES") => anyhow::bail!("unsupported EC algorithm"),
+            _ => (None, None, None),
+        };
         jwks.push(Jwk {
             kty: if key.algorithm.starts_with("ES") {
                 "EC".to_string()
@@ -110,6 +164,9 @@ pub fn build_jwks(keys: &[crate::db::JwtSigningKeyPublic]) -> anyhow::Result<Jwk
             kid: key.id.clone(),
             n,
             e,
+            crv,
+            x,
+            y,
             pem: Some(key.public_key.clone()),
         });
     }
@@ -212,8 +269,28 @@ mod tests {
 
     #[test]
     fn marks_ec_keys_with_the_ec_key_type() {
-        let set = build_jwks(&[key("ec", "ES256")]).expect("valid JWKS");
-        assert_eq!(set.keys[0].kty, "EC");
+        for algorithm in ["ES256", "ES384"] {
+            let mut row = key("ec", algorithm);
+            row.public_key = if algorithm == "ES256" {
+                p256::SecretKey::random(&mut rand::thread_rng())
+                    .public_key()
+                    .to_public_key_pem(Default::default())
+                    .expect("EC PEM")
+            } else {
+                p384::SecretKey::random(&mut rand::thread_rng())
+                    .public_key()
+                    .to_public_key_pem(Default::default())
+                    .expect("EC PEM")
+            };
+            let set = build_jwks(&[row]).expect("valid JWKS");
+            assert_eq!(set.keys[0].kty, "EC");
+            let standard: jsonwebtoken::jwk::JwkSet =
+                serde_json::from_value(serde_json::to_value(set).expect("JSON"))
+                    .expect("standard JWKS");
+            jsonwebtoken::DecodingKey::from_jwk(standard.find("ec").expect("kid"))
+                .expect("usable EC verification key");
+        }
+        assert!(build_jwks(&[key("wrong-curve", "ES256")]).is_err());
     }
 
     #[test]

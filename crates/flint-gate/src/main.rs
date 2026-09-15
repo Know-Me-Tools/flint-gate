@@ -313,6 +313,14 @@ async fn main() -> Result<()> {
             let public_key = tokio::fs::read_to_string(public_key_path)
                 .await
                 .with_context(|| format!("reading public signing key from {public_key_path}"))?;
+            // Fail loudly here, not at runtime: jsonwebtoken only accepts
+            // PKCS#8 EC PEM, and an unparseable seeded key otherwise surfaces
+            // later as a silent fallback to the config key on every boot.
+            flint_gate_core::auth::jwt_mint::validate_signing_key_pem(
+                &initial_config.jwt.signing_algorithm,
+                &private_key,
+            )
+            .context("validating signing key before seeding")?;
             let key_id = initial_config
                 .jwt
                 .signing_key_id

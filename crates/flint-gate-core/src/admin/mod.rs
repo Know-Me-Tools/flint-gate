@@ -609,6 +609,19 @@ async fn create_signing_key_handler(
     Json(payload): Json<CreateSigningKeyRequest>,
 ) -> impl IntoResponse {
     if let Some(db) = &state.db {
+        // Reject unparseable key material up front (jsonwebtoken requires
+        // PKCS#8 for EC); otherwise the runtime silently falls back to the
+        // config key on every boot after rotation.
+        if let Err(e) = crate::auth::jwt_mint::validate_signing_key_pem(
+            &payload.algorithm,
+            &payload.private_key,
+        ) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error": format!("invalid signing key: {e:#}")})),
+            )
+                .into_response();
+        }
         match db
             .insert_signing_key(
                 &payload.id,

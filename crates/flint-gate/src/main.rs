@@ -292,8 +292,37 @@ async fn main() -> Result<()> {
                 if cli.require_database || cli.database_init_only {
                     return Err(e).context("database is required but flint-gate could not connect");
                 }
-                warn!(error = %e, "database connection failed; running without DB features");
-                None
+                // Degraded-boot path: Postgres is down right now (e.g. gate
+                // rolled before postgres in a restart wave). Fall back to a
+                // lazy pool so DB features recover on their own when Postgres
+                // returns, instead of running without a DB handle until the
+                // next pod restart. Migrations retry in the background.
+                warn!(error = %e, "database unavailable at startup; using lazy pool with background migration retry");
+                let d = Arc::new(Database::connect_lazy(
+                    &initial_config.database.url,
+                    initial_config.database.max_connections,
+                ));
+                {
+                    let d = Arc::clone(&d);
+                    tokio::spawn(async move {
+                        let mut backoff = std::time::Duration::from_secs(2);
+                        loop {
+                            match d.migrate().await {
+                                Ok(()) => {
+                                    info!("database recovered; migrations applied");
+                                    break;
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, retry_in_secs = backoff.as_secs(),
+                                          "background migration attempt failed");
+                                    tokio::time::sleep(backoff).await;
+                                    backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
+                                }
+                            }
+                        }
+                    });
+                }
+                Some(d)
             }
         }
     };

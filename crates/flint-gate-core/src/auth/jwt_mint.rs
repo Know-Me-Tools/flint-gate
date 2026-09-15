@@ -15,6 +15,49 @@ use uuid::Uuid;
 pub const ASO_REPLICA_SCOPE: &str = "aso.replica.read";
 pub const ASO_PROJECTION_REVISION: u32 = 1;
 
+/// Parse an algorithm name + private key into a jsonwebtoken encoding key.
+///
+/// Shared by DB-key loading and seed-time validation so both paths apply
+/// identical rules. Note jsonwebtoken 9 requires PKCS#8 PEM for EC keys
+/// (`-----BEGIN PRIVATE KEY-----`); a SEC1 `-----BEGIN EC PRIVATE KEY-----`
+/// fails here — convert with `openssl pkcs8 -topk8 -nocrypt`.
+fn parse_signing_key(algorithm: &str, private_key: &str) -> Result<(Algorithm, EncodingKey)> {
+    let algorithm = match algorithm {
+        "HS256" => Algorithm::HS256,
+        "HS384" => Algorithm::HS384,
+        "HS512" => Algorithm::HS512,
+        "RS256" => Algorithm::RS256,
+        "RS384" => Algorithm::RS384,
+        "RS512" => Algorithm::RS512,
+        "ES256" => Algorithm::ES256,
+        "ES384" => Algorithm::ES384,
+        other => bail!("unsupported signing key algorithm: {other}"),
+    };
+
+    let encoding_key = match algorithm {
+        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
+            EncodingKey::from_secret(private_key.as_bytes())
+        }
+        Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
+            EncodingKey::from_rsa_pem(private_key.as_bytes())
+                .context("parsing RSA PEM (PKCS#8 required)")?
+        }
+        Algorithm::ES256 | Algorithm::ES384 => EncodingKey::from_ec_pem(private_key.as_bytes())
+            .context("parsing EC PEM (PKCS#8 required; convert SEC1 with `openssl pkcs8 -topk8 -nocrypt`)")?,
+        other => bail!("unsupported signing key algorithm: {other:?}"),
+    };
+
+    Ok((algorithm, encoding_key))
+}
+
+/// Validate that signing-key material parses under the exact rules used when
+/// loading keys at runtime. Called at seed time (`--database-init-only`) so a
+/// malformed key fails the init job loudly instead of silently falling back
+/// to the config key on every boot.
+pub fn validate_signing_key_pem(algorithm: &str, private_key: &str) -> Result<()> {
+    parse_signing_key(algorithm, private_key).map(|_| ())
+}
+
 /// Server-derived values accepted by the dedicated ASO replica minter.
 /// There is no free-form claim map on this path.
 pub struct ReplicaMintGrant {
@@ -138,32 +181,7 @@ impl JwtMinter {
         issuer: &str,
         default_ttl_seconds: u64,
     ) -> Result<Self> {
-        let algorithm = match key.algorithm.as_str() {
-            "HS256" => Algorithm::HS256,
-            "HS384" => Algorithm::HS384,
-            "HS512" => Algorithm::HS512,
-            "RS256" => Algorithm::RS256,
-            "RS384" => Algorithm::RS384,
-            "RS512" => Algorithm::RS512,
-            "ES256" => Algorithm::ES256,
-            "ES384" => Algorithm::ES384,
-            other => bail!("unsupported algorithm in DB key: {other}"),
-        };
-
-        let encoding_key = match algorithm {
-            Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
-                EncodingKey::from_secret(key.private_key.as_bytes())
-            }
-            Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
-                EncodingKey::from_rsa_pem(key.private_key.as_bytes())
-                    .context("parsing DB-sourced RSA PEM")?
-            }
-            Algorithm::ES256 | Algorithm::ES384 => {
-                EncodingKey::from_ec_pem(key.private_key.as_bytes())
-                    .context("parsing DB-sourced EC PEM")?
-            }
-            _ => bail!("unsupported algorithm: {algorithm:?}"),
-        };
+        let (algorithm, encoding_key) = parse_signing_key(&key.algorithm, &key.private_key)?;
 
         Ok(Self {
             algorithm,

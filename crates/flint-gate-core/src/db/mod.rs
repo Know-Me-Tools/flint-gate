@@ -284,6 +284,18 @@ impl Database {
         Ok(Self { pool })
     }
 
+    /// Build a `Database` whose pool connects lazily — always succeeds, even
+    /// when Postgres is currently unreachable. Connections (and re-connections
+    /// after an outage) are established on demand, so DB features recover by
+    /// themselves once Postgres is back instead of requiring a pod restart.
+    pub fn connect_lazy(url: &str, max_connections: u32) -> Self {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(max_connections)
+            .connect_lazy(url)
+            .expect("connect_lazy only fails on malformed DATABASE_URL");
+        Self { pool }
+    }
+
     /// Return the underlying pool (e.g. for LISTEN/NOTIFY).
     pub fn pool(&self) -> PgPool {
         self.pool.clone()

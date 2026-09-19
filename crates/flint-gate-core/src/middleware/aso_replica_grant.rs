@@ -30,21 +30,25 @@ static GRANT_CLIENT: LazyLock<Result<reqwest::Client, ()>> = LazyLock::new(|| {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ProjectionId {
+    AnnotationTypes,
+    Annotations,
     Cases,
     CaseEvidence,
     EvidenceStates,
     EvidenceCitations,
-    Documents,
+    DocumentStatuses,
 }
 
 impl ProjectionId {
     fn claim_name(&self) -> &'static str {
         match self {
+            Self::AnnotationTypes => "annotation_types",
+            Self::Annotations => "annotations",
             Self::Cases => "cases",
             Self::CaseEvidence => "case_evidence",
             Self::EvidenceStates => "evidence_states",
             Self::EvidenceCitations => "evidence_citations",
-            Self::Documents => "documents",
+            Self::DocumentStatuses => "document_statuses",
         }
     }
 }
@@ -123,7 +127,7 @@ pub(super) async fn mint(
         .map(|projection| projection.id.claim_name().to_owned())
         .collect::<Vec<_>>();
     let unique = projection_ids.iter().collect::<BTreeSet<_>>();
-    if projection_ids.len() != 5 || unique.len() != 5 {
+    if projection_ids.len() != 7 || unique.len() != 7 {
         return Err(StatusCode::FORBIDDEN);
     }
     minter
@@ -197,9 +201,10 @@ mod tests {
             "projectionRevision": revision,
             "expiresAt": Utc::now() + chrono::Duration::minutes(5),
             "projections": [
+                {"id": "annotation_types"}, {"id": "annotations"},
                 {"id": "cases"}, {"id": "case_evidence"},
                 {"id": "evidence_states"}, {"id": "evidence_citations"},
-                {"id": "documents"}
+                {"id": "document_statuses"}
             ]
         })
     }
@@ -221,7 +226,7 @@ mod tests {
                 "practiceId",
                 Uuid::from_u128(3).to_string(),
             ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(grant(1)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(grant(ASO_PROJECTION_REVISION)))
             .expect(1)
             .mount(&server)
             .await;
@@ -254,6 +259,18 @@ mod tests {
         .claims;
         assert_eq!(claims["scope"], "aso.replica.read");
         assert_eq!(claims["tenant_id"], Uuid::from_u128(3).to_string());
+        assert_eq!(
+            claims["projection_ids"],
+            json!([
+                "annotation_types",
+                "annotations",
+                "cases",
+                "case_evidence",
+                "evidence_states",
+                "evidence_citations",
+                "document_statuses"
+            ])
+        );
         for rejected in ["table", "where", "columns", "role", "patient_id"] {
             assert!(claims.get(rejected).is_none());
         }

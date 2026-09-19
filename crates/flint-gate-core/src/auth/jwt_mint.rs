@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub const ASO_REPLICA_SCOPE: &str = "aso.replica.read";
-pub const ASO_PROJECTION_REVISION: u32 = 1;
+pub const ASO_PROJECTION_REVISION: u32 = 5;
 
 /// Parse an algorithm name + private key into a jsonwebtoken encoding key.
 ///
@@ -43,7 +43,9 @@ fn parse_signing_key(algorithm: &str, private_key: &str) -> Result<(Algorithm, E
                 .context("parsing RSA PEM (PKCS#8 required)")?
         }
         Algorithm::ES256 | Algorithm::ES384 => EncodingKey::from_ec_pem(private_key.as_bytes())
-            .context("parsing EC PEM (PKCS#8 required; convert SEC1 with `openssl pkcs8 -topk8 -nocrypt`)")?,
+            .context(
+            "parsing EC PEM (PKCS#8 required; convert SEC1 with `openssl pkcs8 -topk8 -nocrypt`)",
+        )?,
         other => bail!("unsupported signing key algorithm: {other:?}"),
     };
 

@@ -37,6 +37,7 @@ enum ProjectionId {
     EvidenceStates,
     EvidenceCitations,
     DocumentStatuses,
+    DocumentTaskStatuses,
 }
 
 impl ProjectionId {
@@ -49,6 +50,7 @@ impl ProjectionId {
             Self::EvidenceStates => "evidence_states",
             Self::EvidenceCitations => "evidence_citations",
             Self::DocumentStatuses => "document_statuses",
+            Self::DocumentTaskStatuses => "document_task_statuses",
         }
     }
 }
@@ -127,7 +129,7 @@ pub(super) async fn mint(
         .map(|projection| projection.id.claim_name().to_owned())
         .collect::<Vec<_>>();
     let unique = projection_ids.iter().collect::<BTreeSet<_>>();
-    if projection_ids.len() != 7 || unique.len() != 7 {
+    if projection_ids.len() != 8 || unique.len() != 8 {
         return Err(StatusCode::FORBIDDEN);
     }
     minter
@@ -204,7 +206,8 @@ mod tests {
                 {"id": "annotation_types"}, {"id": "annotations"},
                 {"id": "cases"}, {"id": "case_evidence"},
                 {"id": "evidence_states"}, {"id": "evidence_citations"},
-                {"id": "document_statuses"}
+                {"id": "document_statuses"},
+                {"id": "document_task_statuses"}
             ]
         })
     }
@@ -268,7 +271,8 @@ mod tests {
                 "case_evidence",
                 "evidence_states",
                 "evidence_citations",
-                "document_statuses"
+                "document_statuses",
+                "document_task_statuses"
             ])
         );
         for rejected in ["table", "where", "columns", "role", "patient_id"] {

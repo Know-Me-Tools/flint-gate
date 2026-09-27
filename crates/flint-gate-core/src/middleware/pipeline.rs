@@ -228,9 +228,6 @@ pub struct AppState {
     /// Shared human-in-the-loop approval routing table. Each stream task
     /// registers its pending approvals here; the Admin API resolves them.
     pub approval_manager: crate::approval::ApprovalManager,
-    /// Durable approval persistence backend (memory/postgres), selected via
-    /// `approval.backend`. Parallel to the in-process `approval_manager`.
-    pub approval_store: Arc<dyn crate::approval::durable::ApprovalStore + Send + Sync>,
     /// Shared Redis-backed window counters for authoritative token budgets and
     /// request-rate limits. `None` when the `redis-l2` feature is disabled or
     /// Redis is not configured — callers then use the Postgres windowed sum.

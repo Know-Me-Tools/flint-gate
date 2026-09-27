@@ -28,9 +28,13 @@ use crate::authz::{
     PolicyParseError, PolicyRecord, ReloadStatus, SUGAR_ID_PREFIX,
 };
 use crate::cache::GateCache;
-use crate::config::types::AgentToolPolicy;
+use crate::config::types::{AgentToolPolicy, AuthProviderConfig};
 use crate::config::SharedConfig;
 use crate::db::{AuditQuery, AuthzAuditDecision, Database};
+use crate::governed_effect::{
+    AuthenticatedAdmin, ChallengeDecision, GovernedEffectAuthorityProvider,
+    ExecutionOwnerAttestation, GovernedEffectRequest, RevalidateRequest,
+};
 use crate::proxy::SharedRouter;
 use crate::ratelimit::CredentialKeyExtractor;
 use axum::{
@@ -82,6 +86,8 @@ pub struct AdminState {
     pub authz: Arc<AuthzEngine>,
     /// Shared human-in-the-loop approval routing table.
     pub approval_manager: Arc<dyn ApprovalStore>,
+    /// Transport-neutral authority provider for exact governed effects.
+    pub governed_effects: Arc<dyn GovernedEffectAuthorityProvider>,
     /// Broadcast channel for admin-facing events (reload status, etc.).
     /// When `None`, SSE subscriptions return an empty stream (no-DB / test posture).
     pub admin_events: Option<tokio::sync::broadcast::Sender<AdminEvent>>,
@@ -206,6 +212,18 @@ pub fn admin_router_with_auth(
         .route("/approvals", get(list_approvals_handler))
         .route("/approvals/{id}", get(get_approval_handler))
         .route("/approvals/{id}/decision", post(decide_approval_handler))
+        .route(
+            "/authority/effects/evaluate",
+            post(evaluate_governed_effect_handler),
+        )
+        .route(
+            "/authority/effects/revalidate",
+            post(revalidate_governed_effect_handler),
+        )
+        .route(
+            "/authority/effects/{issuer}/{challenge_id}/decision",
+            post(decide_governed_effect_handler),
+        )
         .route("/policies/reload-status", get(reload_status_handler))
         .route("/policies/simulate", post(simulate_policy_handler))
         .route("/events", get(admin_events_handler))
@@ -1749,6 +1767,148 @@ async fn decide_approval_handler(
     }
 }
 
+async fn evaluate_governed_effect_handler(
+    State(state): State<AdminState>,
+    identity: Option<Extension<Identity>>,
+    Json(request): Json<GovernedEffectRequest>,
+) -> impl IntoResponse {
+    let Some(execution_owner) = trusted_execution_owner(&state, identity.as_ref()).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated P1 execution owner required"})),
+        )
+            .into_response();
+    };
+    match state
+        .governed_effects
+        .evaluate(request, execution_owner)
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "authority_provider_unavailable",
+                "message": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn revalidate_governed_effect_handler(
+    State(state): State<AdminState>,
+    identity: Option<Extension<Identity>>,
+    Json(request): Json<RevalidateRequest>,
+) -> impl IntoResponse {
+    let Some(execution_owner) = trusted_execution_owner(&state, identity.as_ref()).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated P1 execution owner required"})),
+        )
+            .into_response();
+    };
+    match state
+        .governed_effects
+        .revalidate(request, execution_owner)
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "authority_provider_unavailable",
+                "message": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GovernedEffectDecisionRequest {
+    decision: ChallengeDecision,
+}
+
+async fn trusted_execution_owner(
+    state: &AdminState,
+    identity: Option<&Extension<Identity>>,
+) -> Option<ExecutionOwnerAttestation> {
+    let identity = identity?;
+    let config = state.config.read().await;
+    let provider = &config.server.admin_auth.as_ref()?.provider;
+    let (fact_source, issuer) = match provider {
+        AuthProviderConfig::Jwt(provider) => {
+            ("flint-gate.admin-auth.jwt", provider.issuer.as_deref()?)
+        }
+        AuthProviderConfig::Mcp(provider) => {
+            ("flint-gate.admin-auth.mcp", provider.issuer.as_deref()?)
+        }
+        AuthProviderConfig::Kratos(provider) => {
+            ("flint-gate.admin-auth.kratos", provider.issuer.as_deref()?)
+        }
+        AuthProviderConfig::ApiKey(_) | AuthProviderConfig::Anonymous(_) => return None,
+    };
+    (!identity.id.trim().is_empty()).then(|| ExecutionOwnerAttestation {
+        fact_source: fact_source.to_owned(),
+        issuer: issuer.to_owned(),
+        subject: identity.id.clone(),
+    })
+}
+
+async fn decide_governed_effect_handler(
+    Path((issuer, challenge_id)): Path<(String, Uuid)>,
+    State(state): State<AdminState>,
+    identity: Option<Extension<Identity>>,
+    Json(payload): Json<GovernedEffectDecisionRequest>,
+) -> impl IntoResponse {
+    let Some(identity) = identity else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated administrator required"})),
+        )
+            .into_response();
+    };
+    let Some(attestation) = trusted_execution_owner(&state, Some(&identity)).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated administrator issuer required"})),
+        )
+            .into_response();
+    };
+    let admin = AuthenticatedAdmin {
+        issuer: attestation.issuer,
+        subject: attestation.subject,
+    };
+    match state
+        .governed_effects
+        .decide(&issuer, challenge_id, payload.decision, admin)
+        .await
+    {
+        Ok(true) => Json(json!({
+            "status": "ok",
+            "issuer": issuer,
+            "challenge_id": challenge_id,
+            "decision": payload.decision,
+        }))
+        .into_response(),
+        Ok(false) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "challenge missing, expired, or already decided"})),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "authority_provider_unavailable",
+                "message": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
 // ── NHI lifecycle (agent / service identities) ──────────────────────────────
 
 /// Payload for `POST /agent-identities` — issue a non-human identity.
@@ -2231,13 +2391,20 @@ mod tests {
         let gate_config = GateConfig::default();
         let config = Arc::new(tokio::sync::RwLock::new(gate_config.clone()));
         let router = Arc::new(tokio::sync::RwLock::new(Router::from_config(&gate_config)));
+        let authz = Arc::new(AuthzEngine::empty());
         AdminState {
             cache: Arc::new(GateCache::from_config(&CacheConfig::default())),
             db: None,
             router,
             config,
-            authz: Arc::new(AuthzEngine::empty()),
+            authz: Arc::clone(&authz),
             approval_manager: Arc::new(ApprovalManager::new()),
+            governed_effects: Arc::new(
+                crate::governed_effect::CedarGovernedEffectAuthority::new(
+                    authz,
+                    crate::governed_effect::MemoryChallengeStore::new(),
+                ),
+            ),
             admin_events: None,
         }
     }
@@ -2603,6 +2770,12 @@ mod tests {
             config,
             authz: Arc::clone(&engine),
             approval_manager: Arc::new(ApprovalManager::new()),
+            governed_effects: Arc::new(
+                crate::governed_effect::CedarGovernedEffectAuthority::new(
+                    Arc::clone(&engine),
+                    crate::governed_effect::MemoryChallengeStore::new(),
+                ),
+            ),
             admin_events: None,
         };
 
@@ -2693,8 +2866,14 @@ mod tests {
             db: None,
             router,
             config,
-            authz: engine,
+            authz: Arc::clone(&engine),
             approval_manager: Arc::new(ApprovalManager::new()),
+            governed_effects: Arc::new(
+                crate::governed_effect::CedarGovernedEffectAuthority::new(
+                    engine,
+                    crate::governed_effect::MemoryChallengeStore::new(),
+                ),
+            ),
             admin_events: None,
         };
 

@@ -39,6 +39,19 @@ whether Postgres-backed authority is available. Admin routes use the existing
 pinned-issuer authentication middleware; API-key and anonymous credentials
 cannot attest grants or execution-owner facts.
 
+Channel routes additionally separate two verified token scopes. BossFang/UAR
+execution credentials need `scope` (space-delimited) or `scp` (array) containing
+`afc.channel.effects.execute` for `/evaluate` and `/release`. A separate
+operator credential needs `afc.channel.grants.write` for grant creation and
+revocation. The same token may carry both only when explicitly issued both.
+The configured JWT or MCP admin authenticator must verify the token's signature,
+pin its `iss`, and verify its audience when configured; `sub` supplies the attested
+caller. Gate reads these scopes only from the verified `Identity` produced by
+that authenticator. Kratos public metadata is excluded because it may be
+self-service-writable. A bare authenticated token or a token with only the
+execution scope cannot mutate grants. These checks are additive to the
+matching grant issuer and Cedar evaluation.
+
 Gate does not become a scheduler, handler, transport cursor, or effect
 executor. BossFang retains route selection and reply delivery; Fabric carries
 the versioned envelope; UAR retains execution ownership.

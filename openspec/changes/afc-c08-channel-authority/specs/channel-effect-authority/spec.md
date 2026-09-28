@@ -10,6 +10,20 @@ source disclosure, recipient delivery, selected handler execution, scoped
 reply, or route reassignment for one source scope, recipient, handler, classification, and causal
 limit.
 
+#### Scenario: execution credential attempts grant mutation
+
+- **WHEN** a pinned-issuer token has only `afc.channel.effects.execute` and
+  calls a channel grant create or revoke route
+- **THEN** Gate returns `403 insufficient_channel_scope` and leaves the grant
+  unchanged
+
+#### Scenario: grant administrator attempts effect release
+
+- **WHEN** a pinned-issuer token has only `afc.channel.grants.write` and calls
+  evaluate or release
+- **THEN** Gate returns `403 insufficient_channel_scope` and issues no effect
+  receipt
+
 #### Scenario: route affinity is reassigned
 
 - **WHEN** BossFang proposes changing a retained route from its current

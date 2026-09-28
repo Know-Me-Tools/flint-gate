@@ -1971,6 +1971,43 @@ fn channel_authority_error(error: anyhow::Error) -> Response {
     (status, Json(json!({ "error": code }))).into_response()
 }
 
+const CHANNEL_GRANT_WRITE_SCOPE: &str = "afc.channel.grants.write";
+const CHANNEL_EFFECT_EXECUTE_SCOPE: &str = "afc.channel.effects.execute";
+
+/// The admin authenticator already verified JWT/MCP signatures and pinned
+/// issuer. Only their verified token scopes are used here; Kratos public
+/// metadata may be self-service-writable and is never channel authority.
+fn has_verified_channel_scope(identity: &Identity, required: &str) -> bool {
+    if identity.session_id.is_some()
+        || identity.id.trim().is_empty()
+        || identity.id == "unknown"
+    {
+        return false;
+    }
+    identity
+        .metadata_public
+        .get("scope")
+        .and_then(Value::as_str)
+        .is_some_and(|scopes| scopes.split_whitespace().any(|scope| scope == required))
+        || identity
+            .metadata_public
+            .get("scp")
+            .and_then(Value::as_array)
+            .is_some_and(|scopes| scopes.iter().any(|scope| scope.as_str() == Some(required)))
+        || identity
+            .extra
+            .get("mcp_scopes")
+            .is_some_and(|scopes| scopes.split_whitespace().any(|scope| scope == required))
+}
+
+fn channel_scope_denied(required: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({"error": "insufficient_channel_scope", "required_scope": required})),
+    )
+        .into_response()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChannelGrantRevokeRequest {
@@ -1989,6 +2026,11 @@ async fn put_channel_grant_handler(
         )
             .into_response();
     };
+    if !identity.as_ref().is_some_and(|identity| {
+        has_verified_channel_scope(&identity.0, CHANNEL_GRANT_WRITE_SCOPE)
+    }) {
+        return channel_scope_denied(CHANNEL_GRANT_WRITE_SCOPE);
+    }
     match state
         .governed_effects
         .put_channel_grant(
@@ -2020,6 +2062,11 @@ async fn revoke_channel_grant_handler(
         )
             .into_response();
     };
+    if !identity.as_ref().is_some_and(|identity| {
+        has_verified_channel_scope(&identity.0, CHANNEL_GRANT_WRITE_SCOPE)
+    }) {
+        return channel_scope_denied(CHANNEL_GRANT_WRITE_SCOPE);
+    }
     match state
         .governed_effects
         .revoke_channel_grant(
@@ -2057,6 +2104,11 @@ async fn evaluate_channel_effect_handler(
         )
             .into_response();
     };
+    if !identity.as_ref().is_some_and(|identity| {
+        has_verified_channel_scope(&identity.0, CHANNEL_EFFECT_EXECUTE_SCOPE)
+    }) {
+        return channel_scope_denied(CHANNEL_EFFECT_EXECUTE_SCOPE);
+    }
     match state
         .governed_effects
         .evaluate_channel_effect(request, owner)
@@ -2079,6 +2131,11 @@ async fn release_channel_effect_handler(
         )
             .into_response();
     };
+    if !identity.as_ref().is_some_and(|identity| {
+        has_verified_channel_scope(&identity.0, CHANNEL_EFFECT_EXECUTE_SCOPE)
+    }) {
+        return channel_scope_denied(CHANNEL_EFFECT_EXECUTE_SCOPE);
+    }
     match state
         .governed_effects
         .release_channel_effect(request, owner)

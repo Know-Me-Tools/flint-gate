@@ -20,6 +20,7 @@ pub enum ChannelAction {
     RecipientDelivery,
     HandlerExecution,
     ScopedReply,
+    RouteReassignment,
 }
 
 impl ChannelAction {
@@ -29,6 +30,7 @@ impl ChannelAction {
             Self::RecipientDelivery => "afc.channel:recipient-delivery/1",
             Self::HandlerExecution => "afc.channel:handler-execution/1",
             Self::ScopedReply => "afc.channel:scoped-reply/1",
+            Self::RouteReassignment => "afc.channel:route-reassignment/1",
         }
     }
 }
@@ -421,10 +423,11 @@ impl PostgresChannelAuthority {
         request: &ChannelEffectRequest,
         owner: &ExecutionOwnerAttestation,
     ) -> Result<String> {
-        let mut canonical = request.clone();
-        canonical.payload.sha256.make_ascii_lowercase();
+        // Bind the exact Cedar input. Case-folding the payload hex here while
+        // Cedar sees the original bytes would permit two policy inputs to
+        // share one effect identity.
         Ok(hex::encode(Sha256::digest(serde_json::to_vec(&(
-            canonical, owner,
+            request, owner,
         ))?)))
     }
 

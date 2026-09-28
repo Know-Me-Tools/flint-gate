@@ -12,8 +12,8 @@ released after a caller's grant assertion has become stale.
 
 Add `afc.channel-authority/1` as an additive private admin API. Gate persists
 issuer-scoped channel grants and exact effect receipts in Postgres. It treats
-source disclosure, recipient delivery, selected handler execution, and scoped
-reply as four distinct Cedar actions. The first evaluation creates a durable
+source disclosure, recipient delivery, selected handler execution, scoped
+reply, and route reassignment as five distinct Cedar actions. The first evaluation creates a durable
 eligibility receipt; queue release requires a separate request that rechecks
 the current Gate-owned grant revision and Cedar snapshot. Gate returns the
 current revisions and a separate release receipt. It never routes, queues,

@@ -6,9 +6,18 @@
 
 Gate SHALL persist issuer-scoped channel grants and their revisions independently
 of caller-supplied C02 `GrantRef` facts. A grant SHALL qualify exactly one of
-source disclosure, recipient delivery, selected handler execution, or scoped
-reply for one source scope, recipient, handler, classification, and causal
+source disclosure, recipient delivery, selected handler execution, scoped
+reply, or route reassignment for one source scope, recipient, handler, classification, and causal
 limit.
+
+#### Scenario: route affinity is reassigned
+
+- **WHEN** BossFang proposes changing a retained route from its current
+  revision to a chosen handler
+- **THEN** Gate requires an explicit `route_reassignment` grant and Cedar
+  permit bound to that expected route revision and chosen recipient/handler;
+  BossFang may perform its own route-state compare-and-swap only after a
+  fresh release receipt
 
 #### Scenario: a grant is revoked before queue release
 

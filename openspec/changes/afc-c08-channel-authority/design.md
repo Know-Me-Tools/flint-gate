@@ -17,6 +17,11 @@ digest, classification, and inherited causal budget. Gate hashes the canonical
 request together with the authenticated owner's attestation. Distinct actions
 have distinct Cedar action IDs and receipt identities. Scope mismatch, exhausted
 causal budget, revoked grant, or Cedar denial withholds the effect.
+`route_reassignment` is a fifth action. Its `route_revision` is the expected
+current affinity revision, and its recipient/handler identify the proposed
+destination. The Gate release receipt authorizes only that exact proposal;
+BossFang must still compare-and-swap its own durable route row. An ordinary
+message mention or generic handler-execution permit cannot change affinity.
 
 `POST /authority/channels/evaluate` records `eligible` or `withheld` but cannot
 release. `POST /authority/channels/release` requires the same effect identity

@@ -1946,7 +1946,7 @@ async fn channel_capabilities_handler(State(state): State<AdminState>) -> impl I
     Json(json!({
         "contract": CHANNEL_AUTHORITY_CONTRACT,
         "effect_protocol": crate::governed_effect::channel::CHANNEL_PROTOCOL,
-        "actions": ["source_disclosure", "recipient_delivery", "handler_execution", "scoped_reply"],
+        "actions": ["source_disclosure", "recipient_delivery", "handler_execution", "scoped_reply", "route_reassignment"],
         "grant_store": "gate_postgres",
         "configured": state.db.is_some(),
         "available": available,

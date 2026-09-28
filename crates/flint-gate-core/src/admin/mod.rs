@@ -31,9 +31,12 @@ use crate::cache::GateCache;
 use crate::config::types::{AgentToolPolicy, AuthProviderConfig};
 use crate::config::SharedConfig;
 use crate::db::{AuditQuery, AuthzAuditDecision, Database};
+use crate::governed_effect::channel::{
+    ChannelEffectRequest, ChannelGrantMutation, CHANNEL_AUTHORITY_CONTRACT,
+};
 use crate::governed_effect::{
-    AuthenticatedAdmin, ChallengeDecision, GovernedEffectAuthorityProvider,
-    ExecutionOwnerAttestation, GovernedEffectRequest, RevalidateRequest,
+    AuthenticatedAdmin, ChallengeDecision, ExecutionOwnerAttestation,
+    GovernedEffectAuthorityProvider, GovernedEffectRequest, RevalidateRequest,
 };
 use crate::proxy::SharedRouter;
 use crate::ratelimit::CredentialKeyExtractor;
@@ -223,6 +226,26 @@ pub fn admin_router_with_auth(
         .route(
             "/authority/effects/{issuer}/{challenge_id}/decision",
             post(decide_governed_effect_handler),
+        )
+        .route(
+            "/authority/channels/capabilities",
+            get(channel_capabilities_handler),
+        )
+        .route(
+            "/authority/channels/grants",
+            post(put_channel_grant_handler),
+        )
+        .route(
+            "/authority/channels/grants/{issuer}/{grant_id}/revoke",
+            post(revoke_channel_grant_handler),
+        )
+        .route(
+            "/authority/channels/evaluate",
+            post(evaluate_channel_effect_handler),
+        )
+        .route(
+            "/authority/channels/release",
+            post(release_channel_effect_handler),
         )
         .route("/policies/reload-status", get(reload_status_handler))
         .route("/policies/simulate", post(simulate_policy_handler))
@@ -1906,6 +1929,163 @@ async fn decide_governed_effect_handler(
             })),
         )
             .into_response(),
+    }
+}
+
+async fn channel_capabilities_handler(State(state): State<AdminState>) -> impl IntoResponse {
+    let available = if let Some(db) = state.db.as_ref() {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT to_regclass('governed_channel_grants') IS NOT NULL",
+        )
+        .fetch_one(&db.pool())
+        .await
+        .unwrap_or(false)
+    } else {
+        false
+    };
+    Json(json!({
+        "contract": CHANNEL_AUTHORITY_CONTRACT,
+        "effect_protocol": crate::governed_effect::channel::CHANNEL_PROTOCOL,
+        "actions": ["source_disclosure", "recipient_delivery", "handler_execution", "scoped_reply"],
+        "grant_store": "gate_postgres",
+        "configured": state.db.is_some(),
+        "available": available,
+        "release_requires_evaluation": true,
+    }))
+}
+
+fn channel_authority_error(error: anyhow::Error) -> Response {
+    let message = error.to_string();
+    let (status, code) = if message.starts_with("channel_grant_revision_conflict")
+        || message.starts_with("channel_effect_identity_collision")
+    {
+        (StatusCode::CONFLICT, "channel_authority_conflict")
+    } else if message.starts_with("invalid_channel_") {
+        (StatusCode::BAD_REQUEST, "invalid_channel_authority_request")
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "channel_authority_unavailable",
+        )
+    };
+    (status, Json(json!({ "error": code }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelGrantRevokeRequest {
+    expected_revision: i64,
+}
+
+async fn put_channel_grant_handler(
+    State(state): State<AdminState>,
+    identity: Option<Extension<Identity>>,
+    Json(mutation): Json<ChannelGrantMutation>,
+) -> Response {
+    let Some(admin) = trusted_execution_owner(&state, identity.as_ref()).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated_administrator_required"})),
+        )
+            .into_response();
+    };
+    match state
+        .governed_effects
+        .put_channel_grant(
+            mutation,
+            AuthenticatedAdmin {
+                issuer: admin.issuer,
+                subject: admin.subject,
+            },
+        )
+        .await
+    {
+        Ok(grant) => {
+            Json(json!({"contract": CHANNEL_AUTHORITY_CONTRACT, "grant": grant})).into_response()
+        }
+        Err(error) => channel_authority_error(error),
+    }
+}
+
+async fn revoke_channel_grant_handler(
+    Path((issuer, grant_id)): Path<(String, String)>,
+    State(state): State<AdminState>,
+    identity: Option<Extension<Identity>>,
+    Json(payload): Json<ChannelGrantRevokeRequest>,
+) -> Response {
+    let Some(admin) = trusted_execution_owner(&state, identity.as_ref()).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated_administrator_required"})),
+        )
+            .into_response();
+    };
+    match state
+        .governed_effects
+        .revoke_channel_grant(
+            &issuer,
+            &grant_id,
+            payload.expected_revision,
+            AuthenticatedAdmin {
+                issuer: admin.issuer,
+                subject: admin.subject,
+            },
+        )
+        .await
+    {
+        Ok(Some(grant)) => {
+            Json(json!({"contract": CHANNEL_AUTHORITY_CONTRACT, "grant": grant})).into_response()
+        }
+        Ok(None) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "channel_grant_revision_conflict"})),
+        )
+            .into_response(),
+        Err(error) => channel_authority_error(error),
+    }
+}
+
+async fn evaluate_channel_effect_handler(
+    State(state): State<AdminState>,
+    identity: Option<Extension<Identity>>,
+    Json(request): Json<ChannelEffectRequest>,
+) -> Response {
+    let Some(owner) = trusted_execution_owner(&state, identity.as_ref()).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated_execution_owner_required"})),
+        )
+            .into_response();
+    };
+    match state
+        .governed_effects
+        .evaluate_channel_effect(request, owner)
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => channel_authority_error(error),
+    }
+}
+
+async fn release_channel_effect_handler(
+    State(state): State<AdminState>,
+    identity: Option<Extension<Identity>>,
+    Json(request): Json<ChannelEffectRequest>,
+) -> Response {
+    let Some(owner) = trusted_execution_owner(&state, identity.as_ref()).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authenticated_execution_owner_required"})),
+        )
+            .into_response();
+    };
+    match state
+        .governed_effects
+        .release_channel_effect(request, owner)
+        .await
+    {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => channel_authority_error(error),
     }
 }
 

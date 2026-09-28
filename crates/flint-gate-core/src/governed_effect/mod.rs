@@ -3,8 +3,10 @@
 //! This module decides whether an already-described effect may run. It never
 //! executes, schedules, or retries the effect.
 
+pub mod channel;
 mod postgres;
 
+pub use channel::PostgresChannelAuthority;
 pub use postgres::PostgresChallengeStore;
 
 use crate::authz::{AuthzDecision, AuthzEngine, PrincipalKind};
@@ -303,12 +305,44 @@ pub trait GovernedEffectAuthorityProvider: Send + Sync {
         decision: ChallengeDecision,
         admin: AuthenticatedAdmin,
     ) -> Result<bool>;
+
+    async fn put_channel_grant(
+        &self,
+        _mutation: channel::ChannelGrantMutation,
+        _admin: AuthenticatedAdmin,
+    ) -> Result<channel::ChannelGrantState> {
+        Err(anyhow::anyhow!("durable_channel_authority_unavailable"))
+    }
+    async fn revoke_channel_grant(
+        &self,
+        _issuer: &str,
+        _grant_id: &str,
+        _expected_revision: i64,
+        _admin: AuthenticatedAdmin,
+    ) -> Result<Option<channel::ChannelGrantState>> {
+        Err(anyhow::anyhow!("durable_channel_authority_unavailable"))
+    }
+    async fn evaluate_channel_effect(
+        &self,
+        _request: channel::ChannelEffectRequest,
+        _execution_owner: ExecutionOwnerAttestation,
+    ) -> Result<channel::ChannelEffectDecision> {
+        Err(anyhow::anyhow!("durable_channel_authority_unavailable"))
+    }
+    async fn release_channel_effect(
+        &self,
+        _request: channel::ChannelEffectRequest,
+        _execution_owner: ExecutionOwnerAttestation,
+    ) -> Result<channel::ChannelEffectDecision> {
+        Err(anyhow::anyhow!("durable_channel_authority_unavailable"))
+    }
 }
 
 pub struct CedarGovernedEffectAuthority {
     authz: Arc<AuthzEngine>,
     challenges: Arc<dyn ChallengeStore>,
     challenge_ttl: chrono::Duration,
+    channel: Option<channel::PostgresChannelAuthority>,
 }
 
 impl CedarGovernedEffectAuthority {
@@ -317,7 +351,13 @@ impl CedarGovernedEffectAuthority {
             authz,
             challenges,
             challenge_ttl: chrono::Duration::minutes(5),
+            channel: None,
         }
+    }
+
+    pub fn with_channel_authority(mut self, channel: channel::PostgresChannelAuthority) -> Self {
+        self.channel = Some(channel);
+        self
     }
 
     fn binding(
@@ -369,7 +409,11 @@ impl CedarGovernedEffectAuthority {
         }
         if request.payload.algorithm != "sha256"
             || request.payload.sha256.len() != 64
-            || !request.payload.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !request
+                .payload
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
         {
             return Some("invalid_payload_digest");
         }
@@ -491,6 +535,56 @@ impl CedarGovernedEffectAuthority {
 
 #[async_trait]
 impl GovernedEffectAuthorityProvider for CedarGovernedEffectAuthority {
+    async fn put_channel_grant(
+        &self,
+        mutation: channel::ChannelGrantMutation,
+        admin: AuthenticatedAdmin,
+    ) -> Result<channel::ChannelGrantState> {
+        self.channel
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("durable_channel_authority_unavailable"))?
+            .put_grant(mutation, admin)
+            .await
+    }
+
+    async fn revoke_channel_grant(
+        &self,
+        issuer: &str,
+        grant_id: &str,
+        expected_revision: i64,
+        admin: AuthenticatedAdmin,
+    ) -> Result<Option<channel::ChannelGrantState>> {
+        self.channel
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("durable_channel_authority_unavailable"))?
+            .revoke_grant(issuer, grant_id, expected_revision, admin)
+            .await
+    }
+
+    async fn evaluate_channel_effect(
+        &self,
+        request: channel::ChannelEffectRequest,
+        execution_owner: ExecutionOwnerAttestation,
+    ) -> Result<channel::ChannelEffectDecision> {
+        self.channel
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("durable_channel_authority_unavailable"))?
+            .evaluate(&self.authz, request, execution_owner)
+            .await
+    }
+
+    async fn release_channel_effect(
+        &self,
+        request: channel::ChannelEffectRequest,
+        execution_owner: ExecutionOwnerAttestation,
+    ) -> Result<channel::ChannelEffectDecision> {
+        self.channel
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("durable_channel_authority_unavailable"))?
+            .release(&self.authz, request, execution_owner)
+            .await
+    }
+
     async fn evaluate(
         &self,
         request: GovernedEffectRequest,
@@ -585,7 +679,11 @@ impl GovernedEffectAuthorityProvider for CedarGovernedEffectAuthority {
                 reason,
             ));
         }
-        let Some(challenge) = self.challenges.load(&input.issuer, input.challenge_id).await? else {
+        let Some(challenge) = self
+            .challenges
+            .load(&input.issuer, input.challenge_id)
+            .await?
+        else {
             return Ok(Self::decision(
                 &input.request,
                 binding,

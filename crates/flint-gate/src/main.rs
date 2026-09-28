@@ -19,7 +19,7 @@ use flint_gate_core::config::{load_config, GateConfig, LookupRegistry};
 use flint_gate_core::db::Database;
 use flint_gate_core::governed_effect::{
     CedarGovernedEffectAuthority, ChallengeStore, GovernedEffectAuthorityProvider,
-    MemoryChallengeStore, PostgresChallengeStore,
+    MemoryChallengeStore, PostgresChallengeStore, PostgresChannelAuthority,
 };
 use flint_gate_core::middleware::{proxy_handler, AppState};
 use flint_gate_core::proxy::{Router as GateRouter, SharedRouter};
@@ -683,9 +683,13 @@ async fn main() -> Result<()> {
                 "unsupported approval.backend {backend:?}; expected memory or postgres"
             ),
         };
-    let governed_effects: Arc<dyn GovernedEffectAuthorityProvider> = Arc::new(
-        CedarGovernedEffectAuthority::new(Arc::clone(&authz), challenge_store),
-    );
+    let mut governed_authority =
+        CedarGovernedEffectAuthority::new(Arc::clone(&authz), challenge_store);
+    if let Some(database) = db.as_ref() {
+        governed_authority = governed_authority
+            .with_channel_authority(PostgresChannelAuthority::new(database.pool()));
+    }
+    let governed_effects: Arc<dyn GovernedEffectAuthorityProvider> = Arc::new(governed_authority);
 
     // 11. Assemble AppState
     let app_state = Arc::new(AppState {

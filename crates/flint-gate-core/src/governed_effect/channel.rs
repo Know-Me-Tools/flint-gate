@@ -592,15 +592,16 @@ impl PostgresChannelAuthority {
         if stage_record.is_none() && (release || evaluation.is_none()) {
             let result = sqlx::query(
                 "INSERT INTO governed_channel_effect_receipts
-                 (receipt_id, effect_id, stage, issuer, grant_id, grant_revision, action,
+                 (receipt_id, effect_id, action_id, stage, issuer, grant_id, grant_revision, action,
                   occurrence_id, request_sha256, policy_set_id, policy_revision,
                   policy_digest, disposition, reason, released_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-                         CASE WHEN $13 = 'released' THEN NOW() ELSE NULL END)
-                 ON CONFLICT (effect_id, stage) DO NOTHING",
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+                         CASE WHEN $14 = 'released' THEN NOW() ELSE NULL END)
+                 ON CONFLICT DO NOTHING",
             )
             .bind(receipt_id)
             .bind(request.effect_id)
+            .bind(request.causality.action_id)
             .bind(stage)
             .bind(&request.grant_issuer)
             .bind(&request.grant_id)

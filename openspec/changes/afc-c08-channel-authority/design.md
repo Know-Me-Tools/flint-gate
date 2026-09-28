@@ -31,6 +31,8 @@ stores a second receipt. Duplicate release returns `uncertain`, since Gate
 cannot know whether the caller executed the first release. A policy reload
 during the release check withholds the result. The caller must reconcile any
 uncertain external effect by its own stable action ID.
+Gate's receipt ledger also rejects a reused causal action ID for the same
+issuer/action/stage even if the caller changes the effect UUID.
 
 `GET /authority/channels/capabilities` reports the versioned contract and
 whether Postgres-backed authority is available. Admin routes use the existing

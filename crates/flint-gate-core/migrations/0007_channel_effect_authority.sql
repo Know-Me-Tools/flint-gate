@@ -14,6 +14,7 @@ CREATE TABLE governed_channel_grants (
 CREATE TABLE governed_channel_effect_receipts (
     receipt_id UUID PRIMARY KEY,
     effect_id UUID NOT NULL,
+    action_id UUID NOT NULL,
     stage TEXT NOT NULL CHECK (stage IN ('evaluate', 'release')),
     issuer TEXT NOT NULL,
     grant_id TEXT NOT NULL,
@@ -28,7 +29,8 @@ CREATE TABLE governed_channel_effect_receipts (
     reason TEXT NOT NULL,
     evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     released_at TIMESTAMPTZ,
-    UNIQUE (effect_id, stage)
+    UNIQUE (effect_id, stage),
+    UNIQUE (issuer, action_id, action, stage)
 );
 
 CREATE INDEX governed_channel_receipts_occurrence

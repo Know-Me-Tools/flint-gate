@@ -1,175 +1,166 @@
-name: Deploy Gateway
+name: Deploy to know-me
+
+# flint-gate runs only on the know-me cluster, which is managed by Argo CD from
+# Prometheus-AGS/know-me-cluster. This workflow never touches a cluster. On a
+# push to main it:
+#   1. dispatches Prometheus-AGS/flint-infra's images.yaml to build
+#      ghcr.io/prometheus-ags/flint-gate from this commit (the image the
+#      cluster pulls with its ghcr-pull secret),
+#   2. waits for that build and reads the new image digest,
+#   3. opens a PR in know-me-cluster bumping the pinned digest.
+# Merging that PR deploys. Rollback is reverting it.
+#
+# Required secret: KNOW_ME_GITOPS_TOKEN, a fine-grained token (or GitHub App
+# token) with:
+#   - Prometheus-AGS/flint-infra: Actions read and write (dispatch, watch)
+#   - Prometheus-AGS/know-me-cluster: Contents and Pull requests read and write
+#   - Prometheus-AGS packages: read (to look up the built digest)
 
 on:
   push:
     branches: [main]
     paths:
-      - "k8s/**"
       - "Dockerfile"
       - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/deploy-gateway.yml"
   workflow_dispatch:
-    inputs:
-      force_redeploy:
-        description: "Force redeploy even without file changes"
-        required: false
-        default: "false"
+
+concurrency:
+  group: deploy-know-me
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/flint-gate
-  K8S_NAMESPACE: flint-gate
-  CONTEXT: ssr
+  INFRA_REPO: Prometheus-AGS/flint-infra
+  INFRA_WORKFLOW: images.yaml
+  IMAGE_ORG: Prometheus-AGS
+  IMAGE: ghcr.io/prometheus-ags/flint-gate
+  GITOPS_REPO: Prometheus-AGS/know-me-cluster
+  GITOPS_FILE: namespaces/flint-core/manifests.yaml
 
 jobs:
-  build-and-push:
-    name: Build & push image
+  build-image:
+    name: Build image via flint-infra
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 90
     outputs:
-      image_tag: ${{ steps.meta.outputs.tags }}
-      short_sha: ${{ steps.sha.outputs.short }}
+      digest: ${{ steps.digest.outputs.digest }}
+    env:
+      GH_TOKEN: ${{ secrets.KNOW_ME_GITOPS_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set short SHA
-        id: sha
-        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy:
-    name: Deploy to ssr cluster
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    environment: production
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: "latest"
-
-      - name: Configure kubeconfig
+      - name: Dispatch flint-infra image build
+        id: dispatch
         run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
-          chmod 600 ~/.kube/config
-          kubectl config use-context ${{ env.CONTEXT }}
+          set -euo pipefail
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          gh workflow run "$INFRA_WORKFLOW" -R "$INFRA_REPO" \
+            -f component=flint-gate \
+            -f flint_gate_ref="$GITHUB_SHA" \
+            -f flint_forge_ref=main -f liter_llm_ref=main -f frf_ref=main
 
-      - name: Create namespace
+      - name: Find the dispatched run
+        id: run
+        env:
+          STARTED: ${{ steps.dispatch.outputs.started }}
         run: |
-          kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml \
-            | kubectl apply -f -
-
-      - name: Apply secrets
-        run: |
-          kubectl create secret generic flint-gate-secrets \
-            --namespace=${{ env.K8S_NAMESPACE }} \
-            --from-literal=database-url="${{ secrets.DATABASE_URL }}" \
-            --from-literal=jwt-secret="${{ secrets.FLINT_GATE_JWT_SECRET }}" \
-            --dry-run=client -o yaml \
-            | kubectl apply -f -
-
-      - name: Apply ConfigMap
-        run: |
-          kubectl apply -f k8s/configmap.yaml \
-            --namespace=${{ env.K8S_NAMESPACE }}
-
-      - name: Update image tag in deployment and apply
-        run: |
-          IMAGE_TAG="${{ env.IMAGE_NAME }}:sha-${{ needs.build-and-push.outputs.short_sha }}"
-          kubectl set image deployment/flint-gate \
-            flint-gate="${IMAGE_TAG}" \
-            --namespace=${{ env.K8S_NAMESPACE }} \
-            --dry-run=client
-          sed "s|flint-gate:latest|${IMAGE_TAG}|g" k8s/deployment.yaml \
-            | kubectl apply -f - --namespace=${{ env.K8S_NAMESPACE }}
-
-      - name: Apply Services, HPA, NetworkPolicy
-        run: |
-          kubectl apply -f k8s/service.yaml \
-            --namespace=${{ env.K8S_NAMESPACE }}
-          kubectl apply -f k8s/service-admin.yaml \
-            --namespace=${{ env.K8S_NAMESPACE }}
-          kubectl apply -f k8s/hpa.yaml \
-            --namespace=${{ env.K8S_NAMESPACE }}
-          kubectl apply -f k8s/network-policy.yaml \
-            --namespace=${{ env.K8S_NAMESPACE }}
-
-      - name: Apply Ingress (gate.sansabaroyalty.com)
-        run: |
-          kubectl apply -f k8s/ingress.yaml \
-            --namespace=${{ env.K8S_NAMESPACE }}
-
-      - name: Wait for rollout
-        run: |
-          kubectl rollout status deployment/flint-gate \
-            --namespace=${{ env.K8S_NAMESPACE }} \
-            --timeout=300s
-
-      - name: Wait for TLS certificate
-        run: |
-          echo "Waiting for cert-manager to issue certificate..."
-          for i in $(seq 1 30); do
-            STATUS=$(kubectl get certificate flint-gate-tls \
-              --namespace=${{ env.K8S_NAMESPACE }} \
-              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-            if [ "$STATUS" = "True" ]; then
-              echo "Certificate issued successfully"
-              break
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list -R "$INFRA_REPO" -w "$INFRA_WORKFLOW" -e workflow_dispatch -L 10 \
+              --json databaseId,createdAt \
+              --jq "[.[] | select(.createdAt >= \"$STARTED\")] | sort_by(.createdAt) | .[0].databaseId // empty")"
+            if [ -n "$run_id" ]; then
+              echo "id=$run_id" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-            echo "  attempt $i/30 — certificate not ready yet, waiting 10s..."
             sleep 10
           done
-          kubectl get certificate --namespace=${{ env.K8S_NAMESPACE }} || true
+          echo "::error::no $INFRA_WORKFLOW run appeared after dispatch" >&2
+          exit 1
 
-      - name: Smoke test
-        run: |
-          echo "Gateway IP: 4.249.218.170"
-          echo "Checking https://gate.sansabaroyalty.com/health ..."
-          # Give DNS/cert a moment if this is a first deploy
-          sleep 5
-          curl --fail --silent --max-time 15 \
-            https://gate.sansabaroyalty.com/health || \
-            echo "Warning: /health check failed — DNS may not have propagated yet"
+      - name: Wait for the build
+        run: gh run watch "${{ steps.run.outputs.id }}" -R "$INFRA_REPO" --exit-status --interval 30
 
-      - name: Summary
+      - name: Read the built digest
+        id: digest
+        env:
+          STARTED: ${{ steps.dispatch.outputs.started }}
+          RUN_ID: ${{ steps.run.outputs.id }}
         run: |
-          echo "### Deployment complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${{ env.IMAGE_NAME }}:sha-${{ needs.build-and-push.outputs.short_sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Namespace | \`${{ env.K8S_NAMESPACE }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Context | \`${{ env.CONTEXT }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Gateway | https://gate.sansabaroyalty.com |" >> $GITHUB_STEP_SUMMARY
-          echo "| Gateway IP | 4.249.218.170 |" >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          infra_sha="$(gh run view "$RUN_ID" -R "$INFRA_REPO" --json headSha --jq .headSha)"
+          # images.yaml tags the image sha-<flint-infra commit>; the tag moves on
+          # every rebuild of the same infra commit, so pick the version carrying
+          # that tag that was created after this dispatch.
+          digest="$(gh api "orgs/$IMAGE_ORG/packages/container/flint-gate/versions?per_page=20" \
+            --jq "[.[] | select((.metadata.container.tags | index(\"sha-$infra_sha\")) and .created_at >= \"$STARTED\")] | .[0].name // empty")"
+          if [ -z "$digest" ]; then
+            echo "::error::no flint-gate image tagged sha-$infra_sha created after $STARTED" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Built $IMAGE@$digest from $GITHUB_REPOSITORY@$GITHUB_SHA (flint-infra run $RUN_ID)" >> "$GITHUB_STEP_SUMMARY"
+
+  open-gitops-pr:
+    name: Open know-me-cluster digest PR
+    runs-on: ubuntu-latest
+    needs: build-image
+    env:
+      GH_TOKEN: ${{ secrets.KNOW_ME_GITOPS_TOKEN }}
+      DIGEST: ${{ needs.build-image.outputs.digest }}
+    steps:
+      - name: Checkout know-me-cluster
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.KNOW_ME_GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Bump the pinned digest
+        working-directory: gitops
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, sys
+          path = os.environ["GITOPS_FILE"]
+          digest = os.environ["DIGEST"]
+          if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+              sys.exit(f"unexpected digest: {digest!r}")
+          text = open(path).read()
+          pattern = r"(image: ghcr\.io/prometheus-ags/flint-gate@)sha256:[a-f0-9]{64}"
+          new, count = re.subn(pattern, r"\g<1>" + digest, text)
+          if count != 1:
+              sys.exit(f"expected exactly one flint-gate image line, found {count}")
+          if new == text:
+              print("digest already pinned; nothing to do")
+          open(path, "w").write(new)
+          PY
+
+      - name: Open the PR
+        working-directory: gitops
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "know-me-cluster already pins $DIGEST" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          short="${GITHUB_SHA::7}"
+          branch="deploy/flint-gate-$short"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "deploy: flint-gate $short" \
+            -m "Pins $IMAGE@$DIGEST, built by $INFRA_REPO $INFRA_WORKFLOW from $GITHUB_REPOSITORY@$GITHUB_SHA. Rollback: revert this commit."
+          git push -u origin "$branch"
+          gh pr create -R "$GITOPS_REPO" --base main --head "$branch" \
+            --title "deploy: flint-gate $short" \
+            --body "Pins \`$IMAGE@$DIGEST\`.
+
+          - Built by \`$INFRA_REPO\` \`$INFRA_WORKFLOW\` from \`$GITHUB_REPOSITORY@$GITHUB_SHA\`.
+          - Merging deploys through Argo CD (\`flint-core\`). Rollback: revert this PR.
+          - Check after merge: gate pods roll to the new digest and \`/.well-known/jwks.json\` serves (it is the liveness probe)."
+          echo "Opened know-me-cluster PR for $IMAGE@$DIGEST" >> "$GITHUB_STEP_SUMMARY"

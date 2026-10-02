@@ -10,11 +10,11 @@ name: Deploy to know-me
 #   3. opens a PR in know-me-cluster bumping the pinned digest.
 # Merging that PR deploys. Rollback is reverting it.
 #
-# Required secret: KNOW_ME_GITOPS_TOKEN, a fine-grained token (or GitHub App
-# token) with:
-#   - Prometheus-AGS/flint-infra: Actions read and write (dispatch, watch)
+# Required secret: KNOW_ME_GITOPS_TOKEN, a fine-grained token whose resource
+# owner is Prometheus-AGS (or a GitHub App token) with:
+#   - Prometheus-AGS/flint-infra: Actions read and write (dispatch, watch,
+#     download the digests-flint-gate artifact)
 #   - Prometheus-AGS/know-me-cluster: Contents and Pull requests read and write
-#   - Prometheus-AGS packages: read (to look up the built digest)
 
 on:
   push:
@@ -37,7 +37,6 @@ permissions:
 env:
   INFRA_REPO: Prometheus-AGS/flint-infra
   INFRA_WORKFLOW: images.yaml
-  IMAGE_ORG: Prometheus-AGS
   IMAGE: ghcr.io/prometheus-ags/flint-gate
   GITOPS_REPO: Prometheus-AGS/know-me-cluster
   GITOPS_FILE: namespaces/flint-core/manifests.yaml
@@ -88,18 +87,16 @@ jobs:
       - name: Read the built digest
         id: digest
         env:
-          STARTED: ${{ steps.dispatch.outputs.started }}
           RUN_ID: ${{ steps.run.outputs.id }}
         run: |
           set -euo pipefail
-          infra_sha="$(gh run view "$RUN_ID" -R "$INFRA_REPO" --json headSha --jq .headSha)"
-          # images.yaml tags the image sha-<flint-infra commit>; the tag moves on
-          # every rebuild of the same infra commit, so pick the version carrying
-          # that tag that was created after this dispatch.
-          digest="$(gh api "orgs/$IMAGE_ORG/packages/container/flint-gate/versions?per_page=20" \
-            --jq "[.[] | select((.metadata.container.tags | index(\"sha-$infra_sha\")) and .created_at >= \"$STARTED\")] | .[0].name // empty")"
+          # images.yaml uploads digests-flint-gate holding "flint-gate@sha256:...".
+          # Reading it needs only Actions read, unlike the packages API, which
+          # rejects fine-grained tokens.
+          gh run download "$RUN_ID" -R "$INFRA_REPO" -n digests-flint-gate -D digests
+          digest="$(sed -n 's/^flint-gate@//p' digests/flint-gate.txt | head -n1)"
           if [ -z "$digest" ]; then
-            echo "::error::no flint-gate image tagged sha-$infra_sha created after $STARTED" >&2
+            echo "::error::digests-flint-gate artifact from run $RUN_ID has no flint-gate digest" >&2
             exit 1
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"

@@ -10,6 +10,7 @@ use cedar_policy::{
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tracing::{error, warn};
 use uuid::Uuid;
 
@@ -171,6 +172,14 @@ pub struct ReloadStatus {
     pub last_reload_at: Option<DateTime<Utc>>,
 }
 
+/// Content-addressed identity of the exact Cedar policy set active in Gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivePolicySet {
+    pub set_id: String,
+    pub revision: String,
+    pub digest: String,
+}
+
 impl Default for ReloadStatus {
     fn default() -> Self {
         Self {
@@ -272,6 +281,25 @@ impl AuthzEngine {
     /// Load the current snapshot of the bundle (lock-free).
     pub fn snapshot(&self) -> Arc<CedarBundle> {
         self.bundle.load_full()
+    }
+
+    /// Resolve the active policy identity inside Gate. Callers cannot supply or
+    /// override this value; both `revision` and `digest` are content-addressed
+    /// from a sorted rendering of the immutable Cedar snapshot.
+    pub fn active_policy_set(&self) -> ActivePolicySet {
+        let snapshot = self.snapshot();
+        let mut policies: Vec<String> = snapshot
+            .policies()
+            .policies()
+            .map(ToString::to_string)
+            .collect();
+        policies.sort();
+        let digest = hex::encode(Sha256::digest(policies.join("\n---\n").as_bytes()));
+        ActivePolicySet {
+            set_id: "flint-gate:cedar:active".to_owned(),
+            revision: format!("content:{digest}"),
+            digest: format!("sha256:{digest}"),
+        }
     }
 
     /// Create a request-scoped engine pinned to the current immutable bundle.

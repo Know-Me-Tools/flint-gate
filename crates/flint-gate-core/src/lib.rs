@@ -7,6 +7,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod guardrail;
+pub mod governed_effect;
 pub mod metrics;
 pub mod middleware;
 pub mod proxy;

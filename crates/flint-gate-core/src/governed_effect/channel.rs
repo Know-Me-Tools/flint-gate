@@ -405,7 +405,8 @@ impl PostgresChannelAuthority {
             &request.route_revision,
         ))
         .unwrap_or_default();
-        let context = serde_json::to_value(request).unwrap_or_default();
+        let mut context = serde_json::to_value(request).unwrap_or_default();
+        Self::remove_null_context_values(&mut context);
         match authz.authorize_as(
             request.identity.subject_kind.into(),
             &request.identity.subject,
@@ -416,6 +417,24 @@ impl PostgresChannelAuthority {
             AuthzDecision::Allow => None,
             AuthzDecision::Deny => Some("channel_policy_denied"),
             AuthzDecision::RequireApproval(_) => Some("channel_policy_approval_required"),
+        }
+    }
+
+    fn remove_null_context_values(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                fields.retain(|_, field| !field.is_null());
+                fields
+                    .values_mut()
+                    .for_each(Self::remove_null_context_values);
+            }
+            serde_json::Value::Array(items) => {
+                items.retain(|item| !item.is_null());
+                items
+                    .iter_mut()
+                    .for_each(Self::remove_null_context_values);
+            }
+            _ => {}
         }
     }
 

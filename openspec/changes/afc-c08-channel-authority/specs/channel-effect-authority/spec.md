@@ -54,6 +54,24 @@ authenticated execution owner, and causal budget. Evaluation and release SHALL
 have different receipt IDs and report contract, grant revision, policy set,
 policy revision, and digest.
 
+The causal budget's remaining depth and fanout SHALL describe capacity after
+the current admitted action. A zero value SHALL permit that current terminal
+effect but SHALL NOT authorize another descendant or sibling effect. Gate SHALL
+continue to withhold values above the matching grant maxima and repeated routes.
+
+#### Scenario: a terminal scoped reply is evaluated
+
+- **WHEN** BossFang submits an admitted scoped reply whose remaining depth and
+  fanout are zero and whose current route is absent from the visited-route history
+- **THEN** Gate evaluates that current effect against its grant and Cedar policy
+  instead of treating the post-admission zero values as exhausted authority
+
+#### Scenario: a route repeats or exceeds its grant budget
+
+- **WHEN** an effect repeats its current route or reports remaining depth or
+  fanout above the matching grant maximum
+- **THEN** Gate withholds the effect and issues no release permit
+
 #### Scenario: a queued effect is released
 
 - **WHEN** the exact prior evaluation was eligible and the current grant and

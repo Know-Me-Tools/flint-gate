@@ -16,7 +16,11 @@ sender scope, selected recipient and handler, route revision, SHA-256 payload
 digest, classification, and inherited causal budget. Gate hashes the canonical
 request together with the authenticated owner's attestation. Distinct actions
 have distinct Cedar action IDs and receipt identities. Scope mismatch, exhausted
-causal budget, revoked grant, or Cedar denial withholds the effect.
+causal budget, revoked grant, or Cedar denial withholds the effect. The request's
+remaining depth and fanout count capacity after the current action was admitted,
+so zero is a valid terminal value for that effect. Gate still withholds values
+above the grant maxima and any request whose current route already appears in
+its visited-route history.
 `route_reassignment` is a fifth action. Its `route_revision` is the expected
 current affinity revision, and its recipient/handler identify the proposed
 destination. The Gate release receipt authorizes only that exact proposal;

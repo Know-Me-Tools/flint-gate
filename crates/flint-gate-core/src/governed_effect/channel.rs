@@ -351,12 +351,14 @@ impl PostgresChannelAuthority {
         {
             return Some("invalid_channel_identity");
         }
-        if request.causality.remaining_depth == 0
-            || request.causality.remaining_fanout == 0
-            || request
-                .causality
-                .visited_routes
-                .contains(&request.causality.route_identity)
+        // These counters describe capacity remaining after the current action
+        // was admitted. Zero therefore represents a valid terminal effect;
+        // grant maxima reject over-budget values below, while route history
+        // independently rejects cycles.
+        if request
+            .causality
+            .visited_routes
+            .contains(&request.causality.route_identity)
         {
             return Some("channel_causal_budget_exhausted_or_route_repeated");
         }

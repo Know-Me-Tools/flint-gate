@@ -394,3 +394,10 @@ routes:
           config:
             inject_headers:
               X-User-Id: "{{ identity.id }}"
+
+# ─── Envoy external authorization ─────────────────────────────────────────────
+# `/ext-authz/<original path>` on the proxy port answers Envoy ext_authz
+# (HTTP service) checks: 200 + `Authorization: Bearer <gate JWT>` on allow,
+# 401/403 on deny. Off by default; see docs/docs/configuration.md (`ext_authz`).
+ext_authz:
+  enabled: false

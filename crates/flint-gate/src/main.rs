@@ -740,7 +740,20 @@ async fn main() -> Result<()> {
                 }
             }),
         )
-        .fallback(any(proxy_handler))
+        .fallback(any(proxy_handler));
+    // Envoy external-authorization check endpoint (opt-in: it hands a minted
+    // bearer to any caller with a valid route credential).
+    if initial_config.ext_authz.enabled {
+        use flint_gate_core::middleware::ext_authz::{ext_authz_handler, EXT_AUTHZ_ROUTES};
+        for path in EXT_AUTHZ_ROUTES {
+            proxy_app = proxy_app.route(path, any(ext_authz_handler));
+        }
+        info!(
+            path = flint_gate_core::middleware::ext_authz::EXT_AUTHZ_PATH,
+            "Envoy ext_authz check endpoint enabled"
+        );
+    }
+    let mut proxy_app = proxy_app
         .with_state(Arc::clone(&app_state))
         .layer(TraceLayer::new_for_http());
 

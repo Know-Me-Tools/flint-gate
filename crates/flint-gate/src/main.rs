@@ -4,9 +4,6 @@
 //!   CLI flags  >  environment variables  >  config.yaml
 
 use flint_gate_core::admin::{AdminEvent, AdminState};
-use flint_gate_core::approval::durable::{
-    ApprovalStore, MemoryApprovalStore, PostgresApprovalStore,
-};
 use flint_gate_core::auth::{build_authenticators, JwtMinter, SharedJwtMinter};
 use flint_gate_core::authority::{
     AuthorityConsumer, AuthorityFenceStore, AuthorityReadiness, PostgresAuthorityCursorStore,
@@ -20,6 +17,10 @@ use flint_gate_core::cache::{
 };
 use flint_gate_core::config::{load_config, GateConfig, LookupRegistry};
 use flint_gate_core::db::Database;
+use flint_gate_core::governed_effect::{
+    CedarGovernedEffectAuthority, ChallengeStore, GovernedEffectAuthorityProvider,
+    MemoryChallengeStore, PostgresChallengeStore,
+};
 use flint_gate_core::middleware::{proxy_handler, AppState};
 use flint_gate_core::proxy::{Router as GateRouter, SharedRouter};
 
@@ -660,26 +661,31 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 10e. Build the durable approval store (backend selected by config / env).
-    let approval_store: Arc<dyn ApprovalStore + Send + Sync> =
+    // 10e. Build the governed-effect challenge store selected by config.
+    // This is the live store used by evaluate/decision/revalidate, not a
+    // parallel object retained only in application state.
+    let challenge_store: Arc<dyn ChallengeStore> =
         match initial_config.approval.backend.as_str() {
-            "postgres" => {
-                if let Some(ref d) = db {
-                    info!("approval store: postgres (durable, cross-replica)");
-                    Arc::new(PostgresApprovalStore::new(d.pool()))
-                } else {
-                    warn!(
-                        "approval.backend=postgres requested but no database URL configured; \
-                         falling back to memory store"
-                    );
-                    MemoryApprovalStore::new()
+            "postgres" => match db.as_ref() {
+                Some(database) => {
+                    info!("governed-effect approvals: postgres (durable, cross-replica)");
+                    Arc::new(PostgresChallengeStore::new(database.pool()))
                 }
+                None => anyhow::bail!(
+                    "approval.backend=postgres requires database.url; refusing to weaken durable approvals to memory"
+                ),
+            },
+            "memory" => {
+                info!("governed-effect approvals: memory (single-replica)");
+                MemoryChallengeStore::new()
             }
-            _ => {
-                info!("approval store: memory (single-replica)");
-                MemoryApprovalStore::new()
-            }
+            backend => anyhow::bail!(
+                "unsupported approval.backend {backend:?}; expected memory or postgres"
+            ),
         };
+    let governed_effects: Arc<dyn GovernedEffectAuthorityProvider> = Arc::new(
+        CedarGovernedEffectAuthority::new(Arc::clone(&authz), challenge_store),
+    );
 
     // 11. Assemble AppState
     let app_state = Arc::new(AppState {
@@ -693,7 +699,6 @@ async fn main() -> Result<()> {
         lookup_registry: Arc::clone(&lookup_registry),
         authz: Arc::clone(&authz),
         approval_manager: approval_manager.clone(),
-        approval_store: Arc::clone(&approval_store),
         #[cfg(feature = "redis-l2")]
         rate_limiter,
     });
@@ -1109,6 +1114,7 @@ async fn main() -> Result<()> {
         config: Arc::clone(&shared_config),
         authz: Arc::clone(&authz),
         approval_manager: Arc::new(approval_manager.clone()),
+        governed_effects: Arc::clone(&governed_effects),
         admin_events: Some(admin_event_tx.clone()),
     };
 

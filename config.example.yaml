@@ -250,9 +250,13 @@ agent_tool_policies: []
 # Beta mitigation: apply k8s/service-admin.yaml (sessionAffinity: ClientIP) to
 # pin each admin client to one replica. Known limitation: sticky session is lost
 # on pod restart — any pending stream on the restarted pod is abandoned.
-# Long-term fix (post-beta): Postgres-backed shared approval store.
+# `backend` selects the store for `afc.governed-effect/1` challenges. The
+# protocol's evaluate/decision/revalidate path uses this store directly.
+# Existing protocol-stream approvals remain process-local until their wire
+# adapters move to the governed-effect contract.
 approval:
   enabled: true
+  backend: memory      # memory | postgres; postgres requires database.url
   # ttl_seconds: 300   # override the built-in default (300s)
   # max_pending: 1000  # cap on concurrent pending approvals; new RequireApproval
   #                    # decisions fail-closed to Deny when the table is full.

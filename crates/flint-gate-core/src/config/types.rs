@@ -73,12 +73,13 @@ pub struct ApprovalConfig {
     /// independently of the TTL.
     #[serde(default)]
     pub janitor_interval_seconds: Option<u64>,
-    /// Which durable approval-store backend to use: `"memory"` (default) or
-    /// `"postgres"`.
+    /// Which governed-effect challenge backend to use: `"memory"` (default)
+    /// or `"postgres"`.
     ///
     /// Use `"postgres"` in multi-replica production deployments for
     /// durability and cross-replica correctness. Requires a configured
-    /// `database.url`.
+    /// `database.url`; startup refuses an invalid or unavailable selection
+    /// rather than silently switching authority state to memory.
     #[serde(default = "default_approval_backend")]
     pub backend: String,
 }

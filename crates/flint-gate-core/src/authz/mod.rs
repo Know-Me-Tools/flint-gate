@@ -26,8 +26,8 @@ mod validator;
 
 pub use bundle::{CedarBundle, PolicyRecord};
 pub use engine::{
-    ApprovalContext, AuthzDecision, AuthzEngine, PrincipalKind, ReloadStatus, DEFAULT_ACTION,
-    DEFAULT_APPROVAL_TTL_SECONDS,
+    ActivePolicySet, ApprovalContext, AuthzDecision, AuthzEngine, PrincipalKind, ReloadStatus,
+    DEFAULT_ACTION, DEFAULT_APPROVAL_TTL_SECONDS,
 };
 pub use error::{AuthzError, PolicyParseError};
 pub use schema::{validate_annotations, GATEWAY_CEDAR_SCHEMA, KNOWN_ANNOTATIONS};

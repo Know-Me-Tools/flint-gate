@@ -107,6 +107,40 @@ pub fn client_credentials_response(
     resp
 }
 
+/// Claims the gateway owns. A client's stored fixed claims can never set or
+/// override these: identity, validity window and token classification come
+/// from the gateway, not from per-client data.
+pub const RESERVED_CLAIMS: &[&str] = &[
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "nbf",
+    "jti",
+    "client_id",
+    "scope",
+    crate::auth::identity::FLINT_KIND_CLAIM,
+];
+
+/// Whether `name` may be stored as a client's fixed claim.
+pub fn is_reserved_claim(name: &str) -> bool {
+    RESERVED_CLAIMS.contains(&name)
+}
+
+/// Merge a client's fixed claims into the token's additional claims, skipping
+/// reserved names. Pure so the precedence rule is unit-testable.
+pub fn merge_fixed_claims(additional: &mut Value, fixed: &serde_json::Map<String, Value>) {
+    let Value::Object(map) = additional else {
+        return;
+    };
+    for (name, value) in fixed {
+        if !is_reserved_claim(name) {
+            map.insert(name.clone(), value.clone());
+        }
+    }
+}
+
 /// End-to-end client-credentials grant: verify the client → restrict scopes →
 /// mint a service token (`client_id`, `scope`, `aud`) via the shared minter.
 /// Fail-closed: unknown client / bad secret / scope-exceed / no minter all deny.
@@ -147,6 +181,7 @@ pub async fn client_credentials_grant(
     if let (Some(aud), Value::Object(map)) = (&client.audience, &mut additional) {
         map.insert("aud".to_string(), json!(aud));
     }
+    merge_fixed_claims(&mut additional, &client.claims);
 
     let guard = minter.read().await;
     let minter = guard
@@ -192,6 +227,32 @@ mod tests {
             restrict_scopes(Some("svc.read svc.read"), &granted()).unwrap(),
             vec!["svc.read"]
         );
+    }
+
+    #[test]
+    fn fixed_claims_are_merged() {
+        let mut additional = json!({"client_id": "c", "scope": "a"});
+        let fixed = json!({"role": "service_role"});
+        merge_fixed_claims(&mut additional, fixed.as_object().unwrap());
+        assert_eq!(additional["role"], "service_role");
+        assert_eq!(additional["client_id"], "c");
+    }
+
+    #[test]
+    fn fixed_claims_cannot_override_reserved_claims() {
+        let mut additional = json!({"client_id": "c", "scope": "a", "aud": "api"});
+        let fixed = json!({
+            "client_id": "other", "scope": "admin", "aud": "x", "sub": "root",
+            "iss": "evil", "exp": 1, "flint_kind": "human", "role": "service_role"
+        });
+        merge_fixed_claims(&mut additional, fixed.as_object().unwrap());
+        assert_eq!(additional["client_id"], "c");
+        assert_eq!(additional["scope"], "a");
+        assert_eq!(additional["aud"], "api");
+        for k in ["sub", "iss", "exp", "flint_kind"] {
+            assert!(additional.get(k).is_none(), "{k} must not be settable");
+        }
+        assert_eq!(additional["role"], "service_role");
     }
 
     #[test]

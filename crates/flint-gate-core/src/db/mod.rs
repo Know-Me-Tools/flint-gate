@@ -588,6 +588,29 @@ impl Database {
         Ok((id, raw_secret))
     }
 
+    /// Set the fixed claims a client's tokens carry. Rejects reserved claim
+    /// names up front so a misconfiguration is visible at write time rather
+    /// than silently ignored at mint time. Returns whether a client matched.
+    pub async fn set_oauth_client_claims(
+        &self,
+        client_id: &str,
+        claims: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<bool> {
+        if let Some(name) = claims
+            .keys()
+            .find(|k| crate::auth::client_credentials::is_reserved_claim(k))
+        {
+            anyhow::bail!("claim {name:?} is reserved and cannot be set on a client");
+        }
+        let result = sqlx::query("UPDATE oauth_clients SET claims = $1 WHERE client_id = $2")
+            .bind(serde_json::Value::Object(claims.clone()))
+            .bind(client_id)
+            .execute(&self.pool)
+            .await
+            .context("setting OAuth client claims")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Verify a `client_id` + `client_secret` pair. Returns the client record on
     /// success, `None` on any mismatch (unknown client, wrong secret, inactive).
     ///
@@ -603,7 +626,7 @@ impl Database {
         // Fetch by client_id (the secret hash is per-hash-salted with bcrypt, so
         // a `WHERE secret_hash = $2` lookup is impossible) then KDF-verify.
         let row = sqlx::query(
-            "SELECT id, client_id, secret_hash, scopes, audience FROM oauth_clients
+            "SELECT id, client_id, secret_hash, scopes, audience, claims FROM oauth_clients
              WHERE client_id = $1 AND active = true",
         )
         .bind(client_id)
@@ -647,11 +670,13 @@ impl Database {
                     .collect()
             })
             .unwrap_or_default();
+        let claims: serde_json::Value = r.try_get("claims")?;
         Ok(Some(OAuthClientRecord {
             id,
             client_id: r.try_get("client_id")?,
             scopes,
             audience: r.try_get("audience")?,
+            claims: claims.as_object().cloned().unwrap_or_default(),
         }))
     }
 
@@ -1484,6 +1509,9 @@ pub struct OAuthClientRecord {
     pub client_id: String,
     pub scopes: Vec<String>,
     pub audience: Option<String>,
+    /// Fixed claims added to this client's tokens (reserved names excluded at
+    /// mint time; see `auth::client_credentials::merge_fixed_claims`).
+    pub claims: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A non-human-identity record from the `agent_identities` table.

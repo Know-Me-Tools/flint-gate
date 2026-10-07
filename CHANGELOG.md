@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Envoy external-authorization check endpoint at `/ext-authz/<original path>`
+  (opt-in, `ext_authz.enabled`). It authenticates with the matched route's
+  provider and answers `200` with a gate-minted `Authorization: Bearer` JWT,
+  or `401`/`403` with no token.
+
 ## [0.1.0-beta] - 2026-07-09
 
 ### Added

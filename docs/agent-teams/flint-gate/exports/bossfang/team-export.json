@@ -1,0 +1,124 @@
+{
+  "target": "bossfang",
+  "verification": {
+    "level": "source-verified",
+    "source": "crates/librefang-types/src/agent.rs; crates/librefang-hands/src/lib.rs; crates/librefang-api/src/routes/workflows/workflow.rs",
+    "version": "2026.7.11 / c719a4d683e4d3fb42e436f812e0193f865c9d2c",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "Empty portable role skills emit skills_disabled=true; native skills=[] with skills_disabled=false means all. Agent MCP [] means none; [\"*\"] means all. Hand-level allowlists have their own native defaults.",
+    "BossFang team native options merge into HAND.toml; role overrides merge into each AgentManifest. Preserve local TOML because native GET returns a projection. Hand activation can start autonomous schedules.",
+    "Native authentication and registration are unverified. UAR defaults to JWT-required; BossFang accepts Bearer or X-API-Key. Discovery success is not mutation authorization."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Choose standalone agent registrations plus workflow, or install the Hand. These are distinct native deployment paths; do not activate the Hand as a duplicate of the standalone workflow.",
+    "Optional native payloads: POST /api/hands/install with bossfang/hand-install.json; POST /api/workflows with bossfang/workflow.json after registering standalone agents. Hand activation and workflow run require separate authorization and are not performed.",
+    "registration-plan.json is a local review plan, not a native API body. Supply an operator-approved base URL and credential reference; preserve each returned native ID/outcome because registration is not atomic."
+  ],
+  "files": [
+    {
+      "file": "bossfang/agents/gate-identity-architect/agent.toml",
+      "sha256": "9f6b0e2d780f1197d71f3972c6c58a2674b67720844312a22d32789574e1d26e"
+    },
+    {
+      "file": "bossfang/registration/gate-identity-architect.json",
+      "sha256": "6982403710c1509fffc706b96798276795bac18e8a0210c74a758ac5824d9682"
+    },
+    {
+      "file": "bossfang/agents/gate-auth/agent.toml",
+      "sha256": "c21596418af8d9531ead2106fcdf4bae32e4c8ba18c77b49792d5ea611c7ea4d"
+    },
+    {
+      "file": "bossfang/registration/gate-auth.json",
+      "sha256": "3c23c854edd6fdb882466a67298ed2628fe5a71cf627706d2adb6de3e7f71b36"
+    },
+    {
+      "file": "bossfang/agents/gate-policy/agent.toml",
+      "sha256": "29f6f414f7d07093fd42d3169879d965760139b315971e57beac3bc127902708"
+    },
+    {
+      "file": "bossfang/registration/gate-policy.json",
+      "sha256": "a3d5a6d63ec3f283cb3faea9ee18c3fe39cfd4fc9fed18416f66cd421fcf9489"
+    },
+    {
+      "file": "bossfang/agents/gate-proxy/agent.toml",
+      "sha256": "3f933fdeeba623ce3ee5e6813716eb3946482aa84c2d7891d11e25dea9162f14"
+    },
+    {
+      "file": "bossfang/registration/gate-proxy.json",
+      "sha256": "46066d21f6dbe484f78b8a50e8de9b710bf738b66a8dd8296e999d8ed82a8232"
+    },
+    {
+      "file": "bossfang/agents/gate-streams/agent.toml",
+      "sha256": "8b8cef4ad055509e867f23e6f03f7372ac6aef91e3bdef18fd5d780c5b4f3031"
+    },
+    {
+      "file": "bossfang/registration/gate-streams.json",
+      "sha256": "21d3059d7762871f86aa1763cc14ee071882ac5633e981a038be8c7c2864bb25"
+    },
+    {
+      "file": "bossfang/agents/gate-control-plane/agent.toml",
+      "sha256": "bade29b90fcbac5e7f0c3ffff0669082349682462b6e6b28eb26cab881800b2c"
+    },
+    {
+      "file": "bossfang/registration/gate-control-plane.json",
+      "sha256": "dd58d6aace36469b12653bd653011ad1242e08be82ac81f926f2cf3f55cb980c"
+    },
+    {
+      "file": "bossfang/agents/gate-console/agent.toml",
+      "sha256": "c833dd2b60e128602dffe3c8f46fb54c12dc42c3821871838784d357f4fba216"
+    },
+    {
+      "file": "bossfang/registration/gate-console.json",
+      "sha256": "23edd955482890f90f58f926a4ebe38c3dce33a8d8da472d9b0c9897a065adcc"
+    },
+    {
+      "file": "bossfang/agents/gate-sdk/agent.toml",
+      "sha256": "1793af74f3a8cfc3d1f12a234208525ace4ceb2f4d5b9507d32bc8cde3ddd91e"
+    },
+    {
+      "file": "bossfang/registration/gate-sdk.json",
+      "sha256": "b0f89140788916e47a20ec069a3daceb1dea8342637ad3c0a3971578f9f8fb07"
+    },
+    {
+      "file": "bossfang/agents/gate-operations/agent.toml",
+      "sha256": "5214ac70a47e37bc4e4e962651d2ea709faace726f181802c2a98a8bac2fa164"
+    },
+    {
+      "file": "bossfang/registration/gate-operations.json",
+      "sha256": "1ec598f1b51100e3f2eba8ac95ce0994fd66eaf969800e72896a70cd0b4dfa05"
+    },
+    {
+      "file": "bossfang/agents/gate-reviewer/agent.toml",
+      "sha256": "f547a5ad712bd5648ae7109b2ee40a6ba8f118a0317dd517d2566695e511af63"
+    },
+    {
+      "file": "bossfang/registration/gate-reviewer.json",
+      "sha256": "21264002584940a40912c22135e1eed7accb440423f32f8c8ec13964fd8e00e2"
+    },
+    {
+      "file": "bossfang/hands/flint-gate/HAND.toml",
+      "sha256": "6b41bb229087e3b65a9f7b3561e443969af2f98caa3e13d9f57fa775dae75ee7"
+    },
+    {
+      "file": "bossfang/hand-install.json",
+      "sha256": "511c1eabd9c7ea49ad13ba789dbc456d10651b3eb593a0fcb468b0d8c7b3c90a"
+    },
+    {
+      "file": "bossfang/workflow.json",
+      "sha256": "42337f21d4057e3a39eb3891e6225f56d5c1ae67b451eef02f5142c7948e2d44"
+    },
+    {
+      "file": "bossfang/registration-plan.json",
+      "sha256": "c76ba2e19554c4406dd441bdaa62727b0bc504b7b4acae55e626871f9c819a89"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "f668a3fe483c65f5e26b5c25875338e3e3b813300faf08f686ef673b763372a8"
+    }
+  ]
+}

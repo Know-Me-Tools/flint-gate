@@ -1,0 +1,65 @@
+{
+  "target": "copilot",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://docs.github.com/en/copilot/reference/custom-agents-configuration",
+    "version": "documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "No Copilot agent marketplace mapping was verified; this export uses native agent files.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review .github/agents/*.agent.md; native CLI /agent or --agent selects a custom role. Fleet is a separate native execution mechanism."
+  ],
+  "files": [
+    {
+      "file": ".github/agents/gate-identity-architect.agent.md",
+      "sha256": "c545b12c91d3bcb786a73707edb9bba774bd3abd9aa5f4b8f140c2ac4150a464"
+    },
+    {
+      "file": ".github/agents/gate-auth.agent.md",
+      "sha256": "d5664bc9cb73853eab07260d30975a24acffc5f9ff716d4873a2070ed40bc158"
+    },
+    {
+      "file": ".github/agents/gate-policy.agent.md",
+      "sha256": "4ed99521db9d18fb0f8d183b7c03f3bd5b2f357d898b88cda9c6fee1ac612e52"
+    },
+    {
+      "file": ".github/agents/gate-proxy.agent.md",
+      "sha256": "499f467ac6010110412e989a5431ac11bab0c534a1e48b18acbdf9957092b0b6"
+    },
+    {
+      "file": ".github/agents/gate-streams.agent.md",
+      "sha256": "e64d3207fa40f198953ddae89c4c0db7241eb2e45d14f43b974f05e1b04cbaaf"
+    },
+    {
+      "file": ".github/agents/gate-control-plane.agent.md",
+      "sha256": "862ebb731ad2e6cdd64de2d1f4693efa7dcacfb67754717fab6b8d67caf44243"
+    },
+    {
+      "file": ".github/agents/gate-console.agent.md",
+      "sha256": "c3fe6ab07ce3e313f3ecd4250bc0da914b193901ff6b3b3e891f228673826e16"
+    },
+    {
+      "file": ".github/agents/gate-sdk.agent.md",
+      "sha256": "9756a9d249acafab9d4d4c3c002c0632be0454fcb97de2b4af8044c4ab5510c0"
+    },
+    {
+      "file": ".github/agents/gate-operations.agent.md",
+      "sha256": "c4269a963174dd5e8c292d55adfcc8528c1e3dc05e19ad79258867678b9dc4f6"
+    },
+    {
+      "file": ".github/agents/gate-reviewer.agent.md",
+      "sha256": "62c25d33ce087fa3ab0d2540e69deb284aaff349356f09e96f520ef90cf08f09"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "8fc910bf69532ea1bdce455578025e3666e4f600ab5daffb5d6251353e0c169e"
+    }
+  ]
+}

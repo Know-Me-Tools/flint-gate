@@ -1,0 +1,5 @@
+{
+  "name": "flint-gate",
+  "version": "1.0.0",
+  "description": "Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces."
+}

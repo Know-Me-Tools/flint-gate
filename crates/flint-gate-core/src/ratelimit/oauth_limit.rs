@@ -222,12 +222,21 @@ mod tests {
         // The security fix: same client_id → same key even if the raw
         // Authorization header is rotated (defeats header-rotation bypass).
         let mut h1 = HeaderMap::new();
-        h1.insert(axum::http::header::AUTHORIZATION, "Basic aaa".parse().unwrap());
+        h1.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic aaa".parse().unwrap(),
+        );
         let mut h2 = HeaderMap::new();
-        h2.insert(axum::http::header::AUTHORIZATION, "Basic zzz".parse().unwrap());
+        h2.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic zzz".parse().unwrap(),
+        );
         let k1 = OAuthLimiter::caller_key(&h1, Some("client-42"));
         let k2 = OAuthLimiter::caller_key(&h2, Some("client-42"));
-        assert_eq!(k1, k2, "same client_id must key identically despite header churn");
+        assert_eq!(
+            k1, k2,
+            "same client_id must key identically despite header churn"
+        );
         assert!(k1.starts_with("cid:"));
         // Whitespace-only / empty client_id is ignored (falls back to header).
         let k_empty = OAuthLimiter::caller_key(&h1, Some("   "));
@@ -342,8 +351,12 @@ mod tests {
             BackendUnavailablePosture::Deny,
             "token",
         );
-        let introspect =
-            OAuthLimiter::new(RedisRateLimiter::new(conn), 1, BackendUnavailablePosture::Deny, "introspect");
+        let introspect = OAuthLimiter::new(
+            RedisRateLimiter::new(conn),
+            1,
+            BackendUnavailablePosture::Deny,
+            "introspect",
+        );
         let mut h = HeaderMap::new();
         let cred = format!("Bearer {}", uuid::Uuid::new_v4());
         h.insert(axum::http::header::AUTHORIZATION, cred.parse().unwrap());

@@ -166,7 +166,16 @@ pub async fn delegate_to_hydra(
 fn active_response(claims: Map<String, Value>) -> Value {
     let mut out = Map::new();
     out.insert("active".to_string(), json!(true));
-    for field in ["scope", "client_id", "sub", "aud", "exp", "iat", "iss", "jti"] {
+    for field in [
+        "scope",
+        "client_id",
+        "sub",
+        "aud",
+        "exp",
+        "iat",
+        "iss",
+        "jti",
+    ] {
         if let Some(v) = claims.get(field) {
             out.insert(field.to_string(), v.clone());
         }
@@ -231,7 +240,14 @@ mod tests {
         };
         let foreign = JwtMinter::from_config(&other).await.unwrap();
         let token = foreign
-            .mint(&Identity { id: "x".into(), ..Default::default() }, None, Some(300))
+            .mint(
+                &Identity {
+                    id: "x".into(),
+                    ..Default::default()
+                },
+                None,
+                Some(300),
+            )
             .unwrap();
 
         let verifier = TokenVerifier::from_jwt_config(&hs256_cfg()).await.unwrap();
@@ -247,7 +263,14 @@ mod tests {
         };
         let foreign = JwtMinter::from_config(&other_issuer).await.unwrap();
         let token = foreign
-            .mint(&Identity { id: "x".into(), ..Default::default() }, None, Some(300))
+            .mint(
+                &Identity {
+                    id: "x".into(),
+                    ..Default::default()
+                },
+                None,
+                Some(300),
+            )
             .unwrap();
 
         let verifier = TokenVerifier::from_jwt_config(&hs256_cfg()).await.unwrap();
@@ -268,8 +291,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let resp =
-            delegate_to_hydra(&reqwest::Client::new(), &server.uri(), "opaque-token").await;
+        let resp = delegate_to_hydra(&reqwest::Client::new(), &server.uri(), "opaque-token").await;
         assert_eq!(resp["active"], true);
         assert_eq!(resp["client_id"], "hydra-client");
     }
@@ -277,8 +299,7 @@ mod tests {
     #[tokio::test]
     async fn delegate_fails_closed_on_transport_error() {
         // Unreachable Hydra → active:false, never active.
-        let resp =
-            delegate_to_hydra(&reqwest::Client::new(), "http://127.0.0.1:1", "tok").await;
+        let resp = delegate_to_hydra(&reqwest::Client::new(), "http://127.0.0.1:1", "tok").await;
         assert_eq!(resp["active"], false);
     }
 

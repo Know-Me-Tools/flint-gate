@@ -72,13 +72,14 @@ pub async fn ws_bridge(
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
 
     // Wire approval handle parts into a typed struct for the AG-UI processor.
-    let approval_handle = approval_handle.map(|(manager, decision_tx, ttl_override)| {
-        WsBridgeApprovalHandle {
-            manager,
-            decision_tx,
-            ttl_override,
-        }
-    });
+    let approval_handle =
+        approval_handle.map(
+            |(manager, decision_tx, ttl_override)| WsBridgeApprovalHandle {
+                manager,
+                decision_tx,
+                ttl_override,
+            },
+        );
 
     // Set up AG-UI/A2UI processors, threading Cedar authz and approval routing.
     let ag_ui_processor = if config.ai.ag_ui.enabled {
@@ -358,7 +359,8 @@ mod tests {
             .with_tool_authz(Some(ctx))
             .with_max_tool_args_bytes(1024 * 1024);
 
-        let start_json = r#"{"type":"TOOL_CALL_START","toolCallId":"tc1","toolCallName":"read_file"}"#;
+        let start_json =
+            r#"{"type":"TOOL_CALL_START","toolCallId":"tc1","toolCallName":"read_file"}"#;
         let event = AgUiEvent::from_json(start_json).expect("valid event");
         let released = proc.process_multi(event, serde_json::Map::new());
         // Cedar deny → START is replaced by a RUN_ERROR (not forwarded as-is)
@@ -382,7 +384,8 @@ mod tests {
             .with_max_tool_args_bytes(1024 * 1024);
 
         // START is buffered — not released until END is seen
-        let start_json = r#"{"type":"TOOL_CALL_START","toolCallId":"tc1","toolCallName":"read_file"}"#;
+        let start_json =
+            r#"{"type":"TOOL_CALL_START","toolCallId":"tc1","toolCallName":"read_file"}"#;
         let start_ev = AgUiEvent::from_json(start_json).expect("valid");
         let held = proc.process_multi(start_ev, serde_json::Map::new());
         assert!(held.is_empty(), "START frame is held pending END");
@@ -391,7 +394,10 @@ mod tests {
         let end_json = r#"{"type":"TOOL_CALL_END","toolCallId":"tc1"}"#;
         let end_ev = AgUiEvent::from_json(end_json).expect("valid");
         let released = proc.process_multi(end_ev, serde_json::Map::new());
-        assert!(!released.is_empty(), "Cedar permit should release buffered events on END");
+        assert!(
+            !released.is_empty(),
+            "Cedar permit should release buffered events on END"
+        );
     }
 
     /// Verify that the ws_bridge approval-handle wiring path compiles with a

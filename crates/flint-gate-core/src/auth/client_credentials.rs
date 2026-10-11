@@ -204,7 +204,10 @@ mod tests {
 
     #[test]
     fn invalid_client_code() {
-        assert_eq!(ClientCredentialsError::InvalidClient.oauth_code(), "invalid_client");
+        assert_eq!(
+            ClientCredentialsError::InvalidClient.oauth_code(),
+            "invalid_client"
+        );
     }
 
     #[test]

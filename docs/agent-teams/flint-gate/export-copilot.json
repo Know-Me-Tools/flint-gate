@@ -1,0 +1,5 @@
+{
+  "state": ".agent-team/flint-gate/state.json",
+  "target": "copilot",
+  "out": "docs/agent-teams/flint-gate/exports/copilot"
+}

@@ -1,0 +1,61 @@
+{
+  "at": "2026-09-25T05:17:12.799Z",
+  "results": [
+    {
+      "harness": "codex",
+      "chunk_id": "8baf6c",
+      "wall_time_seconds": 0.000008458,
+      "exit_code": 0,
+      "original_token_count": 5,
+      "output": "codex-cli 0.154.0\n"
+    },
+    {
+      "harness": "claude",
+      "chunk_id": "9ef264",
+      "wall_time_seconds": 0.000005167,
+      "exit_code": 0,
+      "original_token_count": 6,
+      "output": "2.1.282 (Claude Code)\n"
+    },
+    {
+      "harness": "opencode",
+      "chunk_id": "fe4508",
+      "wall_time_seconds": 0.000003167,
+      "exit_code": 0,
+      "original_token_count": 4,
+      "output": "1.18.25-fork\n"
+    },
+    {
+      "harness": "kimi",
+      "chunk_id": "e11028",
+      "wall_time_seconds": 0.000003791,
+      "exit_code": 0,
+      "original_token_count": 2,
+      "output": "0.42.0\n"
+    },
+    {
+      "harness": "minimax",
+      "chunk_id": "342564",
+      "wall_time_seconds": 0.000002917,
+      "exit_code": 0,
+      "original_token_count": 2,
+      "output": "0.5.4\n"
+    },
+    {
+      "harness": "copilot",
+      "chunk_id": "448804",
+      "wall_time_seconds": 0.000003666,
+      "exit_code": 0,
+      "original_token_count": 7,
+      "output": "0.0.389-1\nCommit: b04a9e4\n"
+    },
+    {
+      "harness": "deepseek",
+      "chunk_id": "a58d73",
+      "wall_time_seconds": 0.000004791,
+      "exit_code": 1,
+      "original_token_count": 146,
+      "output": "[ERROR] This project is configured to use 11.7.0 of pnpm. Your current pnpm is v11.25.0\nCorepack invoked pnpm with this version, and pnpm does not switch versions when running under corepack.\nAlign the \"packageManager\" field in package.json with \"devEngines.packageManager\", or invoke pnpm directly (without corepack) so it can switch versions automatically.\nIf you want to bypass this version check, you can set the \"pmOnFail\" configuration to \"warn\" or \"ignore\" (e.g. via --pm-on-fail=ignore). If using \"devEngines.packageManager\", you can set its \"onFail\" to \"warn\" or \"ignore\"\n"
+    }
+  ]
+}

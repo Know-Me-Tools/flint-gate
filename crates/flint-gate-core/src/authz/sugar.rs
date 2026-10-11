@@ -143,9 +143,7 @@ fn compile_statement(
 /// Compile the sugar AND run every emitted record through the write-time
 /// validator, so an entry that produces invalid Cedar is rejected at load
 /// (fail-closed). Returns the validated records ready to merge into the engine.
-pub fn compile_and_validate(
-    policies: &[AgentToolPolicy],
-) -> Result<Vec<PolicyRecord>, AuthzError> {
+pub fn compile_and_validate(policies: &[AgentToolPolicy]) -> Result<Vec<PolicyRecord>, AuthzError> {
     let records = compile_agent_tool_policies(policies)?;
     for record in &records {
         super::validate_policy(record)?;
@@ -177,8 +175,15 @@ mod tests {
     /// Cedar `context.tool_name` (which glob policies match on) is populated
     /// exactly as it is on the streaming hot path.
     fn agent_can_call(engine: &AuthzEngine, agent: &str, tool: &str) -> bool {
-        authorize_tool_call(engine, PrincipalKind::Agent, agent, tool, &json!({}), "route-1")
-            .is_allow()
+        authorize_tool_call(
+            engine,
+            PrincipalKind::Agent,
+            agent,
+            tool,
+            &json!({}),
+            "route-1",
+        )
+        .is_allow()
     }
 
     #[test]
@@ -200,7 +205,11 @@ mod tests {
     #[test]
     fn glob_deny_blocks_matching_tools() {
         // allow a broad set, deny the destructive glob.
-        let e = engine_from(&[policy("ci-bot", &["deploy", "delete_widget"], &["delete_*"])]);
+        let e = engine_from(&[policy(
+            "ci-bot",
+            &["deploy", "delete_widget"],
+            &["delete_*"],
+        )]);
         // The non-matching allowed tool still works.
         assert!(agent_can_call(&e, "ci-bot", "deploy"));
         // The glob-denied tool is blocked even though it was explicitly allowed.
@@ -230,8 +239,7 @@ mod tests {
     #[test]
     fn illegal_agent_id_is_rejected_injection_safe() {
         // A quote in the agent id would break out of the Cedar literal — reject it.
-        let err =
-            compile_and_validate(&[policy("ci\"bot", &["deploy"], &[])]).unwrap_err();
+        let err = compile_and_validate(&[policy("ci\"bot", &["deploy"], &[])]).unwrap_err();
         assert!(matches!(err, AuthzError::SugarCompile(_)));
     }
 

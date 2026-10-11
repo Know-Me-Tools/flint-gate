@@ -1,0 +1,147 @@
+{
+  "createdAt": "2026-09-25T05:15:15.844Z",
+  "method": "Original project-authored instructions; no third-party code downloaded or executed",
+  "skills": [
+    {
+      "id": "gate-team-delivery",
+      "path": ".agents/skills/gate-team-delivery/SKILL.md",
+      "license": "MIT",
+      "sources": [],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-identity-architecture",
+      "path": ".agents/skills/gate-identity-architecture/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://www.rfc-editor.org/info/rfc8725/",
+        "https://www.rfc-editor.org/info/rfc9700/",
+        "https://www.w3.org/TR/did/",
+        "https://www.w3.org/TR/vc-data-model-2.0/",
+        "https://developer.okta.com/docs/guides/validate-access-tokens/dotnet/main/",
+        "https://www.ory.sh/docs/kratos/guides/zero-trust-iap-proxy-identity-access-proxy"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-auth-implementation",
+      "path": ".agents/skills/gate-auth-implementation/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://www.rfc-editor.org/info/rfc8725/",
+        "https://www.rfc-editor.org/info/rfc9700/",
+        "https://www.ory.sh/docs/kratos/guides/zero-trust-iap-proxy-identity-access-proxy",
+        "https://developer.okta.com/docs/guides/validate-access-tokens/dotnet/main/",
+        "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-cedar-approvals",
+      "path": ".agents/skills/gate-cedar-approvals/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://docs.cedarpolicy.com/auth/authorization.html",
+        "https://docs.cedarpolicy.com/other/security.html"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-proxy-security",
+      "path": ".agents/skills/gate-proxy-security/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://www.ory.sh/docs/oathkeeper/pipeline",
+        "https://developer.konghq.com/gateway/entities/route/",
+        "https://developer.konghq.com/gateway/entities/plugin/",
+        "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-streaming-governance",
+      "path": ".agents/skills/gate-streaming-governance/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://www.rfc-editor.org/info/rfc8725/",
+        "https://docs.cedarpolicy.com/auth/authorization.html"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-control-plane",
+      "path": ".agents/skills/gate-control-plane/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://docs.cedarpolicy.com/other/security.html"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-client-security",
+      "path": ".agents/skills/gate-client-security/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://www.rfc-editor.org/info/rfc9700/",
+        "https://www.rfc-editor.org/info/rfc8725/"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-operations",
+      "path": ".agents/skills/gate-operations/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://www.rfc-editor.org/info/rfc8725/",
+        "https://docs.cedarpolicy.com/other/security.html"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    },
+    {
+      "id": "gate-security-review",
+      "path": ".agents/skills/gate-security-review/SKILL.md",
+      "license": "MIT",
+      "sources": [
+        "https://www.rfc-editor.org/info/rfc8725/",
+        "https://www.rfc-editor.org/info/rfc9700/",
+        "https://docs.cedarpolicy.com/auth/authorization.html",
+        "https://www.ory.sh/docs/oathkeeper/pipeline",
+        "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html"
+      ],
+      "inspected": true,
+      "tools": "Optional project Compass, source inspection and bounded assigned verification; no embedded executable hooks"
+    }
+  ],
+  "legacySkills": {
+    "paths": [
+      ".agents/skills/flint-gate-auth/SKILL.md",
+      ".agents/skills/flint-gate-config/SKILL.md",
+      ".agents/skills/flint-gate-deploy/SKILL.md",
+      ".agents/skills/flint-gate-routes/SKILL.md"
+    ],
+    "disposition": "Inspected and preserved; not bound because examples need reconciliation with current source"
+  },
+  "externalCandidates": [
+    {
+      "url": "https://www.skills.sh/mindrally/skills/jwt-security",
+      "disposition": "Listing inspected, full source/license not audited; not installed. Generic scope omits Gate trust partition and orchestration."
+    },
+    {
+      "url": "https://www.skills.sh/mukul975/anthropic-cybersecurity-skills/implementing-scim-provisioning-with-okta",
+      "disposition": "Search candidate only; provisioning focus is not access-token verification. No endorsement inferred from name; not installed."
+    },
+    {
+      "url": "https://www.skills.sh/descope/skills/okta-cis-to-descope",
+      "disposition": "Search candidate only; vendor migration is outside this team task; not installed."
+    }
+  ]
+}

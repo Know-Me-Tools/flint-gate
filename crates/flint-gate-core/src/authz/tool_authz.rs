@@ -344,14 +344,28 @@ mod tests {
     #[test]
     fn allowed_tool_call_returns_allow() {
         let engine = engine_permit_all();
-        let decision = authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "read_file", &json!({}), "route-1");
+        let decision = authorize_tool_call(
+            &engine,
+            crate::authz::PrincipalKind::User,
+            "alice",
+            "read_file",
+            &json!({}),
+            "route-1",
+        );
         assert_eq!(decision, AuthzDecision::Allow);
     }
 
     #[test]
     fn denied_when_no_policy_permits() {
         let engine = AuthzEngine::empty();
-        let decision = authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "read_file", &json!({}), "route-1");
+        let decision = authorize_tool_call(
+            &engine,
+            crate::authz::PrincipalKind::User,
+            "alice",
+            "read_file",
+            &json!({}),
+            "route-1",
+        );
         assert_eq!(decision, AuthzDecision::Deny);
     }
 
@@ -360,11 +374,25 @@ mod tests {
         // Even a permit-all engine must deny a nameless tool call.
         let engine = engine_permit_all();
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "", &json!({}), "route-1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "",
+                &json!({}),
+                "route-1"
+            ),
             AuthzDecision::Deny
         );
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "   ", &json!({}), "route-1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "   ",
+                &json!({}),
+                "route-1"
+            ),
             AuthzDecision::Deny
         );
     }
@@ -378,11 +406,25 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "safe_tool", &json!({}), "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "safe_tool",
+                &json!({}),
+                "r1"
+            ),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "danger_tool", &json!({}), "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "danger_tool",
+                &json!({}),
+                "r1"
+            ),
             AuthzDecision::Deny
         );
     }
@@ -395,11 +437,25 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "allowed", &json!({}), "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "allowed",
+                &json!({}),
+                "r1"
+            ),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "other", &json!({}), "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "other",
+                &json!({}),
+                "r1"
+            ),
             AuthzDecision::Deny
         );
     }
@@ -412,11 +468,25 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &json!({"safe": true}), "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "t",
+                &json!({"safe": true}),
+                "r1"
+            ),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &json!({"safe": false}), "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "t",
+                &json!({"safe": false}),
+                "r1"
+            ),
             AuthzDecision::Deny
         );
     }
@@ -432,11 +502,25 @@ mod tests {
         )])
         .expect("compiles");
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &json!("not-an-object"), "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "t",
+                &json!("not-an-object"),
+                "r1"
+            ),
             AuthzDecision::Allow
         );
         assert_eq!(
-            authorize_tool_call(&engine, crate::authz::PrincipalKind::User, "alice", "t", &Value::Null, "r1"),
+            authorize_tool_call(
+                &engine,
+                crate::authz::PrincipalKind::User,
+                "alice",
+                "t",
+                &Value::Null,
+                "r1"
+            ),
             AuthzDecision::Allow
         );
     }
@@ -515,8 +599,14 @@ mod tests {
         assert!(out.contains("decision=\"deny\""), "render:\n{out}");
         assert!(out.contains("decision=\"deny_revoked\""), "render:\n{out}");
         // The tool NAMEs must never leak into the metric render (cardinality/leak).
-        assert!(!out.contains("a_secret_tool_name"), "tool name leaked:\n{out}");
-        assert!(!out.contains("another_secret_tool"), "tool name leaked:\n{out}");
+        assert!(
+            !out.contains("a_secret_tool_name"),
+            "tool name leaked:\n{out}"
+        );
+        assert!(
+            !out.contains("another_secret_tool"),
+            "tool name leaked:\n{out}"
+        );
     }
 
     // ── list_tools filtering ────────────────────────────────────────────────

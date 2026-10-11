@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "format": "agent-team-export-plan",
+  "execution": "not-performed",
+  "requests": [
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-identity-architect.json",
+      "role": "gate-identity-architect"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-auth.json",
+      "role": "gate-auth"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-policy.json",
+      "role": "gate-policy"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-proxy.json",
+      "role": "gate-proxy"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-streams.json",
+      "role": "gate-streams"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-control-plane.json",
+      "role": "gate-control-plane"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-console.json",
+      "role": "gate-console"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-sdk.json",
+      "role": "gate-sdk"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-operations.json",
+      "role": "gate-operations"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "bossfang/registration/gate-reviewer.json",
+      "role": "gate-reviewer"
+    }
+  ]
+}

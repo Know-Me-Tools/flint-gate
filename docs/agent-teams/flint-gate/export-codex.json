@@ -1,0 +1,5 @@
+{
+  "state": ".agent-team/flint-gate/state.json",
+  "target": "codex",
+  "out": "docs/agent-teams/flint-gate/exports/codex"
+}

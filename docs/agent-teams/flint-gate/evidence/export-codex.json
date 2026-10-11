@@ -1,0 +1,33 @@
+{
+  "directory": "/Users/gqadonis/Projects/prometheus/flint-gate/docs/agent-teams/flint-gate/exports/codex",
+  "files": [
+    ".codex/agents/gate-identity-architect.toml",
+    ".codex/agents/gate-auth.toml",
+    ".codex/agents/gate-policy.toml",
+    ".codex/agents/gate-proxy.toml",
+    ".codex/agents/gate-streams.toml",
+    ".codex/agents/gate-control-plane.toml",
+    ".codex/agents/gate-console.toml",
+    ".codex/agents/gate-sdk.toml",
+    ".codex/agents/gate-operations.toml",
+    ".codex/agents/gate-reviewer.toml",
+    "export-receipt.json",
+    "team-export.json"
+  ],
+  "verification": {
+    "level": "source-verified",
+    "source": "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+    "version": "documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "Standalone agent files are supported. A Codex plugin agents manifest field is not verified; no such field is emitted.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review and merge .codex/agents and optional .codex/config.toml into the project; config values are native Codex options."
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "state": ".agent-team/flint-gate/state.json",
+  "target": "deepseek",
+  "out": "docs/agent-teams/flint-gate/exports/deepseek"
+}

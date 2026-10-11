@@ -1,0 +1,212 @@
+{
+  "researchedAt": "2026-09-25T05:17:12.801Z",
+  "method": "Firecrawl web search and scrape; Context7 /ory/docs and /websites/developer_okta; primary sources used for technical recommendations",
+  "sources": [
+    {
+      "receipt": "gate-r1-2",
+      "id": "01a0d6f3-ee4a-7099-bd25-886509b15c02",
+      "urls": [
+        {
+          "url": "https://www.ory.sh/docs/oathkeeper/pipeline/mutator",
+          "title": "Mutators - Ory"
+        },
+        {
+          "url": "https://www.ory.sh/docs/kratos/guides/zero-trust-iap-proxy-identity-access-proxy",
+          "title": "Zero Trust with Access Proxy guide - Ory"
+        },
+        {
+          "url": "https://www.ory.sh/docs/oathkeeper/pipeline",
+          "title": "Access rule pipeline - Ory"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r1-3",
+      "id": "01a0d6f3-ee49-702a-98ec-63aaab4d3803",
+      "urls": [
+        {
+          "url": "https://developer.okta.com/docs/guides/validate-access-tokens/dotnet/main/",
+          "title": "Validate Access Tokens | Okta Developer"
+        },
+        {
+          "url": "https://developer.okta.com/code/dotnet/jwt-validation/",
+          "title": "JWT Validation Guide - Okta Developer"
+        },
+        {
+          "url": "https://developer.okta.com/docs/guides/validate-id-tokens/-/main/",
+          "title": "Validate ID tokens - Okta Developer"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r2-2",
+      "id": "01a0d6f4-fc40-77a3-b1de-6ae9dd31cf14",
+      "urls": [
+        {
+          "url": "https://developer.konghq.com/gateway/entities/route/",
+          "title": "Routes - Kong Gateway"
+        },
+        {
+          "url": "https://developer.konghq.com/gateway/authentication/",
+          "title": "Authentication | Kong Docs"
+        },
+        {
+          "url": "https://developer.konghq.com/gateway/entities/plugin/",
+          "title": "Plugins - Kong Gateway"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r2-5",
+      "id": "01a0d6f4-fc67-73c8-866f-69427167443b",
+      "urls": [
+        {
+          "url": "https://www.skills.sh/mindrally/skills/jwt-security",
+          "title": "jwt-security — mindrally/skills"
+        },
+        {
+          "url": "https://www.skills.sh/proffesor-for-testing/agentic-qe/n8n-security-testing",
+          "title": "n8n-security-testing — proffesor-for-testing/agentic-qe"
+        },
+        {
+          "url": "https://www.skills.sh/vinayaklatthe/microsoft-security-skills/conditional-access-mfa",
+          "title": "conditional-access-mfa — vinayaklatthe/microsoft-security-skills"
+        },
+        {
+          "url": "https://www.skills.sh/yaklang/hack-skills/jwt-oauth-token-attacks",
+          "title": "jwt-oauth-token-attacks — yaklang/hack-skills"
+        },
+        {
+          "url": "https://www.skills.sh/microck/ordinary-claude-skills",
+          "title": "microck/ordinary-claude-skills - The Agent Skills Directory"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r3-2",
+      "id": "01a0d6f5-6f62-7552-951c-16cee26f114f",
+      "urls": [
+        {
+          "url": "https://www.w3.org/TR/did/",
+          "title": "Decentralized Identifiers (DIDs) v1.0 - W3C"
+        },
+        {
+          "url": "https://www.w3.org/TR/did-1.1/",
+          "title": "Decentralized Identifiers (DIDs) v1.1 - W3C"
+        },
+        {
+          "url": "https://w3c-ccg.github.io/did-key-spec/",
+          "title": "The did:key Method v0.9 - W3C Credentials Community Group"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r3-3",
+      "id": "01a0d6f5-6f70-75d9-8e0e-25e00b8636b3",
+      "urls": [
+        {
+          "url": "https://www.rfc-editor.org/info/rfc9700/",
+          "title": "RFC 9700: Best Current Practice for OAuth 2.0 Security"
+        },
+        {
+          "url": "https://oauth.net/2/oauth-best-practice/",
+          "title": "OAuth 2.0 Security Best Current Practice — RFC 9700"
+        },
+        {
+          "url": "https://workos.com/blog/oauth-best-practices",
+          "title": "OAuth best practices: We read RFC 9700 so you don't have to - WorkOS"
+        },
+        {
+          "url": "https://datatracker.ietf.org/doc/draft-ietf-oauth-rfc8725bis/",
+          "title": "draft-ietf-oauth-rfc8725bis-10 - JSON Web Token Best Current Practices"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r3-4",
+      "id": "01a0d6f5-6f27-7399-8b71-e497d7d1d25d",
+      "urls": [
+        {
+          "url": "https://www.skills.sh/mukul975/anthropic-cybersecurity-skills/implementing-scim-provisioning-with-okta",
+          "title": "implementing-scim-provisioning-with ..."
+        },
+        {
+          "url": "https://www.skills.sh/descope/skills/okta-cis-to-descope",
+          "title": "okta-cis-to-descope — descope/skills - The Agent Skills Directory"
+        },
+        {
+          "url": "https://www.skills.sh/mukul975/anthropic-cybersecurity-skills/implementing-zero-trust-in-cloud",
+          "title": "implementing-zero-trust-in-cloud — mukul975/anthropic-cybersecurity ..."
+        },
+        {
+          "url": "https://www.skills.sh/yonatangross/orchestkit/emulate-seed",
+          "title": "emulate-seed — yonatangross/orchestkit"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r4-2",
+      "id": "01a0d6f9-b456-717b-a6f5-0d2bf7581d52",
+      "urls": [
+        {
+          "url": "https://www.rfc-editor.org/info/rfc8725/",
+          "title": "RFC 8725: JSON Web Token Best Current Practices"
+        },
+        {
+          "url": "https://www.rfc-editor.org/info/rfc7519/",
+          "title": "RFC 7519: JSON Web Token (JWT)"
+        },
+        {
+          "url": "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-rfc8725bis-04",
+          "title": "JSON Web Token Best Current Practices - IETF Datatracker"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r4-3",
+      "id": "01a0d6f9-c042-700d-aa17-c5bfcdb846cf",
+      "urls": [
+        {
+          "url": "https://www.w3.org/TR/vc-data-model-2.0/",
+          "title": "Verifiable Credentials Data Model v2.0 - W3C"
+        },
+        {
+          "url": "https://www.w3.org/TR/vc-overview-1.0/",
+          "title": "Verifiable Credentials Overview v1.0 - W3C"
+        },
+        {
+          "url": "https://www.w3.org/TR/2023/WD-vc-data-model-2.0-20230307/",
+          "title": "Verifiable Credentials Data Model v2.0 - W3C"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r5-1",
+      "id": "01a0d6fa-41e4-754e-bfa3-cacef682544a",
+      "urls": [
+        {
+          "url": "https://docs.cedarpolicy.com/auth/authorization.html",
+          "title": "Authorization | Cedar Policy Language Reference Guide"
+        },
+        {
+          "url": "https://docs.cedarpolicy.com/other/security.html",
+          "title": "Security | Cedar Policy Language Reference Guide"
+        }
+      ]
+    },
+    {
+      "receipt": "gate-r5-2",
+      "id": "01a0d6fa-420b-7549-81e7-c0180ef88567",
+      "urls": [
+        {
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html",
+          "title": "Server-Side Request Forgery Prevention Cheat Sheet"
+        },
+        {
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html",
+          "title": "Unvalidated Redirects and Forwards - OWASP Cheat Sheet Series"
+        }
+      ]
+    }
+  ]
+}

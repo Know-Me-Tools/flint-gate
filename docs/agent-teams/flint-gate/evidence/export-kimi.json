@@ -1,0 +1,44 @@
+{
+  "directory": "/Users/gqadonis/Projects/prometheus/flint-gate/docs/agent-teams/flint-gate/exports/kimi",
+  "files": [
+    ".kimi-code/agents/gate-identity-architect.md",
+    "plugins/flint-gate/agents/gate-identity-architect.md",
+    ".kimi-code/agents/gate-auth.md",
+    "plugins/flint-gate/agents/gate-auth.md",
+    ".kimi-code/agents/gate-policy.md",
+    "plugins/flint-gate/agents/gate-policy.md",
+    ".kimi-code/agents/gate-proxy.md",
+    "plugins/flint-gate/agents/gate-proxy.md",
+    ".kimi-code/agents/gate-streams.md",
+    "plugins/flint-gate/agents/gate-streams.md",
+    ".kimi-code/agents/gate-control-plane.md",
+    "plugins/flint-gate/agents/gate-control-plane.md",
+    ".kimi-code/agents/gate-console.md",
+    "plugins/flint-gate/agents/gate-console.md",
+    ".kimi-code/agents/gate-sdk.md",
+    "plugins/flint-gate/agents/gate-sdk.md",
+    ".kimi-code/agents/gate-operations.md",
+    "plugins/flint-gate/agents/gate-operations.md",
+    ".kimi-code/agents/gate-reviewer.md",
+    "plugins/flint-gate/agents/gate-reviewer.md",
+    "plugins/flint-gate/kimi.plugin.json",
+    "marketplace.json",
+    "export-receipt.json",
+    "team-export.json"
+  ],
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/agents.md",
+    "version": "main documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Choose project .kimi-code/agents or the staged Kimi v2 marketplace/plugin. Literal ${base_prompt} in supplied prompts remains unchanged."
+  ]
+}

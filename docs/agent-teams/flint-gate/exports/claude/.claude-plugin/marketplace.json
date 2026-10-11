@@ -1,0 +1,13 @@
+{
+  "name": "flint-gate-marketplace",
+  "owner": {
+    "name": "flint-gate"
+  },
+  "plugins": [
+    {
+      "name": "flint-gate",
+      "source": "./plugins/flint-gate",
+      "description": "Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "version": "2",
+  "plugins": [
+    {
+      "id": "flint-gate",
+      "displayName": "flint-gate",
+      "source": "./plugins/flint-gate"
+    }
+  ]
+}

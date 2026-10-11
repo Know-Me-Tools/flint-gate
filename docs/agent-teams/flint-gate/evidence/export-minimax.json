@@ -1,0 +1,33 @@
+{
+  "directory": "/Users/gqadonis/Projects/prometheus/flint-gate/docs/agent-teams/flint-gate/exports/minimax",
+  "files": [
+    "agents/gate-identity-architect/agent.md",
+    "agents/gate-auth/agent.md",
+    "agents/gate-policy/agent.md",
+    "agents/gate-proxy/agent.md",
+    "agents/gate-streams/agent.md",
+    "agents/gate-control-plane/agent.md",
+    "agents/gate-console/agent.md",
+    "agents/gate-sdk/agent.md",
+    "agents/gate-operations/agent.md",
+    "agents/gate-reviewer/agent.md",
+    "export-receipt.json",
+    "team-export.json"
+  ],
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/MiniMax-AI/minimax-code/blob/main/packages/local-runtime-v2/src/service/agent/storage/canonical-agent-config.ts",
+    "version": "@minimax-ai/code 0.4.12; source inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "mcode exec has no verified custom-agent selector. The MiniMax plugin manifest supports skills/MCP/hooks/apps, not an agents field; no agent plugin is invented.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Install agents/<name>/agent.md under the active MiniMax user-data directory: MINIMAX_DATA_DIR, MAVIS_DATA_DIR, or default ~/.minimax. Export does not install there."
+  ]
+}

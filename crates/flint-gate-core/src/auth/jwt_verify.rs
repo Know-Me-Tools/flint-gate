@@ -120,7 +120,10 @@ impl Authenticator for JwtVerifyAuthenticator {
 ///   claim (see [`Identity::derived_kind`]), not a surviving `flint_kind`.
 fn partition_jwt_claims(
     rest: std::collections::HashMap<String, Value>,
-) -> (serde_json::Map<String, Value>, serde_json::Map<String, Value>) {
+) -> (
+    serde_json::Map<String, Value>,
+    serde_json::Map<String, Value>,
+) {
     const TRAIT_KEYS: &[&str] = &[
         "email",
         "email_verified",
@@ -175,7 +178,10 @@ mod tests {
         rest.insert("email".to_string(), serde_json::json!("a@b.co"));
         let (traits, metadata) = partition_jwt_claims(rest);
         // flint_kind dropped; act + org kept as metadata; email routed to traits.
-        assert!(!metadata.contains_key("flint_kind"), "flint_kind must be stripped");
+        assert!(
+            !metadata.contains_key("flint_kind"),
+            "flint_kind must be stripped"
+        );
         assert!(metadata.contains_key("act"));
         assert_eq!(metadata["org"], serde_json::json!("acme"));
         assert_eq!(traits["email"], serde_json::json!("a@b.co"));
@@ -184,7 +190,10 @@ mod tests {
             metadata_public: Value::Object(metadata),
             ..Default::default()
         };
-        assert_eq!(id.derived_kind(), crate::auth::identity::IdentityKind::Agent);
+        assert_eq!(
+            id.derived_kind(),
+            crate::auth::identity::IdentityKind::Agent
+        );
     }
 
     fn jwt_config(jwks_url: &str) -> JwtAuthConfig {

@@ -108,11 +108,7 @@ pub trait ApprovalStore: Send + Sync {
     fn status(&self, approval_id: &str) -> Option<ApprovalStatus>;
     /// Apply a human decision to a pending approval, routing it back to the
     /// waiting stream task.
-    fn decide(
-        &self,
-        approval_id: &str,
-        decision: ApprovalDecision,
-    ) -> Result<(), ApprovalError>;
+    fn decide(&self, approval_id: &str, decision: ApprovalDecision) -> Result<(), ApprovalError>;
     /// Remove expired entries. Returns the count removed.
     fn purge_expired(&self) -> usize;
     /// The earliest expiry `Instant` among the given pending approval ids.
@@ -376,7 +372,12 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let id = "a1".to_string();
         manager
-            .register(id.clone(), Instant::now() + Duration::from_secs(60), tx, meta())
+            .register(
+                id.clone(),
+                Instant::now() + Duration::from_secs(60),
+                tx,
+                meta(),
+            )
             .unwrap();
 
         manager.decide(&id, ApprovalDecision::Approve).unwrap();
@@ -399,7 +400,12 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let id = "a1".to_string();
         manager
-            .register(id.clone(), Instant::now() - Duration::from_secs(1), tx, meta())
+            .register(
+                id.clone(),
+                Instant::now() - Duration::from_secs(1),
+                tx,
+                meta(),
+            )
             .unwrap();
 
         assert_eq!(
@@ -409,7 +415,11 @@ mod tests {
         // The entry is NOT removed on expiry — peek-before-remove ensures a
         // retry caller gets 410 (Expired) not 404 (NotFound). The janitor or a
         // subsequent purge_expired() call is responsible for cleanup.
-        assert_eq!(manager.len(), 1, "expired entry stays until janitor removes it");
+        assert_eq!(
+            manager.len(),
+            1,
+            "expired entry stays until janitor removes it"
+        );
     }
 
     #[tokio::test]
@@ -465,7 +475,12 @@ mod tests {
                 "live".to_string(),
                 Instant::now() + Duration::from_secs(60),
                 tx.clone(),
-                ("user-1", "tool:bash", "agent-1", Some("sensitive cmd".to_string())),
+                (
+                    "user-1",
+                    "tool:bash",
+                    "agent-1",
+                    Some("sensitive cmd".to_string()),
+                ),
             )
             .unwrap();
         manager
@@ -510,7 +525,12 @@ mod tests {
                 "a1".to_string(),
                 Instant::now() + Duration::from_secs(60),
                 tx,
-                ("alice", "tool:read_file", "fs:/etc/hosts", Some("needs review".to_string())),
+                (
+                    "alice",
+                    "tool:read_file",
+                    "fs:/etc/hosts",
+                    Some("needs review".to_string()),
+                ),
             )
             .unwrap();
         let s = manager.status("a1").unwrap();
@@ -545,9 +565,7 @@ mod tests {
     #[test]
     fn earliest_expiry_none_when_no_pending() {
         let manager = ApprovalManager::new();
-        assert!(manager
-            .earliest_expiry(&["absent".to_string()])
-            .is_none());
+        assert!(manager.earliest_expiry(&["absent".to_string()]).is_none());
         assert!(manager.earliest_expiry(&[]).is_none());
     }
 
@@ -580,7 +598,11 @@ mod tests {
             .unwrap();
 
         let err = manager.register("id-3".into(), ttl, unbounded_channel().0, meta());
-        assert_eq!(err, Err(ApprovalError::CapExceeded), "third register must fail at cap=2");
+        assert_eq!(
+            err,
+            Err(ApprovalError::CapExceeded),
+            "third register must fail at cap=2"
+        );
     }
 
     // ── Multi-replica isolation test ──────────────────────────────────────────
@@ -605,7 +627,11 @@ mod tests {
             "decision on the wrong replica must return NotFound (in-memory isolation)"
         );
         // Replica-A still holds the entry.
-        assert_eq!(replica_a.len(), 1, "replica-A must still hold the pending approval");
+        assert_eq!(
+            replica_a.len(),
+            1,
+            "replica-A must still hold the pending approval"
+        );
     }
 
     #[test]

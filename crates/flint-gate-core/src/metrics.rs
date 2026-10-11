@@ -48,7 +48,10 @@ pub fn install_recorder() -> PrometheusHandle {
 /// Render the current metrics in Prometheus text format. Returns an empty
 /// string when the recorder was never installed (metrics disabled).
 pub fn render() -> String {
-    HANDLE.get().map(PrometheusHandle::render).unwrap_or_default()
+    HANDLE
+        .get()
+        .map(PrometheusHandle::render)
+        .unwrap_or_default()
 }
 
 /// Record one delegate-exchange outcome: increments

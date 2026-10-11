@@ -1,0 +1,25 @@
+{
+  "target": "copilot",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://docs.github.com/en/copilot/reference/custom-agents-configuration",
+    "version": "documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "nativeProvenance": {
+    "source": "https://docs.github.com/en/copilot/reference/custom-agents-configuration",
+    "version": "0.0.389-1; local CLI version; definitions source-verified only"
+  },
+  "nativeOptions": null,
+  "roleOverrides": {},
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "No Copilot agent marketplace mapping was verified; this export uses native agent files.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review .github/agents/*.agent.md; native CLI /agent or --agent selects a custom role. Fleet is a separate native execution mechanism."
+  ]
+}

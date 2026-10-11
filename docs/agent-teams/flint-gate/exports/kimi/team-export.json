@@ -1,0 +1,112 @@
+{
+  "target": "kimi",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/agents.md",
+    "version": "main documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Choose project .kimi-code/agents or the staged Kimi v2 marketplace/plugin. Literal ${base_prompt} in supplied prompts remains unchanged."
+  ],
+  "files": [
+    {
+      "file": ".kimi-code/agents/gate-identity-architect.md",
+      "sha256": "69d852c8e3e3095cfcc2745ba342965b9842bb1bc47fe8cd49abe7ebf78cb2ba"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-identity-architect.md",
+      "sha256": "69d852c8e3e3095cfcc2745ba342965b9842bb1bc47fe8cd49abe7ebf78cb2ba"
+    },
+    {
+      "file": ".kimi-code/agents/gate-auth.md",
+      "sha256": "9e5a0bc18f2ed66d1761efdd0c8b189e73004205ac2ffbbb798589a125205a67"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-auth.md",
+      "sha256": "9e5a0bc18f2ed66d1761efdd0c8b189e73004205ac2ffbbb798589a125205a67"
+    },
+    {
+      "file": ".kimi-code/agents/gate-policy.md",
+      "sha256": "f9fceaa3544eda4c3381be6d4d222f6bc48042e9b191f86187e74ff9a939a0c6"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-policy.md",
+      "sha256": "f9fceaa3544eda4c3381be6d4d222f6bc48042e9b191f86187e74ff9a939a0c6"
+    },
+    {
+      "file": ".kimi-code/agents/gate-proxy.md",
+      "sha256": "653add228727589252450cf688a7fdf5e516f1344bc6edc12006b0f27fc8bae9"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-proxy.md",
+      "sha256": "653add228727589252450cf688a7fdf5e516f1344bc6edc12006b0f27fc8bae9"
+    },
+    {
+      "file": ".kimi-code/agents/gate-streams.md",
+      "sha256": "5859c7c346342e942127ca064882dd87cc66bb4eae4b10095f872f06c450a436"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-streams.md",
+      "sha256": "5859c7c346342e942127ca064882dd87cc66bb4eae4b10095f872f06c450a436"
+    },
+    {
+      "file": ".kimi-code/agents/gate-control-plane.md",
+      "sha256": "3c1955ef473999f80d2eebccb147b759610b0ec133cc55ae0031bd5fe9a6689c"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-control-plane.md",
+      "sha256": "3c1955ef473999f80d2eebccb147b759610b0ec133cc55ae0031bd5fe9a6689c"
+    },
+    {
+      "file": ".kimi-code/agents/gate-console.md",
+      "sha256": "db8a66825b3eb4183f9459b0a8fc385e7742c0c0bd2becd9e61a589c9d0d866b"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-console.md",
+      "sha256": "db8a66825b3eb4183f9459b0a8fc385e7742c0c0bd2becd9e61a589c9d0d866b"
+    },
+    {
+      "file": ".kimi-code/agents/gate-sdk.md",
+      "sha256": "fa2fdb3ea189d9fed7d74da3dde5d11f5f8a74eb23bff40ed142d80b11d7ec5a"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-sdk.md",
+      "sha256": "fa2fdb3ea189d9fed7d74da3dde5d11f5f8a74eb23bff40ed142d80b11d7ec5a"
+    },
+    {
+      "file": ".kimi-code/agents/gate-operations.md",
+      "sha256": "1799def4050f98536aba2e18d96524b8e5f7e9fa259b0be706d2914085a52c30"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-operations.md",
+      "sha256": "1799def4050f98536aba2e18d96524b8e5f7e9fa259b0be706d2914085a52c30"
+    },
+    {
+      "file": ".kimi-code/agents/gate-reviewer.md",
+      "sha256": "4743ae48c49214bd54fe4fb1a308e3dd36e171033a963c31adbeb88805cf4cc9"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-reviewer.md",
+      "sha256": "4743ae48c49214bd54fe4fb1a308e3dd36e171033a963c31adbeb88805cf4cc9"
+    },
+    {
+      "file": "plugins/flint-gate/kimi.plugin.json",
+      "sha256": "74b82d9315d098858b97f48a8cd45ba02096b6e402774e74df9cd4e214aa2e06"
+    },
+    {
+      "file": "marketplace.json",
+      "sha256": "e1a0bca7b39e1291a4efbbee47aa83fd6b8c387b1a8e4d5d1fd2f0d929496c54"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "243bc227b510d251d7cd9f9787c2c133d51e4402d6fe75a5dad7d65f67e92065"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "target": "deepseek",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/experimental/agent-team",
+    "version": "master documentation inspected 2026-09-24; experimental",
+    "live": "unverified"
+  },
+  "nativeProvenance": {
+    "source": "https://github.com/deepseek-ai/deepseek-harness",
+    "version": "Local dsh wrapper exists; version probe fails with pnpm 11.7.0 vs 11.25.0 mismatch. Adapter source snapshot 2026-09-24 only; runtime acceptance unverified."
+  },
+  "nativeOptions": null,
+  "roleOverrides": {},
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "DeepSeek teams are experimental, require durable session storage, share one process/workspace, and provide no static per-member model setting. No package install, profile activation or team creation occurs on export.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review the role persona profiles and separate team composition profile before selecting them in DeepSeek. Team options configure the experimental agent-team service. The lead creates members at runtime using the portable role prompts; profiles do not pre-create a roster."
+  ]
+}

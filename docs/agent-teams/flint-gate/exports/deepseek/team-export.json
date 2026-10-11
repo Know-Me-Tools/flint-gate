@@ -1,0 +1,69 @@
+{
+  "target": "deepseek",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/experimental/agent-team",
+    "version": "master documentation inspected 2026-09-24; experimental",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "DeepSeek teams are experimental, require durable session storage, share one process/workspace, and provide no static per-member model setting. No package install, profile activation or team creation occurs on export.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review the role persona profiles and separate team composition profile before selecting them in DeepSeek. Team options configure the experimental agent-team service. The lead creates members at runtime using the portable role prompts; profiles do not pre-create a roster."
+  ],
+  "files": [
+    {
+      "file": ".dsh/profiles/flint-gate-gate-identity-architect/cordis.patch.yml",
+      "sha256": "51c4b44b4da0f4ca781ad7860cafce98c9295d074aa2bb8aaf83d669fc19d1ec"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-auth/cordis.patch.yml",
+      "sha256": "ecc6e46ac9cc68b1acf7b212eef820eafe10a777a4fcf6c0081f272367829d58"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-policy/cordis.patch.yml",
+      "sha256": "8f965155723c6ef42375f910c5e6bf59a2ef34d31d2453b3058f0fd8870e4d86"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-proxy/cordis.patch.yml",
+      "sha256": "f577459ad94e2f0b87d7a4f3ce5c39c3fef2ba266a4d8eea96e46cb866a3d495"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-streams/cordis.patch.yml",
+      "sha256": "36ebf80d629c8da097592eadbeae60502cdee74bfcc67dd6757b67c79d080732"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-control-plane/cordis.patch.yml",
+      "sha256": "50d818082aede10b5d1f3479cbb22a2c2a87c2f66989c2ae490e6e29a6f03a0a"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-console/cordis.patch.yml",
+      "sha256": "2eb18d3955c10cf7bc97d7a176d87006ca0c2c02c6b26999f920af7ef56cc59b"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-sdk/cordis.patch.yml",
+      "sha256": "b88de0f4f9a9996bf8a936577d7a58bbc0b7289a45473f164107b476e6bc5672"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-operations/cordis.patch.yml",
+      "sha256": "8ef7c6dd359d7418c73e76d99f9045aa51b538ab26e536d7cf2ae67426398f86"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-gate-reviewer/cordis.patch.yml",
+      "sha256": "1031e52868aa3ea2b5fdf7f6c26cd30d3effc761bbe02bec07cbff16cbcc0bcd"
+    },
+    {
+      "file": ".dsh/profiles/flint-gate-team/cordis.patch.yml",
+      "sha256": "976b0a72139906a2468e0153772fa2e21debd03b1eaa406654115a0afe7b92c9"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "0488985db2651f207c40d1881e483c4ef4a2df698df5c5035ad1f7050ca9a978"
+    }
+  ]
+}

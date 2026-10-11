@@ -1,0 +1,116 @@
+{
+  "ready": true,
+  "questions": [],
+  "team": {
+    "schemaVersion": 1,
+    "id": "flint-gate",
+    "outcome": "Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces.",
+    "scope": "project",
+    "harness": "codex",
+    "roles": [
+      {
+        "id": "implementer",
+        "description": "Deliver the requested outcome within assigned scope.",
+        "prompt": "Deliver: Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces.. Coordinate ownership before editing. Report evidence and remaining work.",
+        "skills": [],
+        "owns": [
+          "crates/**"
+        ],
+        "inputs": [
+          "Task and acceptance criteria"
+        ],
+        "outputs": [
+          "Verified Compass graph and local MCP",
+          "Native role definitions and project-authored skills",
+          "Identity/gateway research and ownership contracts"
+        ],
+        "dependsOn": [],
+        "modelPolicy": {
+          "tier": "medium"
+        }
+      },
+      {
+        "id": "security-reviewer",
+        "description": "Review the actual trust boundaries and required controls.",
+        "prompt": "Review the actual trust boundaries and required controls. Outcome: Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces.. Stay within assigned scope and return concrete evidence.",
+        "skills": [
+          "agent-runtime-security"
+        ],
+        "owns": [
+          "docs/agent-teams/flint-gate/reviews/security/**"
+        ],
+        "inputs": [
+          "Task context"
+        ],
+        "outputs": [
+          "Threat model and evidence-backed findings"
+        ],
+        "dependsOn": [],
+        "modelPolicy": {
+          "tier": "hard"
+        }
+      },
+      {
+        "id": "documentation-specialist",
+        "description": "Keep operator and developer instructions consistent with the delivered behavior.",
+        "prompt": "Keep operator and developer instructions consistent with the delivered behavior. Outcome: Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces.. Stay within assigned scope and return concrete evidence.",
+        "skills": [
+          "documentation-and-adrs"
+        ],
+        "owns": [
+          "docs/agent-teams/flint-gate/operator/**"
+        ],
+        "inputs": [
+          "Task context"
+        ],
+        "outputs": [
+          "Updated documentation"
+        ],
+        "dependsOn": [],
+        "modelPolicy": {
+          "tier": "medium"
+        }
+      },
+      {
+        "id": "reviewer",
+        "description": "Independently verify acceptance criteria and code quality.",
+        "prompt": "Inspect the delivered diff and actual verification evidence. Report concrete defects; do not rewrite implementation while reviewing.",
+        "skills": [
+          "code-review-and-quality"
+        ],
+        "owns": [
+          "docs/agent-teams/flint-gate/reviews/independent/**"
+        ],
+        "inputs": [
+          "Implementation diff",
+          "Verification evidence"
+        ],
+        "outputs": [
+          "Review findings"
+        ],
+        "dependsOn": [
+          "implementer",
+          "security-reviewer",
+          "documentation-specialist"
+        ],
+        "modelPolicy": {
+          "tier": "hard"
+        }
+      }
+    ],
+    "modelPolicy": {
+      "tier": "medium"
+    }
+  },
+  "reasons": [
+    "An implementer owns delivery. Assign concrete output paths before creating the team; suggested roles can be reduced.",
+    "security-reviewer: Review the actual trust boundaries and required controls.",
+    "documentation-specialist: Keep operator and developer instructions consistent with the delivered behavior.",
+    "An independent reviewer adds a separate verification pass and extra model cost."
+  ],
+  "alternatives": [
+    "Use one implementer for sequential work; invoke specialist skills as needed.",
+    "Add parallel roles only where work and file ownership can be separated."
+  ],
+  "skillDiscovery": "Skill names are suggestions, not installation claims. Discover installed AgentSkills, inspect their source and requirements, and replace or remove unavailable skills before export."
+}

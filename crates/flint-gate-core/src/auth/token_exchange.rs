@@ -648,7 +648,10 @@ mod tests {
             metadata_public: json!({ "scope": "read write admin" }),
             ..Default::default()
         };
-        assert_eq!(scopes_from_identity(&identity), vec!["read", "write", "admin"]);
+        assert_eq!(
+            scopes_from_identity(&identity),
+            vec!["read", "write", "admin"]
+        );
     }
 
     #[test]
@@ -841,7 +844,9 @@ mod tests {
             scopes: "read",
         });
         let m = minter().await;
-        assert!(exchange(&exchange_req(None), &verifier, &m, None, None).await.is_ok());
+        assert!(exchange(&exchange_req(None), &verifier, &m, None, None)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -989,13 +994,11 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/oauth2/token"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(json!({
-                    "access_token": "hydra-minted-token",
-                    "token_type": "Bearer",
-                    "scope": "read"
-                })),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "hydra-minted-token",
+                "token_type": "Bearer",
+                "scope": "read"
+            })))
             .mount(&server)
             .await;
 

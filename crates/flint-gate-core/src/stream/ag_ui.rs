@@ -628,8 +628,10 @@ impl AgUiProcessor {
         // differ from the context's default when ttl_override is set). This keeps
         // the client deadline in sync with the internal sleep_until deadline.
         let effective_expires_at = chrono::Utc::now()
-            + chrono::Duration::from_std(deadline.saturating_duration_since(std::time::Instant::now()))
-                .unwrap_or(chrono::Duration::seconds(0));
+            + chrono::Duration::from_std(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            )
+            .unwrap_or(chrono::Duration::seconds(0));
         let mut wire_context = context.clone();
         wire_context.expires_at = effective_expires_at;
 

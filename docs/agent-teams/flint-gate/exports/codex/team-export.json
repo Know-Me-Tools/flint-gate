@@ -1,0 +1,65 @@
+{
+  "target": "codex",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+    "version": "documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "Standalone agent files are supported. A Codex plugin agents manifest field is not verified; no such field is emitted.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review and merge .codex/agents and optional .codex/config.toml into the project; config values are native Codex options."
+  ],
+  "files": [
+    {
+      "file": ".codex/agents/gate-identity-architect.toml",
+      "sha256": "e981b2a00962461383d145ea69680633b89545eb06ae46a9b8ffec5ec0085ab0"
+    },
+    {
+      "file": ".codex/agents/gate-auth.toml",
+      "sha256": "410b17512539c80e49f81e59fd7600624d4dc5effcaf97b8f7e4d304744abd0b"
+    },
+    {
+      "file": ".codex/agents/gate-policy.toml",
+      "sha256": "01583f76fa66ca0540473901b37fdea3d3a87c4f862c6f5a234d83c988403898"
+    },
+    {
+      "file": ".codex/agents/gate-proxy.toml",
+      "sha256": "29acd6b5ee646263d3ed3b7bd7901be501b6e88f951a21f3a437fc25b4417713"
+    },
+    {
+      "file": ".codex/agents/gate-streams.toml",
+      "sha256": "fe4cea671f5cb25042192e6c9a1f5b1257107317f74774fea4f7cce9f92d9ecd"
+    },
+    {
+      "file": ".codex/agents/gate-control-plane.toml",
+      "sha256": "9b049f951b1315220605f5f8c1728d82e40ccb4386ffbbeb262b591f1dad32d3"
+    },
+    {
+      "file": ".codex/agents/gate-console.toml",
+      "sha256": "e6f779c9bddb97a3a2851422abbf849fb8da8d667f29b238315b13a03fe157bc"
+    },
+    {
+      "file": ".codex/agents/gate-sdk.toml",
+      "sha256": "a7cc18d834495e67022a70c99a75fad7d5f7cffc69a84fa5816ba72ebfcfb60b"
+    },
+    {
+      "file": ".codex/agents/gate-operations.toml",
+      "sha256": "5f2d555fe10fecc2f7330947ab111496923070182480c08c67cc26f5c6e324f2"
+    },
+    {
+      "file": ".codex/agents/gate-reviewer.toml",
+      "sha256": "ba85e1414bf3f7127ca84a29bc06c12ec426d869ab18d88432b6cce197c8a586"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "0437299d87db9fdbbad69ba7186a5ea547b7067182668e61f2d33f2c7d1709e9"
+    }
+  ]
+}

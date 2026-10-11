@@ -230,13 +230,13 @@ impl GateConfig {
         let mut seen: HashSet<(String, GovernanceReason)> = HashSet::new();
         let mut push =
             |findings: &mut Vec<GovernanceFinding>, route_id: &str, reason: GovernanceReason| {
-            if seen.insert((route_id.to_string(), reason)) {
-                findings.push(GovernanceFinding {
-                    route_id: route_id.to_string(),
-                    reason,
-                });
-            }
-        };
+                if seen.insert((route_id.to_string(), reason)) {
+                    findings.push(GovernanceFinding {
+                        route_id: route_id.to_string(),
+                        reason,
+                    });
+                }
+            };
 
         for route in routes.iter().filter(|r| r.enabled) {
             // Effective provider name: route.auth, else the site's default_auth.

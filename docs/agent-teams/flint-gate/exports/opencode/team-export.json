@@ -1,0 +1,65 @@
+{
+  "target": "opencode",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://opencode.ai/docs/agents/",
+    "version": "deployed singular agent schema inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "OpenCode JS/TS or npm plugins are separate from agent definitions; no agent marketplace manifest is invented.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review .opencode/agents/*.md and optional opencode.json. Native configuration uses singular agent and permission keys."
+  ],
+  "files": [
+    {
+      "file": ".opencode/agents/gate-identity-architect.md",
+      "sha256": "03987c8041833b31289b0713a1b7ec8286cb4d6c5e4ae20c7c83a8472a8f8f87"
+    },
+    {
+      "file": ".opencode/agents/gate-auth.md",
+      "sha256": "0253eef50f27f289ca20820a964ea0f1d87e59f6877ae89376eac26ec261ccd9"
+    },
+    {
+      "file": ".opencode/agents/gate-policy.md",
+      "sha256": "cc0bedbaa01fd3e1902d9663516114527661bc0902e220915e8f6b2656af512c"
+    },
+    {
+      "file": ".opencode/agents/gate-proxy.md",
+      "sha256": "530233b5f09d29d1c0fee4b8d8300f2cdbac88d12f56043f27ccb2cc1c6074aa"
+    },
+    {
+      "file": ".opencode/agents/gate-streams.md",
+      "sha256": "800c23301034b081e2cbc88137cb7edb4179822c8c6994681f4f7575d938dcad"
+    },
+    {
+      "file": ".opencode/agents/gate-control-plane.md",
+      "sha256": "1482a232abbc6578e820ce7a447f437a79e448f94db9de2f8084150aae2d602a"
+    },
+    {
+      "file": ".opencode/agents/gate-console.md",
+      "sha256": "a54e2454f3a26685eb0468d2077ab520e9476dde1e8e28f85127ac6cfeb076a3"
+    },
+    {
+      "file": ".opencode/agents/gate-sdk.md",
+      "sha256": "23843259b9ae38123f4c78587d983a562653d8516797c83d8a76d51bfe13088e"
+    },
+    {
+      "file": ".opencode/agents/gate-operations.md",
+      "sha256": "13c33f5d46781ecaa74e922dea3a33650c03aa70aa8e1ae2f6e8d7419f8d0d46"
+    },
+    {
+      "file": ".opencode/agents/gate-reviewer.md",
+      "sha256": "22c4c9f44d92bfec0285cdf14dba9c0bfe5f17ad5af56b401a6b6c592e9d1eb4"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "f3b14fc64f18466c4cef19558781bfeab2b1bb9f127b82558950191af30dd5f1"
+    }
+  ]
+}

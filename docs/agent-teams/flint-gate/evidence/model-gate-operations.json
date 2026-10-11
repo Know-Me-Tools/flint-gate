@@ -1,0 +1,53 @@
+{
+  "selected": {
+    "id": "gpt-5.6-sol",
+    "available": true,
+    "tier": "medium",
+    "capabilities": {
+      "function_calling": true
+    },
+    "pricing": {
+      "inputPerMillion": null,
+      "outputPerMillion": null
+    },
+    "provenance": {
+      "availabilityBasis": "operator-declared",
+      "evidence": "Coding-agent model offered by current Codex desktop host. No provider inference probe.",
+      "tierBasis": "Task policy annotation, not a benchmark"
+    },
+    "freshness": {
+      "stale": null
+    }
+  },
+  "policy": {
+    "capabilities": [
+      "function_calling"
+    ],
+    "tier": "medium"
+  },
+  "appliedLayers": [
+    "team",
+    "role",
+    "task"
+  ],
+  "rejected": [
+    {
+      "id": "gpt-6-astra",
+      "reasons": [
+        "declared tier missing or different"
+      ]
+    }
+  ],
+  "explanation": "All declared constraints satisfied; ordered by lowest known input+output USD per million, then exact identifier. Unknown costs rank last.",
+  "warnings": [
+    "Selected pricing freshness is unknown. Price ceilings do not guarantee current provider rates.",
+    "Availability is operator-declared; no live discovery was performed for this list."
+  ],
+  "diagnostics": [
+    "Host-configured/declared availability, not live provider inference.",
+    "No price catalog configured; do not claim a monetary ceiling or cheapest model.",
+    "Low-tier tasks require explicit discovery before any automatic downgrade."
+  ],
+  "catalogProvenance": null,
+  "catalogFreshness": null
+}

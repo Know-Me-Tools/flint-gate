@@ -1,0 +1,45 @@
+{
+  "directory": "/Users/gqadonis/Projects/prometheus/flint-gate/docs/agent-teams/flint-gate/exports/claude",
+  "files": [
+    ".claude/agents/gate-identity-architect.md",
+    "plugins/flint-gate/agents/gate-identity-architect.md",
+    ".claude/agents/gate-auth.md",
+    "plugins/flint-gate/agents/gate-auth.md",
+    ".claude/agents/gate-policy.md",
+    "plugins/flint-gate/agents/gate-policy.md",
+    ".claude/agents/gate-proxy.md",
+    "plugins/flint-gate/agents/gate-proxy.md",
+    ".claude/agents/gate-streams.md",
+    "plugins/flint-gate/agents/gate-streams.md",
+    ".claude/agents/gate-control-plane.md",
+    "plugins/flint-gate/agents/gate-control-plane.md",
+    ".claude/agents/gate-console.md",
+    "plugins/flint-gate/agents/gate-console.md",
+    ".claude/agents/gate-sdk.md",
+    "plugins/flint-gate/agents/gate-sdk.md",
+    ".claude/agents/gate-operations.md",
+    "plugins/flint-gate/agents/gate-operations.md",
+    ".claude/agents/gate-reviewer.md",
+    "plugins/flint-gate/agents/gate-reviewer.md",
+    "plugins/flint-gate/.claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "export-receipt.json",
+    "team-export.json"
+  ],
+  "verification": {
+    "level": "source-verified",
+    "source": "https://code.claude.com/docs/en/sub-agents",
+    "version": "documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "These are native subagents; installing them does not create an experimental Claude agent team or enable that feature.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Choose project .claude/agents or the staged local marketplace/plugin. Do not install both copies. Settings options are a proposed project .claude/settings.json."
+  ]
+}

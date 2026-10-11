@@ -149,7 +149,11 @@ impl SseStreamProcessor {
             .with_tool_authz(tool_authz.clone())
             .with_max_tool_args_bytes(max_tool_args_bytes);
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
+                proc = proc.with_approval_handle(
+                    handle.manager,
+                    handle.decision_tx,
+                    handle.ttl_override,
+                );
             }
             Some(proc)
         } else {
@@ -160,7 +164,11 @@ impl SseStreamProcessor {
             let mut proc = A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
                 .with_tool_authz(tool_authz.clone());
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
+                proc = proc.with_approval_handle(
+                    handle.manager,
+                    handle.decision_tx,
+                    handle.ttl_override,
+                );
             }
             Some(proc)
         } else {
@@ -1149,7 +1157,10 @@ mod tests {
                 .map(|t| (t / 2).max(10).min(300))
                 .unwrap_or(60)
         });
-        assert_eq!(interval, 42, "explicit janitor_interval_seconds must override TTL heuristic");
+        assert_eq!(
+            interval, 42,
+            "explicit janitor_interval_seconds must override TTL heuristic"
+        );
 
         // When no explicit value: derive from TTL/2 (clamped to [10, 300]).
         let cfg_derived = ApprovalConfig {

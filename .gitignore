@@ -10,3 +10,10 @@ node_modules/
 # Generated Forge key material (scripts/generate-forge-keys.mjs)
 .env.keys
 /keys/
+
+# Local Compass artifacts and agent-team runtime state
+/compass-out/
+/.compass/cache/
+/.compass/*.log
+/.compass/setup-baseline.json
+/.agent-team/

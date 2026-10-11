@@ -1,0 +1,783 @@
+{
+  "checkedAt": "2026-09-25T05:22:35.129Z",
+  "sourceHead": "39c40d6b97be1b346969acead1e943c0bd68d5b7",
+  "roles": 10,
+  "skills": 10,
+  "indexedFilesWithExactlyOneOwner": 111,
+  "ownership": [
+    {
+      "path": "crates/flint-gate-core/src/auth/jwt_mint.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/proxy/router.rs",
+      "owners": [
+        "gate-proxy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/metrics.rs",
+      "owners": [
+        "gate-operations"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/a2ui.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/mcp_metadata.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/aso_replica_grant.rs",
+      "owners": [
+        "gate-proxy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/pkce.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authority/mod.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/select.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/approval/durable/mod.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "web/src/components/CedarEditor.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/websocket.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "sdks/typescript/src/ws.ts",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/main.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "sdks/go/doc.go",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/table.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "sdks/typescript/src/stream.ts",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/App.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/db/mod.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "sdks/typescript/src/index.ts",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/toast.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/switch.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/processor.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/button.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/token_exchange.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/ratelimit/governor_layer.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "web/src/lib/utils.ts",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate/src/main.rs",
+      "owners": [
+        "gate-proxy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-client/src/lib.rs",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "sdks/typescript/src/admin.ts",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/kratos.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "sdks/go/client.go",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/approval/mod.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "sdks/typescript/src/middleware.ts",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/pages/Hooks.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/jwt_verify.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/sugar.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "web/src/api/types.ts",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/ratelimit/oauth_limit.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/identity.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/cache/session.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/mod.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-client/src/error.rs",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/http_body.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/types.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/error.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/mod.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/introspect.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/approval/durable/postgres.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "web/src/pages/AuthProviders.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authority/postgres.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "web/src/pages/ApiKeys.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "web/src/pages/Approvals.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "web/src/hooks/useAdmin.ts",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/dialog.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/mod.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/client_credentials.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/ndjson.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/aso_clinical_authorize.rs",
+      "owners": [
+        "gate-proxy"
+      ]
+    },
+    {
+      "path": "sdks/go/types.go",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/mod.rs",
+      "owners": [
+        "gate-proxy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/mcp.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "sdks/flutter/lib/src/client.dart",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "sdks/go/middleware.go",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "sdks/flutter/lib/flint_gate.dart",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/cache/redis_fence.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/card.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/badge.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/mod.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/guardrail/mod.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-client/src/stream.rs",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/api/admin.ts",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/cache/mod.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/ratelimit/mod.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/pipeline.rs",
+      "owners": [
+        "gate-proxy"
+      ]
+    },
+    {
+      "path": "web/src/pages/Budgets.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-client/src/types.rs",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/validator.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/oauth.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "web/src/pages/Dashboard.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "sdks/flutter/lib/src/sse_client.dart",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/pages/Routes.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/input.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/api_key.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/tool_authz.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/admin/mod.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/jwks_publish.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "web/src/components/ReadOnlyBanner.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/lib.rs",
+      "owners": [
+        "gate-identity-architect"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/schema.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/bundle.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "sdks/go/ws.go",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/ag_ui.rs",
+      "owners": [
+        "gate-streams"
+      ]
+    },
+    {
+      "path": "sdks/flutter/lib/src/auth.dart",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/jwks.rs",
+      "owners": [
+        "gate-auth"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/admin/auth.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "web/src/components/ui/textarea.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/lookup.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/loader.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/template.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "web/src/pages/Policies.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "web/src/pages/AgentIdentities.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/proxy/mod.rs",
+      "owners": [
+        "gate-proxy"
+      ]
+    },
+    {
+      "path": "sdks/go/stream.go",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "sdks/typescript/src/types.ts",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "web/src/pages/Analytics.tsx",
+      "owners": [
+        "gate-console"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authority/consumer.rs",
+      "owners": [
+        "gate-control-plane"
+      ]
+    },
+    {
+      "path": "sdks/typescript/src/client.ts",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "sdks/flutter/lib/src/types.dart",
+      "owners": [
+        "gate-sdk"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/engine.rs",
+      "owners": [
+        "gate-policy"
+      ]
+    },
+    {
+      "path": "crates/flint-gate-client/src/client.rs",
+      "owners": [
+        "gate-sdk"
+      ]
+    }
+  ],
+  "overlappingTrackedPaths": [],
+  "selectedModels": [
+    {
+      "role": "gate-identity-architect",
+      "codex": "gpt-6-astra",
+      "tier": "hard"
+    },
+    {
+      "role": "gate-auth",
+      "codex": "gpt-6-astra",
+      "tier": "hard"
+    },
+    {
+      "role": "gate-policy",
+      "codex": "gpt-6-astra",
+      "tier": "hard"
+    },
+    {
+      "role": "gate-proxy",
+      "codex": "gpt-6-astra",
+      "tier": "hard"
+    },
+    {
+      "role": "gate-streams",
+      "codex": "gpt-6-astra",
+      "tier": "hard"
+    },
+    {
+      "role": "gate-control-plane",
+      "codex": "gpt-6-astra",
+      "tier": "hard"
+    },
+    {
+      "role": "gate-console",
+      "codex": "gpt-5.6-sol",
+      "tier": "medium"
+    },
+    {
+      "role": "gate-sdk",
+      "codex": "gpt-5.6-sol",
+      "tier": "medium"
+    },
+    {
+      "role": "gate-operations",
+      "codex": "gpt-5.6-sol",
+      "tier": "medium"
+    },
+    {
+      "role": "gate-reviewer",
+      "codex": "gpt-6-astra",
+      "tier": "hard"
+    }
+  ],
+  "exportTargets": [
+    "codex",
+    "claude",
+    "copilot",
+    "kimi",
+    "minimax",
+    "opencode",
+    "deepseek",
+    "uar",
+    "bossfang"
+  ],
+  "exportFilesVerified": 139,
+  "installedFilesVerified": 60,
+  "skillLinksVerified": 51,
+  "nativeVerification": {
+    "opencode": "10 subagents discovered by agent list --pure; no model run",
+    "codex": "Generated quoted-key TOML fields and installed bytes checked; no agent run",
+    "claude": "Frontmatter and installed bytes checked; no agent run",
+    "kimi": "Frontmatter and installed bytes checked; no agent run",
+    "copilot": "Frontmatter and installed bytes checked; no agent run",
+    "minimax": "Frontmatter and isolated-profile bytes checked; runtime acceptance unverified",
+    "deepseek": "JSON-compatible Cordis patch parsed; external wrapper fails pnpm version check",
+    "uar": "Staged artifact JSON parsed; no registration",
+    "bossfang": "Export hashes verified; no registration/activation"
+  },
+  "graphSha256": "e72f2c1137b5b9be4458c3f702112ef7dd17eb4ce577d7dff7e5dcc487327d5e",
+  "setupAudit": {
+    "baselineAt": "2026-09-25T05:05:47.505Z",
+    "sourceHead": "39c40d6b97be1b346969acead1e943c0bd68d5b7",
+    "trackedFilesChecked": 1009,
+    "changedTrackedFiles": [
+      ".gitignore"
+    ],
+    "preExistingModifiedSourceFiles": 19,
+    "preserved": true
+  },
+  "limits": [
+    "Ownership globs coordinate writes; they do not enforce native filesystem permissions.",
+    "Format checks are not full native schema certification or successful inference.",
+    "OpenCode discovery receipt is the recorded setup check; rerun the CLI after changing native definitions.",
+    "Unassigned future paths require ownership reconciliation before edits."
+  ],
+  "skillValidator": {
+    "allPassed": true,
+    "count": 10,
+    "receipt": "skill-validation.json"
+  },
+  "tomlParser": {
+    "valid": true,
+    "count": 31,
+    "receipt": "toml-validation.json"
+  },
+  "manifestValid": true,
+  "applicationBuild": "Not run: no application source, dependency or build configuration changed",
+  "diffCheck": true
+}

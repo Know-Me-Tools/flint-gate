@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub const ASO_REPLICA_SCOPE: &str = "aso.replica.read";
-pub const ASO_PROJECTION_REVISION: u32 = 5;
+pub const ASO_PROJECTION_REVISION: u32 = 6;
 
 /// Parse an algorithm name + private key into a jsonwebtoken encoding key.
 ///

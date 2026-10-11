@@ -147,9 +147,10 @@ pub fn build_authenticator(
         AuthProviderConfig::Anonymous(cfg) => {
             Arc::new(AnonymousAuthenticator::new(cfg.default_subject.clone()))
         }
-        AuthProviderConfig::Jwt(cfg) => {
-            Arc::new(JwtVerifyAuthenticator::new(cfg.clone(), http_client.clone()))
-        }
+        AuthProviderConfig::Jwt(cfg) => Arc::new(JwtVerifyAuthenticator::new(
+            cfg.clone(),
+            http_client.clone(),
+        )),
         AuthProviderConfig::Mcp(cfg) => {
             // Fail CLOSED on a misconfigured MCP RS. Without an `audience`
             // the RFC 8707 confused-deputy check is a no-op (any signed

@@ -1,0 +1,56 @@
+{
+  "target": "claude",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://code.claude.com/docs/en/sub-agents",
+    "version": "documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "nativeProvenance": {
+    "source": "https://code.claude.com/docs/en/sub-agents",
+    "version": "2.1.282; documentation inspection; project agents selected"
+  },
+  "nativeOptions": null,
+  "roleOverrides": {
+    "gate-identity-architect": {
+      "model": "inherit"
+    },
+    "gate-auth": {
+      "model": "inherit"
+    },
+    "gate-policy": {
+      "model": "inherit"
+    },
+    "gate-proxy": {
+      "model": "inherit"
+    },
+    "gate-streams": {
+      "model": "inherit"
+    },
+    "gate-control-plane": {
+      "model": "inherit"
+    },
+    "gate-console": {
+      "model": "inherit"
+    },
+    "gate-sdk": {
+      "model": "inherit"
+    },
+    "gate-operations": {
+      "model": "inherit"
+    },
+    "gate-reviewer": {
+      "model": "inherit"
+    }
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "These are native subagents; installing them does not create an experimental Claude agent team or enable that feature.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Choose project .claude/agents or the staged local marketplace/plugin. Do not install both copies. Settings options are a proposed project .claude/settings.json."
+  ]
+}

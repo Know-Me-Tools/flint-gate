@@ -1,0 +1,34 @@
+{
+  "directory": "/Users/gqadonis/Projects/prometheus/flint-gate/docs/agent-teams/flint-gate/exports/deepseek",
+  "files": [
+    ".dsh/profiles/flint-gate-gate-identity-architect/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-auth/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-policy/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-proxy/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-streams/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-control-plane/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-console/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-sdk/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-operations/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-gate-reviewer/cordis.patch.yml",
+    ".dsh/profiles/flint-gate-team/cordis.patch.yml",
+    "export-receipt.json",
+    "team-export.json"
+  ],
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/experimental/agent-team",
+    "version": "master documentation inspected 2026-09-24; experimental",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "DeepSeek teams are experimental, require durable session storage, share one process/workspace, and provide no static per-member model setting. No package install, profile activation or team creation occurs on export.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Review the role persona profiles and separate team composition profile before selecting them in DeepSeek. Team options configure the experimental agent-team service. The lead creates members at runtime using the portable role prompts; profiles do not pre-create a roster."
+  ]
+}

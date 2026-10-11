@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "format": "agent-team-export-plan",
+  "execution": "not-performed",
+  "requests": [
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-identity-architect.json",
+      "role": "gate-identity-architect"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-auth.json",
+      "role": "gate-auth"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-policy.json",
+      "role": "gate-policy"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-proxy.json",
+      "role": "gate-proxy"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-streams.json",
+      "role": "gate-streams"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-control-plane.json",
+      "role": "gate-control-plane"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-console.json",
+      "role": "gate-console"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-sdk.json",
+      "role": "gate-sdk"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-operations.json",
+      "role": "gate-operations"
+    },
+    {
+      "method": "POST",
+      "route": "/api/agents",
+      "bodyFile": "uar/agents/gate-reviewer.json",
+      "role": "gate-reviewer"
+    }
+  ]
+}

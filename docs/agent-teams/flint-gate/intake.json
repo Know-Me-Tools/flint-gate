@@ -1,0 +1,33 @@
+{
+  "id": "flint-gate",
+  "outcome": "Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces.",
+  "complexity": "complex",
+  "areas": [
+    "code",
+    "security",
+    "docs"
+  ],
+  "deliverables": [
+    "Verified Compass graph and local MCP",
+    "Native role definitions and project-authored skills",
+    "Identity/gateway research and ownership contracts"
+  ],
+  "budget": "balanced",
+  "review": true,
+  "harness": "codex",
+  "scope": "project",
+  "ownership": {
+    "implementer": [
+      "crates/**"
+    ],
+    "security-reviewer": [
+      "docs/agent-teams/flint-gate/reviews/security/**"
+    ],
+    "documentation-specialist": [
+      "docs/agent-teams/flint-gate/operator/**"
+    ],
+    "reviewer": [
+      "docs/agent-teams/flint-gate/reviews/independent/**"
+    ]
+  }
+}

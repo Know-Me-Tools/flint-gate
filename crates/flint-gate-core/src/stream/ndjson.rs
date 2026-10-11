@@ -93,7 +93,11 @@ impl NdjsonStreamProcessor {
             .with_tool_authz(tool_authz.clone())
             .with_max_tool_args_bytes(max_tool_args_bytes);
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
+                proc = proc.with_approval_handle(
+                    handle.manager,
+                    handle.decision_tx,
+                    handle.ttl_override,
+                );
             }
             Some(proc)
         } else {
@@ -104,7 +108,11 @@ impl NdjsonStreamProcessor {
             let mut proc = A2UiProcessor::new(config.ai.a2ui.allowed_intents.clone())
                 .with_tool_authz(tool_authz.clone());
             if let Some(handle) = approval_handle.clone() {
-                proc = proc.with_approval_handle(handle.manager, handle.decision_tx, handle.ttl_override);
+                proc = proc.with_approval_handle(
+                    handle.manager,
+                    handle.decision_tx,
+                    handle.ttl_override,
+                );
             }
             Some(proc)
         } else {

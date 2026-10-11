@@ -1,0 +1,28 @@
+{
+  "target": "uar",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/Prometheus-AGS/universal-agent-runtime/blob/ba12845138104d3c8c3b8bca8bc7c5be24004e91/src/uar/domain/artifact.rs",
+    "version": "1.0.0 / ba12845138104d3c8c3b8bca8bc7c5be24004e91",
+    "live": "unverified"
+  },
+  "nativeProvenance": {
+    "source": "https://github.com/Prometheus-AGS/universal-agent-runtime",
+    "version": "Creator adapter source snapshot; registration deferred"
+  },
+  "nativeOptions": null,
+  "roleOverrides": {},
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "UAR skill policy prefer is a preference, not an enforced skill allowlist. Blank provider/model use service defaults; model IDs are not split to guess a provider.",
+    "UAR has no verified persistent team registration API. POST /api/uar/runs requires {artifact:<full AgentArtifact>,input:<task>}; registration does not run it.",
+    "Native authentication and registration are unverified. UAR defaults to JWT-required; BossFang accepts Bearer or X-API-Key. Discovery success is not mutation authorization."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Each uar/agents/*.json is a complete AgentArtifact body for POST /api/agents. UAR team native options supply artifact defaults, then role native overrides win.",
+    "Review native policy.tools.allow and tools.bundles before registration; generated defaults grant no explicit tool allowlist or bundles. Supply required native tool policy through team defaults or role overrides.",
+    "registration-plan.json is a local review plan, not a native API body. Supply an operator-approved base URL and credential reference; preserve each returned native ID/outcome because registration is not atomic."
+  ]
+}

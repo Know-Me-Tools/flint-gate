@@ -1,0 +1,72 @@
+{
+  "target": "uar",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://github.com/Prometheus-AGS/universal-agent-runtime/blob/ba12845138104d3c8c3b8bca8bc7c5be24004e91/src/uar/domain/artifact.rs",
+    "version": "1.0.0 / ba12845138104d3c8c3b8bca8bc7c5be24004e91",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "UAR skill policy prefer is a preference, not an enforced skill allowlist. Blank provider/model use service defaults; model IDs are not split to guess a provider.",
+    "UAR has no verified persistent team registration API. POST /api/uar/runs requires {artifact:<full AgentArtifact>,input:<task>}; registration does not run it.",
+    "Native authentication and registration are unverified. UAR defaults to JWT-required; BossFang accepts Bearer or X-API-Key. Discovery success is not mutation authorization."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Each uar/agents/*.json is a complete AgentArtifact body for POST /api/agents. UAR team native options supply artifact defaults, then role native overrides win.",
+    "Review native policy.tools.allow and tools.bundles before registration; generated defaults grant no explicit tool allowlist or bundles. Supply required native tool policy through team defaults or role overrides.",
+    "registration-plan.json is a local review plan, not a native API body. Supply an operator-approved base URL and credential reference; preserve each returned native ID/outcome because registration is not atomic."
+  ],
+  "files": [
+    {
+      "file": "uar/agents/gate-identity-architect.json",
+      "sha256": "48df7121094c9d69e8d32cf6bb591c4864e169b040909038551715a016d3a376"
+    },
+    {
+      "file": "uar/agents/gate-auth.json",
+      "sha256": "2b5b2d4c0b5b55e92189fba18ddc679517ccad2a77ea215063e758138d1a5354"
+    },
+    {
+      "file": "uar/agents/gate-policy.json",
+      "sha256": "99346975c642b7e79e193ed3ff06dffbad4f75ffeca6b01eadd465019bee6ffb"
+    },
+    {
+      "file": "uar/agents/gate-proxy.json",
+      "sha256": "ae868451a7108a61c9c4991216bfd46cebdb7fcfd410c08e0665f898a5ecf600"
+    },
+    {
+      "file": "uar/agents/gate-streams.json",
+      "sha256": "5c7906753cde0b8fb3cd58ee99860ae75b9c7f7784939527e1ed424754f68713"
+    },
+    {
+      "file": "uar/agents/gate-control-plane.json",
+      "sha256": "ef2fb697400beb72b3ea990ba4bd24b5427b50940ce5a987d565efaf99c8c34e"
+    },
+    {
+      "file": "uar/agents/gate-console.json",
+      "sha256": "ee13df9a5f33c2bb8b2b6fbb7988c469f6addf335d81808fdb5f55c26a1d5e11"
+    },
+    {
+      "file": "uar/agents/gate-sdk.json",
+      "sha256": "0b279649a11b7a3e4ea3566dfc855198c2370577d548beef60142a149cc2dc46"
+    },
+    {
+      "file": "uar/agents/gate-operations.json",
+      "sha256": "98e03e346945d57b7b13a8d930b0e60e62124a56d51390920463c4c1b8cf5008"
+    },
+    {
+      "file": "uar/agents/gate-reviewer.json",
+      "sha256": "02333f6c95947df4bd9a5862d77e78690f4dfde0e6c0567373e86f7f1d44a4ff"
+    },
+    {
+      "file": "uar/registration-plan.json",
+      "sha256": "25e1027b1e224b68a0fd239143b7c4f90cc7c2f3cd2f2a98f3a98715fb0b4d9a"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "bf802428d0dc1366f7b53642fa5512bcf13c58f0e595a98298e0b0622f3d125e"
+    }
+  ]
+}

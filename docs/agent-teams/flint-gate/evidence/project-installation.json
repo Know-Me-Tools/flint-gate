@@ -1,0 +1,521 @@
+{
+  "at": "2026-09-25T05:17:14.354Z",
+  "root": "/Users/gqadonis/Projects/prometheus/flint-gate/",
+  "files": [
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-identity-architect.toml",
+      "destination": ".codex/agents/gate-identity-architect.toml",
+      "sha256": "e981b2a00962461383d145ea69680633b89545eb06ae46a9b8ffec5ec0085ab0"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-auth.toml",
+      "destination": ".codex/agents/gate-auth.toml",
+      "sha256": "410b17512539c80e49f81e59fd7600624d4dc5effcaf97b8f7e4d304744abd0b"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-policy.toml",
+      "destination": ".codex/agents/gate-policy.toml",
+      "sha256": "01583f76fa66ca0540473901b37fdea3d3a87c4f862c6f5a234d83c988403898"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-proxy.toml",
+      "destination": ".codex/agents/gate-proxy.toml",
+      "sha256": "29acd6b5ee646263d3ed3b7bd7901be501b6e88f951a21f3a437fc25b4417713"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-streams.toml",
+      "destination": ".codex/agents/gate-streams.toml",
+      "sha256": "fe4cea671f5cb25042192e6c9a1f5b1257107317f74774fea4f7cce9f92d9ecd"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-control-plane.toml",
+      "destination": ".codex/agents/gate-control-plane.toml",
+      "sha256": "9b049f951b1315220605f5f8c1728d82e40ccb4386ffbbeb262b591f1dad32d3"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-console.toml",
+      "destination": ".codex/agents/gate-console.toml",
+      "sha256": "e6f779c9bddb97a3a2851422abbf849fb8da8d667f29b238315b13a03fe157bc"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-sdk.toml",
+      "destination": ".codex/agents/gate-sdk.toml",
+      "sha256": "a7cc18d834495e67022a70c99a75fad7d5f7cffc69a84fa5816ba72ebfcfb60b"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-operations.toml",
+      "destination": ".codex/agents/gate-operations.toml",
+      "sha256": "5f2d555fe10fecc2f7330947ab111496923070182480c08c67cc26f5c6e324f2"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/codex/.codex/agents/gate-reviewer.toml",
+      "destination": ".codex/agents/gate-reviewer.toml",
+      "sha256": "ba85e1414bf3f7127ca84a29bc06c12ec426d869ab18d88432b6cce197c8a586"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-identity-architect.md",
+      "destination": ".claude/agents/gate-identity-architect.md",
+      "sha256": "dac7177d46bc2aff656a20242320174fe42f4eb635ed60e3b4328a829624d8f6"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-auth.md",
+      "destination": ".claude/agents/gate-auth.md",
+      "sha256": "37ece7fde6ad6ced2896a41c5c6a51efcd5369123a6ec7fe1c6c369b89293a8d"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-policy.md",
+      "destination": ".claude/agents/gate-policy.md",
+      "sha256": "7c15c29d190bff1e5964caf33f07097b8c1fa1ab457810803ce47e0a2cda2ee6"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-proxy.md",
+      "destination": ".claude/agents/gate-proxy.md",
+      "sha256": "0ccba86babaca03753bea8cd9c845576ea724a6c28ebc0574992372b9b9a5c48"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-streams.md",
+      "destination": ".claude/agents/gate-streams.md",
+      "sha256": "2c1479114e383588feaa3617829b5792ce31161397b381c871ca12867af696f3"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-control-plane.md",
+      "destination": ".claude/agents/gate-control-plane.md",
+      "sha256": "4e09c349957e6e861ec70b30da32e7b92b9f01372d3e35a4e7f74d2a78b10116"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-console.md",
+      "destination": ".claude/agents/gate-console.md",
+      "sha256": "988d2a88571bbe1c93eec3236ec0614ad9d7eab1166699072b8d52ed56479993"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-sdk.md",
+      "destination": ".claude/agents/gate-sdk.md",
+      "sha256": "da2fd764e6ceec462055d70677caccbe5eb78cd9ce06939821f24d6aa1ab9643"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-operations.md",
+      "destination": ".claude/agents/gate-operations.md",
+      "sha256": "a5b121e6226da094a8b9b96431527b7a08a703bbb8caf1e6bcc2c986320945f2"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/claude/.claude/agents/gate-reviewer.md",
+      "destination": ".claude/agents/gate-reviewer.md",
+      "sha256": "9db5f30252b67f127b3e13af70e5ccafd4238cd52fa4b7a45dfac1dd0190ef56"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-identity-architect.agent.md",
+      "destination": ".github/agents/gate-identity-architect.agent.md",
+      "sha256": "c545b12c91d3bcb786a73707edb9bba774bd3abd9aa5f4b8f140c2ac4150a464"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-auth.agent.md",
+      "destination": ".github/agents/gate-auth.agent.md",
+      "sha256": "d5664bc9cb73853eab07260d30975a24acffc5f9ff716d4873a2070ed40bc158"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-policy.agent.md",
+      "destination": ".github/agents/gate-policy.agent.md",
+      "sha256": "4ed99521db9d18fb0f8d183b7c03f3bd5b2f357d898b88cda9c6fee1ac612e52"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-proxy.agent.md",
+      "destination": ".github/agents/gate-proxy.agent.md",
+      "sha256": "499f467ac6010110412e989a5431ac11bab0c534a1e48b18acbdf9957092b0b6"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-streams.agent.md",
+      "destination": ".github/agents/gate-streams.agent.md",
+      "sha256": "e64d3207fa40f198953ddae89c4c0db7241eb2e45d14f43b974f05e1b04cbaaf"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-control-plane.agent.md",
+      "destination": ".github/agents/gate-control-plane.agent.md",
+      "sha256": "862ebb731ad2e6cdd64de2d1f4693efa7dcacfb67754717fab6b8d67caf44243"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-console.agent.md",
+      "destination": ".github/agents/gate-console.agent.md",
+      "sha256": "c3fe6ab07ce3e313f3ecd4250bc0da914b193901ff6b3b3e891f228673826e16"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-sdk.agent.md",
+      "destination": ".github/agents/gate-sdk.agent.md",
+      "sha256": "9756a9d249acafab9d4d4c3c002c0632be0454fcb97de2b4af8044c4ab5510c0"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-operations.agent.md",
+      "destination": ".github/agents/gate-operations.agent.md",
+      "sha256": "c4269a963174dd5e8c292d55adfcc8528c1e3dc05e19ad79258867678b9dc4f6"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/copilot/.github/agents/gate-reviewer.agent.md",
+      "destination": ".github/agents/gate-reviewer.agent.md",
+      "sha256": "62c25d33ce087fa3ab0d2540e69deb284aaff349356f09e96f520ef90cf08f09"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-identity-architect.md",
+      "destination": ".kimi-code/agents/gate-identity-architect.md",
+      "sha256": "69d852c8e3e3095cfcc2745ba342965b9842bb1bc47fe8cd49abe7ebf78cb2ba"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-auth.md",
+      "destination": ".kimi-code/agents/gate-auth.md",
+      "sha256": "9e5a0bc18f2ed66d1761efdd0c8b189e73004205ac2ffbbb798589a125205a67"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-policy.md",
+      "destination": ".kimi-code/agents/gate-policy.md",
+      "sha256": "f9fceaa3544eda4c3381be6d4d222f6bc48042e9b191f86187e74ff9a939a0c6"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-proxy.md",
+      "destination": ".kimi-code/agents/gate-proxy.md",
+      "sha256": "653add228727589252450cf688a7fdf5e516f1344bc6edc12006b0f27fc8bae9"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-streams.md",
+      "destination": ".kimi-code/agents/gate-streams.md",
+      "sha256": "5859c7c346342e942127ca064882dd87cc66bb4eae4b10095f872f06c450a436"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-control-plane.md",
+      "destination": ".kimi-code/agents/gate-control-plane.md",
+      "sha256": "3c1955ef473999f80d2eebccb147b759610b0ec133cc55ae0031bd5fe9a6689c"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-console.md",
+      "destination": ".kimi-code/agents/gate-console.md",
+      "sha256": "db8a66825b3eb4183f9459b0a8fc385e7742c0c0bd2becd9e61a589c9d0d866b"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-sdk.md",
+      "destination": ".kimi-code/agents/gate-sdk.md",
+      "sha256": "fa2fdb3ea189d9fed7d74da3dde5d11f5f8a74eb23bff40ed142d80b11d7ec5a"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-operations.md",
+      "destination": ".kimi-code/agents/gate-operations.md",
+      "sha256": "1799def4050f98536aba2e18d96524b8e5f7e9fa259b0be706d2914085a52c30"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/kimi/.kimi-code/agents/gate-reviewer.md",
+      "destination": ".kimi-code/agents/gate-reviewer.md",
+      "sha256": "4743ae48c49214bd54fe4fb1a308e3dd36e171033a963c31adbeb88805cf4cc9"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-identity-architect.md",
+      "destination": ".opencode/agents/gate-identity-architect.md",
+      "sha256": "03987c8041833b31289b0713a1b7ec8286cb4d6c5e4ae20c7c83a8472a8f8f87"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-auth.md",
+      "destination": ".opencode/agents/gate-auth.md",
+      "sha256": "0253eef50f27f289ca20820a964ea0f1d87e59f6877ae89376eac26ec261ccd9"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-policy.md",
+      "destination": ".opencode/agents/gate-policy.md",
+      "sha256": "cc0bedbaa01fd3e1902d9663516114527661bc0902e220915e8f6b2656af512c"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-proxy.md",
+      "destination": ".opencode/agents/gate-proxy.md",
+      "sha256": "530233b5f09d29d1c0fee4b8d8300f2cdbac88d12f56043f27ccb2cc1c6074aa"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-streams.md",
+      "destination": ".opencode/agents/gate-streams.md",
+      "sha256": "800c23301034b081e2cbc88137cb7edb4179822c8c6994681f4f7575d938dcad"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-control-plane.md",
+      "destination": ".opencode/agents/gate-control-plane.md",
+      "sha256": "1482a232abbc6578e820ce7a447f437a79e448f94db9de2f8084150aae2d602a"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-console.md",
+      "destination": ".opencode/agents/gate-console.md",
+      "sha256": "a54e2454f3a26685eb0468d2077ab520e9476dde1e8e28f85127ac6cfeb076a3"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-sdk.md",
+      "destination": ".opencode/agents/gate-sdk.md",
+      "sha256": "23843259b9ae38123f4c78587d983a562653d8516797c83d8a76d51bfe13088e"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-operations.md",
+      "destination": ".opencode/agents/gate-operations.md",
+      "sha256": "13c33f5d46781ecaa74e922dea3a33650c03aa70aa8e1ae2f6e8d7419f8d0d46"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/opencode/.opencode/agents/gate-reviewer.md",
+      "destination": ".opencode/agents/gate-reviewer.md",
+      "sha256": "22c4c9f44d92bfec0285cdf14dba9c0bfe5f17ad5af56b401a6b6c592e9d1eb4"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-identity-architect/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-identity-architect/agent.md",
+      "sha256": "c545b12c91d3bcb786a73707edb9bba774bd3abd9aa5f4b8f140c2ac4150a464"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-auth/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-auth/agent.md",
+      "sha256": "d5664bc9cb73853eab07260d30975a24acffc5f9ff716d4873a2070ed40bc158"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-policy/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-policy/agent.md",
+      "sha256": "4ed99521db9d18fb0f8d183b7c03f3bd5b2f357d898b88cda9c6fee1ac612e52"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-proxy/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-proxy/agent.md",
+      "sha256": "499f467ac6010110412e989a5431ac11bab0c534a1e48b18acbdf9957092b0b6"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-streams/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-streams/agent.md",
+      "sha256": "e64d3207fa40f198953ddae89c4c0db7241eb2e45d14f43b974f05e1b04cbaaf"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-control-plane/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-control-plane/agent.md",
+      "sha256": "862ebb731ad2e6cdd64de2d1f4693efa7dcacfb67754717fab6b8d67caf44243"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-console/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-console/agent.md",
+      "sha256": "c3fe6ab07ce3e313f3ecd4250bc0da914b193901ff6b3b3e891f228673826e16"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-sdk/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-sdk/agent.md",
+      "sha256": "9756a9d249acafab9d4d4c3c002c0632be0454fcb97de2b4af8044c4ab5510c0"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-operations/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-operations/agent.md",
+      "sha256": "c4269a963174dd5e8c292d55adfcc8528c1e3dc05e19ad79258867678b9dc4f6"
+    },
+    {
+      "source": "docs/agent-teams/flint-gate/exports/minimax/agents/gate-reviewer/agent.md",
+      "destination": ".agent-team/minimax/agents/gate-reviewer/agent.md",
+      "sha256": "62c25d33ce087fa3ab0d2540e69deb284aaff349356f09e96f520ef90cf08f09"
+    }
+  ],
+  "links": [
+    {
+      "destination": ".codex/skills/gate-team-delivery",
+      "target": "../../.agents/skills/gate-team-delivery"
+    },
+    {
+      "destination": ".codex/skills/gate-identity-architecture",
+      "target": "../../.agents/skills/gate-identity-architecture"
+    },
+    {
+      "destination": ".codex/skills/gate-auth-implementation",
+      "target": "../../.agents/skills/gate-auth-implementation"
+    },
+    {
+      "destination": ".codex/skills/gate-cedar-approvals",
+      "target": "../../.agents/skills/gate-cedar-approvals"
+    },
+    {
+      "destination": ".codex/skills/gate-proxy-security",
+      "target": "../../.agents/skills/gate-proxy-security"
+    },
+    {
+      "destination": ".codex/skills/gate-streaming-governance",
+      "target": "../../.agents/skills/gate-streaming-governance"
+    },
+    {
+      "destination": ".codex/skills/gate-control-plane",
+      "target": "../../.agents/skills/gate-control-plane"
+    },
+    {
+      "destination": ".codex/skills/gate-client-security",
+      "target": "../../.agents/skills/gate-client-security"
+    },
+    {
+      "destination": ".codex/skills/gate-operations",
+      "target": "../../.agents/skills/gate-operations"
+    },
+    {
+      "destination": ".codex/skills/gate-security-review",
+      "target": "../../.agents/skills/gate-security-review"
+    },
+    {
+      "destination": ".claude/skills/gate-team-delivery",
+      "target": "../../.agents/skills/gate-team-delivery"
+    },
+    {
+      "destination": ".claude/skills/gate-identity-architecture",
+      "target": "../../.agents/skills/gate-identity-architecture"
+    },
+    {
+      "destination": ".claude/skills/gate-auth-implementation",
+      "target": "../../.agents/skills/gate-auth-implementation"
+    },
+    {
+      "destination": ".claude/skills/gate-cedar-approvals",
+      "target": "../../.agents/skills/gate-cedar-approvals"
+    },
+    {
+      "destination": ".claude/skills/gate-proxy-security",
+      "target": "../../.agents/skills/gate-proxy-security"
+    },
+    {
+      "destination": ".claude/skills/gate-streaming-governance",
+      "target": "../../.agents/skills/gate-streaming-governance"
+    },
+    {
+      "destination": ".claude/skills/gate-control-plane",
+      "target": "../../.agents/skills/gate-control-plane"
+    },
+    {
+      "destination": ".claude/skills/gate-client-security",
+      "target": "../../.agents/skills/gate-client-security"
+    },
+    {
+      "destination": ".claude/skills/gate-operations",
+      "target": "../../.agents/skills/gate-operations"
+    },
+    {
+      "destination": ".claude/skills/gate-security-review",
+      "target": "../../.agents/skills/gate-security-review"
+    },
+    {
+      "destination": ".github/skills/gate-team-delivery",
+      "target": "../../.agents/skills/gate-team-delivery"
+    },
+    {
+      "destination": ".github/skills/gate-identity-architecture",
+      "target": "../../.agents/skills/gate-identity-architecture"
+    },
+    {
+      "destination": ".github/skills/gate-auth-implementation",
+      "target": "../../.agents/skills/gate-auth-implementation"
+    },
+    {
+      "destination": ".github/skills/gate-cedar-approvals",
+      "target": "../../.agents/skills/gate-cedar-approvals"
+    },
+    {
+      "destination": ".github/skills/gate-proxy-security",
+      "target": "../../.agents/skills/gate-proxy-security"
+    },
+    {
+      "destination": ".github/skills/gate-streaming-governance",
+      "target": "../../.agents/skills/gate-streaming-governance"
+    },
+    {
+      "destination": ".github/skills/gate-control-plane",
+      "target": "../../.agents/skills/gate-control-plane"
+    },
+    {
+      "destination": ".github/skills/gate-client-security",
+      "target": "../../.agents/skills/gate-client-security"
+    },
+    {
+      "destination": ".github/skills/gate-operations",
+      "target": "../../.agents/skills/gate-operations"
+    },
+    {
+      "destination": ".github/skills/gate-security-review",
+      "target": "../../.agents/skills/gate-security-review"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-team-delivery",
+      "target": "../../.agents/skills/gate-team-delivery"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-identity-architecture",
+      "target": "../../.agents/skills/gate-identity-architecture"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-auth-implementation",
+      "target": "../../.agents/skills/gate-auth-implementation"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-cedar-approvals",
+      "target": "../../.agents/skills/gate-cedar-approvals"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-proxy-security",
+      "target": "../../.agents/skills/gate-proxy-security"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-streaming-governance",
+      "target": "../../.agents/skills/gate-streaming-governance"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-control-plane",
+      "target": "../../.agents/skills/gate-control-plane"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-client-security",
+      "target": "../../.agents/skills/gate-client-security"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-operations",
+      "target": "../../.agents/skills/gate-operations"
+    },
+    {
+      "destination": ".kimi-code/skills/gate-security-review",
+      "target": "../../.agents/skills/gate-security-review"
+    },
+    {
+      "destination": ".opencode/skills/gate-team-delivery",
+      "target": "../../.agents/skills/gate-team-delivery"
+    },
+    {
+      "destination": ".opencode/skills/gate-identity-architecture",
+      "target": "../../.agents/skills/gate-identity-architecture"
+    },
+    {
+      "destination": ".opencode/skills/gate-auth-implementation",
+      "target": "../../.agents/skills/gate-auth-implementation"
+    },
+    {
+      "destination": ".opencode/skills/gate-cedar-approvals",
+      "target": "../../.agents/skills/gate-cedar-approvals"
+    },
+    {
+      "destination": ".opencode/skills/gate-proxy-security",
+      "target": "../../.agents/skills/gate-proxy-security"
+    },
+    {
+      "destination": ".opencode/skills/gate-streaming-governance",
+      "target": "../../.agents/skills/gate-streaming-governance"
+    },
+    {
+      "destination": ".opencode/skills/gate-control-plane",
+      "target": "../../.agents/skills/gate-control-plane"
+    },
+    {
+      "destination": ".opencode/skills/gate-client-security",
+      "target": "../../.agents/skills/gate-client-security"
+    },
+    {
+      "destination": ".opencode/skills/gate-operations",
+      "target": "../../.agents/skills/gate-operations"
+    },
+    {
+      "destination": ".opencode/skills/gate-security-review",
+      "target": "../../.agents/skills/gate-security-review"
+    },
+    {
+      "destination": ".agent-team/minimax/skills",
+      "target": "../../.agents/skills"
+    }
+  ],
+  "stagedOnly": [
+    "deepseek",
+    "uar",
+    "bossfang",
+    "claude plugin alternative",
+    "kimi plugin alternative"
+  ],
+  "globalChanges": false,
+  "agentsStarted": false
+}

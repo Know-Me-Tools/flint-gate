@@ -1,0 +1,66 @@
+{
+  "name": "flint-gate",
+  "description": "Evolve Flint Gate as an identity-aware AI gateway with explicitly verified JWT/OIDC/delegation, Cedar authorization, streaming and administration contracts; measure selected Kong/Oathkeeper replacement surfaces.",
+  "steps": [
+    {
+      "name": "gate-identity-architect",
+      "agent_name": "flint-gate-gate-identity-architect",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-auth",
+      "agent_name": "flint-gate-gate-auth",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-policy",
+      "agent_name": "flint-gate-gate-policy",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-proxy",
+      "agent_name": "flint-gate-gate-proxy",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-streams",
+      "agent_name": "flint-gate-gate-streams",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-control-plane",
+      "agent_name": "flint-gate-gate-control-plane",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-console",
+      "agent_name": "flint-gate-gate-console",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-sdk",
+      "agent_name": "flint-gate-gate-sdk",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-operations",
+      "agent_name": "flint-gate-gate-operations",
+      "prompt": "{{input}}",
+      "depends_on": []
+    },
+    {
+      "name": "gate-reviewer",
+      "agent_name": "flint-gate-gate-reviewer",
+      "prompt": "{{input}}",
+      "depends_on": []
+    }
+  ]
+}

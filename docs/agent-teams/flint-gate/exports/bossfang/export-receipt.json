@@ -1,0 +1,28 @@
+{
+  "target": "bossfang",
+  "verification": {
+    "level": "source-verified",
+    "source": "crates/librefang-types/src/agent.rs; crates/librefang-hands/src/lib.rs; crates/librefang-api/src/routes/workflows/workflow.rs",
+    "version": "2026.7.11 / c719a4d683e4d3fb42e436f812e0193f865c9d2c",
+    "live": "unverified"
+  },
+  "nativeProvenance": {
+    "source": "https://github.com/GQAdonis/librefang",
+    "version": "Creator adapter source snapshot; standalone-agent/workflow path only, not activated"
+  },
+  "nativeOptions": null,
+  "roleOverrides": {},
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "Empty portable role skills emit skills_disabled=true; native skills=[] with skills_disabled=false means all. Agent MCP [] means none; [\"*\"] means all. Hand-level allowlists have their own native defaults.",
+    "BossFang team native options merge into HAND.toml; role overrides merge into each AgentManifest. Preserve local TOML because native GET returns a projection. Hand activation can start autonomous schedules.",
+    "Native authentication and registration are unverified. UAR defaults to JWT-required; BossFang accepts Bearer or X-API-Key. Discovery success is not mutation authorization."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Choose standalone agent registrations plus workflow, or install the Hand. These are distinct native deployment paths; do not activate the Hand as a duplicate of the standalone workflow.",
+    "Optional native payloads: POST /api/hands/install with bossfang/hand-install.json; POST /api/workflows with bossfang/workflow.json after registering standalone agents. Hand activation and workflow run require separate authorization and are not performed.",
+    "registration-plan.json is a local review plan, not a native API body. Supply an operator-approved base URL and credential reference; preserve each returned native ID/outcome because registration is not atomic."
+  ]
+}

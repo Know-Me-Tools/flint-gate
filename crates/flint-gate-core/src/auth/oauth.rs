@@ -9,9 +9,7 @@ use crate::auth::client_credentials::{
 };
 use crate::auth::introspect::{delegate_to_hydra, TokenVerifier};
 use crate::auth::jwt_mint::SharedJwtMinter;
-use crate::auth::token_exchange::{
-    exchange, TokenExchangeRequest, GRANT_TYPE_TOKEN_EXCHANGE,
-};
+use crate::auth::token_exchange::{exchange, TokenExchangeRequest, GRANT_TYPE_TOKEN_EXCHANGE};
 use crate::auth::Authenticator;
 use crate::db::Database;
 use axum::{
@@ -77,7 +75,10 @@ pub fn extract_client_credentials(
     form: &HashMap<String, String>,
 ) -> Option<(String, String)> {
     if let Some(h) = auth_header {
-        if let Some(b64) = h.strip_prefix("Basic ").or_else(|| h.strip_prefix("basic ")) {
+        if let Some(b64) = h
+            .strip_prefix("Basic ")
+            .or_else(|| h.strip_prefix("basic "))
+        {
             use base64::Engine;
             if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
                 if let Ok(decoded) = String::from_utf8(bytes) {

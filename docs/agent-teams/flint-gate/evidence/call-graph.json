@@ -1,0 +1,703 @@
+{
+  "checkedAt": "2026-09-25T05:07:29.983Z",
+  "sourceCommit": "39c40d6b97be1b346969acead1e943c0bd68d5b7",
+  "graphSha256": "e72f2c1137b5b9be4458c3f702112ef7dd17eb4ce577d7dff7e5dcc487327d5e",
+  "fileCount": 111,
+  "crateCounts": {
+    "flint-gate": 1,
+    "flint-gate-client": 5,
+    "flint-gate-core": 59
+  },
+  "files": [
+    {
+      "path": "crates/flint-gate-core/src/auth/jwt_mint.rs",
+      "contentDigest": "sha256:44f266f61e35e065b0e44c404f4e028df7580c459790f00eb0a6e79a8ab9f64f"
+    },
+    {
+      "path": "crates/flint-gate-core/src/proxy/router.rs",
+      "contentDigest": "sha256:406f5379729cc3315769ea83cfd8c196fc912ffdffc37c78bee170b163df2c35"
+    },
+    {
+      "path": "crates/flint-gate-core/src/metrics.rs",
+      "contentDigest": "sha256:b2dbb0b246e88337ba38b168ea1227c15eff7114e90253d7d6e3e0777204894c"
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/a2ui.rs",
+      "contentDigest": "sha256:e370740ebc82bebe18429cc351b632eb495ca355c195f97a81d22f6ffca627e4"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/mcp_metadata.rs",
+      "contentDigest": "sha256:f431ee51d4c903c5b9ecd7761897933b1d733b40189889ae1f16b442be9e516b"
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/aso_replica_grant.rs",
+      "contentDigest": "sha256:41974e0a135a423ed22e5fea0a086965326a2bea110e943d78ce991c9a069168"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/pkce.rs",
+      "contentDigest": "sha256:545df9fd8c0f07f6a8ac266073e204b54935a4b627d4f77d38eef2b3a4cf0851"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authority/mod.rs",
+      "contentDigest": "sha256:2b56930def47f70fb5d5f556a9cd809e966fd80d249867522a640dd7f8c49879"
+    },
+    {
+      "path": "web/src/components/ui/select.tsx",
+      "contentDigest": "sha256:91defd93c01e632cd36bffa16ae6cc5360eb4da3552c1fc23c4a2f46ed1558bc"
+    },
+    {
+      "path": "crates/flint-gate-core/src/approval/durable/mod.rs",
+      "contentDigest": "sha256:9c1807cff5ef80bff97f8e473fad090f52707d0a9d963a8ca63570043bd25a12"
+    },
+    {
+      "path": "web/src/components/CedarEditor.tsx",
+      "contentDigest": "sha256:b98f2a59bb6bd2c10f0b612ead91d0605836628c5f1f3e276a454260a4adfb07"
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/websocket.rs",
+      "contentDigest": "sha256:e92c7aa6226b0602faa389d01849884d5ba15360bad8fbb71045ac35c71b6ef6"
+    },
+    {
+      "path": "sdks/typescript/src/ws.ts",
+      "contentDigest": "sha256:b7f9f39e30d228bd6be8da0f0b20e5b64ddbe3f53fd491d03516890df35c572d"
+    },
+    {
+      "path": "web/src/main.tsx",
+      "contentDigest": "sha256:6e9e5807fcbd48b75a96db5cbef36c996262196be42e6d4760dc86babbe61ad2"
+    },
+    {
+      "path": "sdks/go/doc.go",
+      "contentDigest": "sha256:ece3b0577a0819e5a4a27cb695e9aa2103bd6dad4591979a6bb893f440b11045"
+    },
+    {
+      "path": "web/src/components/ui/table.tsx",
+      "contentDigest": "sha256:e9127309d91db8258c81d33c386bd0274e1e0c296b7b5089d37aacecc41732f9"
+    },
+    {
+      "path": "sdks/typescript/src/stream.ts",
+      "contentDigest": "sha256:c91027046a7ad3365b496349be4a0cd8e3b3db184c1c7fdadd3bd5165dabe06c"
+    },
+    {
+      "path": "web/src/App.tsx",
+      "contentDigest": "sha256:2ae6fbe35902b0b0359e0a0e336139bf03e0e9d555dc94069c76936f634ef95e"
+    },
+    {
+      "path": "crates/flint-gate-core/src/db/mod.rs",
+      "contentDigest": "sha256:3c9c90f464f4ca7628c966f5d1a6ea574ab22464296eb641dacf5172c3958df5"
+    },
+    {
+      "path": "sdks/typescript/src/index.ts",
+      "contentDigest": "sha256:3abb84712e50c4a1f7baa51b65a7c62d59689d459ce1d53d5cd794e148c97308"
+    },
+    {
+      "path": "web/src/components/ui/toast.tsx",
+      "contentDigest": "sha256:9ec73a777be7c3bd3e59e3a99ae6057e585f695a195ed74059962ee42139eabf"
+    },
+    {
+      "path": "web/src/components/ui/switch.tsx",
+      "contentDigest": "sha256:789312b87c64857f4ade44860c80d79de05cb2ec065002c2a1cb549a4a36ff41"
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/processor.rs",
+      "contentDigest": "sha256:f284121a0bccbb5f7e897b3c472af9865a0943dc29b113e541a6294784d6c748"
+    },
+    {
+      "path": "web/src/components/ui/button.tsx",
+      "contentDigest": "sha256:b37778f475e8b89ba3c5e09e1d6dffc4d074607ec3b2b7ad5bac1771fe7dd7cc"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/token_exchange.rs",
+      "contentDigest": "sha256:71272cef7c0e6409793f8ce066647cf86cb5591f52681e90bb63e336979796e9"
+    },
+    {
+      "path": "crates/flint-gate-core/src/ratelimit/governor_layer.rs",
+      "contentDigest": "sha256:341e96e579399ba6a545260cae5129ce7d61ef2cf029cb594ba00914ed4a455a"
+    },
+    {
+      "path": "web/src/lib/utils.ts",
+      "contentDigest": "sha256:4acbc7165a8d54738ff62b51414e772c08fe78434e524e6d8770180d3ba2925f"
+    },
+    {
+      "path": "crates/flint-gate/src/main.rs",
+      "contentDigest": "sha256:b85770229d8e7a15bec92a517f9716d0761961c61be75c7c2ee314e209879626"
+    },
+    {
+      "path": "crates/flint-gate-client/src/lib.rs",
+      "contentDigest": "sha256:ba2b205c64d71d52ce5688d6e561d1d2fc8ba26ee07c7728250864ffec4cdb6c"
+    },
+    {
+      "path": "sdks/typescript/src/admin.ts",
+      "contentDigest": "sha256:6942907fa9e667d62f5e1d048fa17d882d97ca2ec060016641181448255ef020"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/kratos.rs",
+      "contentDigest": "sha256:820461858313e95cb005d93ec32f73bdba29b8f9bb2f92f007667e68993a19a6"
+    },
+    {
+      "path": "sdks/go/client.go",
+      "contentDigest": "sha256:46a5c3d4d38d4ffecf23cc7a25b0ad4c4adaddfd035548f77cf2cdcc4381ccab"
+    },
+    {
+      "path": "crates/flint-gate-core/src/approval/mod.rs",
+      "contentDigest": "sha256:d705cc7f917a5ce078260b57796922cb91472eef13c49d42bcefe88f0e2420c9"
+    },
+    {
+      "path": "sdks/typescript/src/middleware.ts",
+      "contentDigest": "sha256:9764db7c22ba0286589f1199ea9deb96c60ff489bdbc0f64bd632220c104a6d3"
+    },
+    {
+      "path": "web/src/pages/Hooks.tsx",
+      "contentDigest": "sha256:b73e24cd917fd19f74bc8ce9ad5be5274879c4973d8f4b9bfafcd09fd188ecf8"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/jwt_verify.rs",
+      "contentDigest": "sha256:d95ace9c020bb310c96021879f60a6e3b316c755122c870e2932456c86646f3c"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/sugar.rs",
+      "contentDigest": "sha256:6ce9443d3de195c43cf47d4f677fe6e015b24d4cc40dbe6599eabf14c58c000c"
+    },
+    {
+      "path": "web/src/api/types.ts",
+      "contentDigest": "sha256:13180090fdedbabe6e1269428b4253afa78943e19117d26bbaae0622a9149813"
+    },
+    {
+      "path": "crates/flint-gate-core/src/ratelimit/oauth_limit.rs",
+      "contentDigest": "sha256:b3fa34b073ad29b4687c5770c09acfd80615909f19bbb425bd4faf99b61a7208"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/identity.rs",
+      "contentDigest": "sha256:fd906a7a880ca038e32d4b9d7b9b47d3cf5151201a7bc6debb7ddc5045a3ec9c"
+    },
+    {
+      "path": "crates/flint-gate-core/src/cache/session.rs",
+      "contentDigest": "sha256:fbec640656aa0cb45453093126ff98ea258379e02694abd87d52cef7d068b69e"
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/mod.rs",
+      "contentDigest": "sha256:eab84b2c1bb0f25d68b893624e1c1554b4cb8d24d9d32b2e7b825a1e48877f81"
+    },
+    {
+      "path": "crates/flint-gate-client/src/error.rs",
+      "contentDigest": "sha256:7267027c22f26d50a87f96cf07623e58bee8fc5a7e0f2e26bad1f1b1ea245f56"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/http_body.rs",
+      "contentDigest": "sha256:e701751cf030428bcd0f8971ad776d7c0930816a830cc3e8fd793fd516b4cf82"
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/types.rs",
+      "contentDigest": "sha256:3a79b4bb1d71a5ef763c7459c69e7e61f83b2d2446608806ee6e19cb3da6aca4"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/error.rs",
+      "contentDigest": "sha256:62c97ae266d5ef4b0dc49bfa817f3e9c1a5bf390626703d414649c37ed6f13d6"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/mod.rs",
+      "contentDigest": "sha256:3d5fb3bb7d1c4d6327bfa54c10f8246a89c441afb383228b93512da58e4bca80"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/introspect.rs",
+      "contentDigest": "sha256:fb1929338697985b88d52ad4886c5290e841d8f35c745e4db743c069d3ad22fe"
+    },
+    {
+      "path": "crates/flint-gate-core/src/approval/durable/postgres.rs",
+      "contentDigest": "sha256:fc327e7e87d63cd4889c08537fd75fee45a26271a21e3e7a8d56c7357e9344f0"
+    },
+    {
+      "path": "web/src/pages/AuthProviders.tsx",
+      "contentDigest": "sha256:642661662b7b3fe949cb65099e8414f90f77030e586425ba4fb3de58bfd4cba3"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authority/postgres.rs",
+      "contentDigest": "sha256:c3f4fbd94a06e3be3c6969a3d8b8264f26bb2baa8355f7e2fff2564b25fd7bfd"
+    },
+    {
+      "path": "web/src/pages/ApiKeys.tsx",
+      "contentDigest": "sha256:9397f506c6454a029db164bce248e1fb1acdaa7d579a397836e8ceeee5509f87"
+    },
+    {
+      "path": "web/src/pages/Approvals.tsx",
+      "contentDigest": "sha256:588639b04bece8fcef964041db1adb1f562e6ad70796df8c2ee7534e3f3c45c1"
+    },
+    {
+      "path": "web/src/hooks/useAdmin.ts",
+      "contentDigest": "sha256:96b2240204303380458a5dd5a9a5e91681b5bf16cebabde60f79756fda5306d1"
+    },
+    {
+      "path": "web/src/components/ui/dialog.tsx",
+      "contentDigest": "sha256:4dbb51a975fb22436dcebf02e1598f613f5cd812c667ccc6a1163a73eb0e0a54"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/mod.rs",
+      "contentDigest": "sha256:314516ee3ba2faa6f957032254c9eb54989610d07efb108bbef977674df34e72"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/client_credentials.rs",
+      "contentDigest": "sha256:61c19f8da1e573361519fc4b97744108e3f4b42cdb2f08611ca5755f518a2d09"
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/ndjson.rs",
+      "contentDigest": "sha256:34277c8c4fa7ebe883af5ddd0b6dfe071aab494be4f1eba9f502bf326a77d556"
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/aso_clinical_authorize.rs",
+      "contentDigest": "sha256:bb68de7e931621ff27bab78ac139688cbf825ecd75f262ead7cd154bc39f5bdb"
+    },
+    {
+      "path": "sdks/go/types.go",
+      "contentDigest": "sha256:58ed4c0a8a3e7a9de0e2591238562ad7ff9008baf15343640a38cbfb5877187b"
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/mod.rs",
+      "contentDigest": "sha256:1e1b5a1dc6105e0175c30e80b5feb3de9021d181706388ae5a00c3f291af8376"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/mcp.rs",
+      "contentDigest": "sha256:cdae3c2c999348dce7bebedeb999b7459b69965c576aaced8ef1cf7498dd3fee"
+    },
+    {
+      "path": "sdks/flutter/lib/src/client.dart",
+      "contentDigest": "sha256:a6d7501f0d9b357564b63b710ecb0f42bd24ed103be3cd70b4bace9ddf42dff6"
+    },
+    {
+      "path": "sdks/go/middleware.go",
+      "contentDigest": "sha256:78c70660608ed2d16d11edb05a1c578a936eec42a1a780c2614306dd84026383"
+    },
+    {
+      "path": "sdks/flutter/lib/flint_gate.dart",
+      "contentDigest": "sha256:7d35d9fefc9c2dc296a785c57c44bbd99a00bc72ecab3bd672a3ef52dafaa692"
+    },
+    {
+      "path": "crates/flint-gate-core/src/cache/redis_fence.rs",
+      "contentDigest": "sha256:0a214f56291c5991c0e66210f8e50a57cd788a4fde944a8b6e575237a2ce6418"
+    },
+    {
+      "path": "web/src/components/ui/card.tsx",
+      "contentDigest": "sha256:e81a15e3e44e2dfbb5302c9475e1db57b8095eda1ae178c8444d7ef3af67aaca"
+    },
+    {
+      "path": "web/src/components/ui/badge.tsx",
+      "contentDigest": "sha256:d323216d72b74cbebc72df76fc754adb24bb041fea0fee7ed74c1ac56c15568a"
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/mod.rs",
+      "contentDigest": "sha256:e0e416f9dfd621984be045432712b1659ae756b5670c63bbe69fe3335362dde8"
+    },
+    {
+      "path": "crates/flint-gate-core/src/guardrail/mod.rs",
+      "contentDigest": "sha256:a30e6ec61ac8bd8d8bd6c8a5a36c8cf5f62e6a895f0365a9005ed4f35d31ab25"
+    },
+    {
+      "path": "crates/flint-gate-client/src/stream.rs",
+      "contentDigest": "sha256:41e06ff73947fe8dd65b92e05d2195bf956cfa6a1e1c961e6907d4d59f2c6d76"
+    },
+    {
+      "path": "web/src/api/admin.ts",
+      "contentDigest": "sha256:752df99b9d0fc084870f507acd36dfdd0fd072c17fb8936452e8c6aff645be3e"
+    },
+    {
+      "path": "crates/flint-gate-core/src/cache/mod.rs",
+      "contentDigest": "sha256:843296d04f12612fb0197553250b89b5408a4124240b2b6ddaf367c9ce3fcf6d"
+    },
+    {
+      "path": "crates/flint-gate-core/src/ratelimit/mod.rs",
+      "contentDigest": "sha256:e8709d036e04e1f8cab31fa76f601043dc0aca52cdc5025e317195dd334d5273"
+    },
+    {
+      "path": "crates/flint-gate-core/src/middleware/pipeline.rs",
+      "contentDigest": "sha256:5edfd6de7e95d89fdf35efa26912bdeea3e0eeac61127f6d37402ce031eedea0"
+    },
+    {
+      "path": "web/src/pages/Budgets.tsx",
+      "contentDigest": "sha256:48d7b7c9aa0af6437baa1c06932f359e3a2e7132575b610e901fc9d475cfa57c"
+    },
+    {
+      "path": "crates/flint-gate-client/src/types.rs",
+      "contentDigest": "sha256:df3ed23b4fa43e60bd6b6b90bd4add27274da5a7b2826af5ffbce0e00179b650"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/validator.rs",
+      "contentDigest": "sha256:f1136dce123fd3610c25ac1ef0374b22c7a961aad31328828bf0795a9f769e5d"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/oauth.rs",
+      "contentDigest": "sha256:85416af24af147e32f595c3baafa7aca07d8d5c713872be2ef8130f992ddd4d3"
+    },
+    {
+      "path": "web/src/pages/Dashboard.tsx",
+      "contentDigest": "sha256:098f1a47f35a7ba9d5835d638f756968f67e554a1ccc7ac0fab02f1be56b3805"
+    },
+    {
+      "path": "sdks/flutter/lib/src/sse_client.dart",
+      "contentDigest": "sha256:bf76ca13f5c5660827fcebf80742af278c31b13e92a964332fdc1b1820371c7b"
+    },
+    {
+      "path": "web/src/pages/Routes.tsx",
+      "contentDigest": "sha256:2d36be7e2451dced20028e5f4a1075364840c45f5ad374fe1ccf0d176b3de1c5"
+    },
+    {
+      "path": "web/src/components/ui/input.tsx",
+      "contentDigest": "sha256:5b5878a7bea3341a5d0d2c5605324ecabf4aed44f2798fd10006b191d2fd84fd"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/api_key.rs",
+      "contentDigest": "sha256:7d855e34536e883c1a616baabfa94b742cb92ff6f0a6ff10d07f9f0a368aefd3"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/tool_authz.rs",
+      "contentDigest": "sha256:b3a2fd289ab2f406879e3edadff397cb0c450fdb98aaaf79021166a6da2afcf7"
+    },
+    {
+      "path": "crates/flint-gate-core/src/admin/mod.rs",
+      "contentDigest": "sha256:450d8ebea50a7d2fe3ed48577bea95242135f0a495053e12d8e22d66c7c37627"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/jwks_publish.rs",
+      "contentDigest": "sha256:1cc6e96d6903f05e204531cc5cf31d7e114454ef3b21f97e640b662096afa7dd"
+    },
+    {
+      "path": "web/src/components/ReadOnlyBanner.tsx",
+      "contentDigest": "sha256:b4a66d191deeab040e6898a159719fd781e11bfeebc9fa572750f56c655ec90b"
+    },
+    {
+      "path": "crates/flint-gate-core/src/lib.rs",
+      "contentDigest": "sha256:757b82807d1f8f16282cb9b0976f3e47b24df71b0fa62f341a8e4588156bc2ea"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/schema.rs",
+      "contentDigest": "sha256:7b8141490c4251795b02c31a8935d9bbee69133e692d9584e379637b49174eac"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/bundle.rs",
+      "contentDigest": "sha256:8c2acd75c593030cc6f4a29221d327509f1103e5ea15bb2014ea959b62640403"
+    },
+    {
+      "path": "sdks/go/ws.go",
+      "contentDigest": "sha256:0254bb0ff8306f1884254f075337fbabcaffaca4948fb847a420072400069fb7"
+    },
+    {
+      "path": "crates/flint-gate-core/src/stream/ag_ui.rs",
+      "contentDigest": "sha256:a9852c84ad8c6d475f450f063bd86e3e7bfec317ecc4e3810cd08793513fe34f"
+    },
+    {
+      "path": "sdks/flutter/lib/src/auth.dart",
+      "contentDigest": "sha256:03e6cddee164f36e988f8d9a657f7759fc3dee255ffa3bd1b8b96847e18340a2"
+    },
+    {
+      "path": "crates/flint-gate-core/src/auth/jwks.rs",
+      "contentDigest": "sha256:99385de85fc52a28aae5a6f88bbf8cf6ac0f1d6fe367a7fd2f9d245116f34bc3"
+    },
+    {
+      "path": "crates/flint-gate-core/src/admin/auth.rs",
+      "contentDigest": "sha256:f0c032a578328506ecd104052c5d4ea6323d50ba4da55fabd3873758ea1d48f0"
+    },
+    {
+      "path": "web/src/components/ui/textarea.tsx",
+      "contentDigest": "sha256:5fae3974e1d13311e997c43c01d12602a051e5b920888eb9f8ee941ccb41311d"
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/lookup.rs",
+      "contentDigest": "sha256:3b212397a0e1ee5b050960692917a34af9fc2d5d9cefccb03cf201fc317c2d15"
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/loader.rs",
+      "contentDigest": "sha256:36fbcfc2577b57972a84c7ccdb3c821905223f12d593fc0d392dd7f0dc21e584"
+    },
+    {
+      "path": "crates/flint-gate-core/src/config/template.rs",
+      "contentDigest": "sha256:c1bce53eb23dc543b18b04d3cca961d5ca8bdf88ba26d277055b2daa0d1efe37"
+    },
+    {
+      "path": "web/src/pages/Policies.tsx",
+      "contentDigest": "sha256:05ee4afdd0b74c82b83d06e8f489222f1b5c5ddf198a2f8e9307f4336bbebb94"
+    },
+    {
+      "path": "web/src/pages/AgentIdentities.tsx",
+      "contentDigest": "sha256:a73229109e5505c5304e990222ff39567ca4afd1a601fb34f1f427741e08edfe"
+    },
+    {
+      "path": "crates/flint-gate-core/src/proxy/mod.rs",
+      "contentDigest": "sha256:7f909e6df1c659dc376bf7ced96685075dce5132034cc6c45ff2734255121ee4"
+    },
+    {
+      "path": "sdks/go/stream.go",
+      "contentDigest": "sha256:91695fb906e0398e387a7862166e53f3a8e1aea9f387684ff1158ced27dd4ec9"
+    },
+    {
+      "path": "sdks/typescript/src/types.ts",
+      "contentDigest": "sha256:aa90560f7a8a12d2d45257ad1f5493c18a4b3d291e08488801ddccf0e306405f"
+    },
+    {
+      "path": "web/src/pages/Analytics.tsx",
+      "contentDigest": "sha256:649bdded6ffe98515f78f3df462d6e36699ec2e4b93b76d98a74ca86017740ef"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authority/consumer.rs",
+      "contentDigest": "sha256:44f080b7ca5a00f0331719c6cbf8205a2685ce4d1ae365040a0f3ac3c355b6cf"
+    },
+    {
+      "path": "sdks/typescript/src/client.ts",
+      "contentDigest": "sha256:e1633814c7c810deb5f00f731f253c38e56ae0665cadca057063b32624fcf84f"
+    },
+    {
+      "path": "sdks/flutter/lib/src/types.dart",
+      "contentDigest": "sha256:49b0c5a587e34fb2cdcb90cdc349b1f873a4c6093d1c227d0742e6d825c2dc9d"
+    },
+    {
+      "path": "crates/flint-gate-core/src/authz/engine.rs",
+      "contentDigest": "sha256:8cf7670143f088c1cd9111e29ecc525b2026cd84268cb4829154ed78a5d57ad5"
+    },
+    {
+      "path": "crates/flint-gate-client/src/client.rs",
+      "contentDigest": "sha256:4e56f89608f4399e0138f39e42709ae10e2e0ef0c5587912b8f845604f3a9f53"
+    }
+  ],
+  "representativeCalls": [
+    {
+      "from": "flint_gate_core::auth::jwt_verify::JwtVerifyAuthenticator::new",
+      "to": "flint_gate_core::auth::jwks::JwksCache::new",
+      "site": {
+        "file": "crates/flint-gate-core/src/auth/jwt_verify.rs",
+        "startByte": 1175,
+        "endByte": 1189,
+        "startLine": 29,
+        "startColumn": 19,
+        "endLine": 29,
+        "endColumn": 33
+      },
+      "expression": "JwksCache::new",
+      "edgeId": "sha256:d981394d6b12bb72a14426b20fffb731b6e7c218b7b910b02ae3613e7b914d43"
+    },
+    {
+      "from": "flint_gate_core::auth::kratos::select_credential",
+      "to": "flint_gate_core::auth::kratos::extract_cookie",
+      "site": {
+        "file": "crates/flint-gate-core/src/auth/kratos.rs",
+        "startByte": 3495,
+        "endByte": 3509,
+        "startLine": 115,
+        "startColumn": 26,
+        "endLine": 115,
+        "endColumn": 40
+      },
+      "expression": "extract_cookie",
+      "edgeId": "sha256:cee118943ec1abbd88772c54feadbe67238cce829de510c7bc4651aabac76972"
+    },
+    {
+      "from": "flint_gate_core::stream::processor::SseStreamProcessor::process_chunk",
+      "to": "flint_gate_core::stream::processor::SseStreamProcessor::process_line",
+      "site": {
+        "file": "crates/flint-gate-core/src/stream/processor.rs",
+        "startByte": 9360,
+        "endByte": 9377,
+        "startLine": 243,
+        "startColumn": 26,
+        "endLine": 243,
+        "endColumn": 43
+      },
+      "expression": "self.process_line",
+      "edgeId": "sha256:06940436c215e2b77f00268626cad3fb4334b17badbb771712ed8ca87fdfab22"
+    },
+    {
+      "from": "flint_gate_core::auth::token_exchange::exchange",
+      "to": "flint_gate_core::auth::token_exchange::build_delegated_claims",
+      "site": {
+        "file": "crates/flint-gate-core/src/auth/token_exchange.rs",
+        "startByte": 20276,
+        "endByte": 20298,
+        "startLine": 504,
+        "startColumn": 21,
+        "endLine": 504,
+        "endColumn": 43
+      },
+      "expression": "build_delegated_claims",
+      "edgeId": "sha256:1ccc56efece0677d6f75814854445ba8f62ce1d56c8d5d6cd3aadd4815e24c24"
+    },
+    {
+      "from": "flint_gate_core::authority::consumer::AuthorityConsumer::catch_up",
+      "to": "flint_gate_core::authority::consumer::AuthorityConsumer::replay",
+      "site": {
+        "file": "crates/flint-gate-core/src/authority/consumer.rs",
+        "startByte": 3221,
+        "endByte": 3232,
+        "startLine": 92,
+        "startColumn": 16,
+        "endLine": 92,
+        "endColumn": 27
+      },
+      "expression": "self.replay",
+      "edgeId": "sha256:0088a0560396388bf0f3731f125826d6839cfd12865129cfedf7dc0e905064d5"
+    }
+  ],
+  "quality": {
+    "schema": "compass.graph-quality/1",
+    "quality_scope": "full",
+    "input_path": "compass-out/snapshots/snapshot-1790312750056001000-76064-0/graph.json",
+    "graph_schema": "compass.graph/1",
+    "file_size_bytes": 16658361,
+    "node_count": 5772,
+    "edge_count": 12512,
+    "node_confidence": {
+      "exact": 5772
+    },
+    "edge_confidence": {
+      "exact": 12512
+    },
+    "node_kinds": {
+      "class": 15,
+      "constant": 110,
+      "constructor": 23,
+      "enum": 47,
+      "enum_member": 172,
+      "export": 302,
+      "field": 788,
+      "file": 111,
+      "function": 1257,
+      "import": 444,
+      "interface": 102,
+      "method": 599,
+      "module": 152,
+      "namespace": 1,
+      "parameter": 332,
+      "property": 532,
+      "route": 43,
+      "struct": 232,
+      "trait": 8,
+      "type_alias": 34,
+      "variable": 468
+    },
+    "edge_kinds": {
+      "aliases": 11,
+      "calls": 2268,
+      "contains": 5178,
+      "embeds": 1,
+      "exports": 357,
+      "extends": 5,
+      "implements": 24,
+      "imports": 569,
+      "instantiates": 168,
+      "references": 1965,
+      "renders": 43,
+      "returns": 498,
+      "routes_to": 59,
+      "tests": 1182,
+      "type_of": 184
+    },
+    "source_backed_nodes": 5772,
+    "source_backed_edges": 12512,
+    "valid_node_anchors": 5772,
+    "valid_edge_anchors": 12512,
+    "external_placeholder_nodes": 0,
+    "heuristic_nodes": 0,
+    "heuristic_edges": 0,
+    "dangling_edges": 0,
+    "duplicate_node_ids": 0,
+    "graph_diagnostics": {
+      "total": 170,
+      "by_code": {
+        "excluded_input": 1,
+        "low_inference_declaration_compaction": 1,
+        "normalized_constructor_call": 168
+      },
+      "by_severity": {
+        "info": 170
+      },
+      "publication_omitted_nodes": 0,
+      "publication_omitted_edges": 0,
+      "identity_collisions": 0
+    },
+    "output_consistency": {
+      "stats_file_present": true,
+      "stats_match_graph": true,
+      "stats_bytes_match_graph": true,
+      "stats_nodes": 5772,
+      "stats_edges": 12512,
+      "overview_file_present": true,
+      "overview_node_count": 547
+    },
+    "ratios": {
+      "exact_edge_ratio": 1,
+      "inferred_edge_ratio": 0,
+      "anchored_edge_ratio": 1,
+      "anchored_node_ratio": 1,
+      "external_placeholder_ratio": 0
+    },
+    "recommendations": [
+      "No blocking graph-quality findings detected."
+    ]
+  },
+  "store": {
+    "schema": "compass.store.validation/1",
+    "valid": true,
+    "output": "compass-out/snapshots/snapshot-1790312750056001000-76064-0",
+    "graphJson": {
+      "present": true,
+      "bytes": 16658361,
+      "sha256": "e72f2c1137b5b9be4458c3f702112ef7dd17eb4ce577d7dff7e5dcc487327d5e",
+      "nodes": 5772,
+      "edges": 12512
+    },
+    "adapter": "sqlite",
+    "storeSchema": "compass.store/1",
+    "snapshotId": "bf888d24287d70ac98c54e0d42db2f2b540845d88243e1fd7fb15fc4d8bb7f80",
+    "manifestDigest": "77046f841b2ef58ad864913f5ae4a097f184e7706d1ba36e73cd72022bbe71af",
+    "storeReference": {
+      "schema": "compass.store.ref/1",
+      "store_schema": "compass.store/1",
+      "adapter": "sqlite",
+      "store_id": "sqlite-local-v1",
+      "namespace": "compass.current.graph.v1",
+      "snapshot_id": "bf888d24287d70ac98c54e0d42db2f2b540845d88243e1fd7fb15fc4d8bb7f80",
+      "manifest_digest": "77046f841b2ef58ad864913f5ae4a097f184e7706d1ba36e73cd72022bbe71af",
+      "graph_digest": "e72f2c1137b5b9be4458c3f702112ef7dd17eb4ce577d7dff7e5dcc487327d5e"
+    }
+  },
+  "mcp": {
+    "config": {
+      "command": "/usr/local/bin/compass",
+      "args": [
+        "serve",
+        "--graph",
+        "/Users/gqadonis/Projects/prometheus/flint-gate/compass-out/graph.json",
+        "--transport",
+        "stdio"
+      ]
+    },
+    "discoveredTools": [
+      "search_symbols",
+      "get_callers",
+      "get_callees",
+      "get_impact",
+      "explore_code",
+      "get_node",
+      "query_graph",
+      "get_neighbors",
+      "get_community",
+      "god_nodes",
+      "graph_stats",
+      "shortest_path",
+      "list_prs",
+      "get_pr_impact",
+      "triage_prs",
+      "review_pull_request",
+      "pr_readiness",
+      "task_context"
+    ],
+    "successfulQueries": [
+      "graph_stats",
+      "search_symbols",
+      "get_callees",
+      "get_callees"
+    ],
+    "protocol": "2026-07-28"
+  },
+  "limits": [
+    "Inline test modules may remain in indexed files; counts are not production-only.",
+    "Feature-gated source is not one compiled configuration.",
+    "Macro expansion, dynamic dispatch, SQL and process boundaries may remain unresolved.",
+    "Source-backed edges do not prove complete runtime reachability.",
+    "MCP smoke verification does not register the server in the current Codex session."
+  ]
+}

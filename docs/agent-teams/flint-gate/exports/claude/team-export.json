@@ -1,0 +1,113 @@
+{
+  "target": "claude",
+  "verification": {
+    "level": "source-verified",
+    "source": "https://code.claude.com/docs/en/sub-agents",
+    "version": "documentation inspected 2026-09-24",
+    "live": "unverified"
+  },
+  "diagnostics": [
+    "Source-verified serialization only; installed native validation and live execution are unverified.",
+    "Only explicit model IDs are translated. Resolve tier, skill, capability and price policies with agent-team-models before native invocation.",
+    "These are native subagents; installing them does not create an experimental Claude agent team or enable that feature.",
+    "Role overrides are preserved without native schema certification. Skill IDs refer to separately installed skills; prompt mentions do not install or authorize them."
+  ],
+  "instructions": [
+    "Review staged artifacts before installation. Export grants no execution or registration authority.",
+    "Choose project .claude/agents or the staged local marketplace/plugin. Do not install both copies. Settings options are a proposed project .claude/settings.json."
+  ],
+  "files": [
+    {
+      "file": ".claude/agents/gate-identity-architect.md",
+      "sha256": "dac7177d46bc2aff656a20242320174fe42f4eb635ed60e3b4328a829624d8f6"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-identity-architect.md",
+      "sha256": "dac7177d46bc2aff656a20242320174fe42f4eb635ed60e3b4328a829624d8f6"
+    },
+    {
+      "file": ".claude/agents/gate-auth.md",
+      "sha256": "37ece7fde6ad6ced2896a41c5c6a51efcd5369123a6ec7fe1c6c369b89293a8d"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-auth.md",
+      "sha256": "37ece7fde6ad6ced2896a41c5c6a51efcd5369123a6ec7fe1c6c369b89293a8d"
+    },
+    {
+      "file": ".claude/agents/gate-policy.md",
+      "sha256": "7c15c29d190bff1e5964caf33f07097b8c1fa1ab457810803ce47e0a2cda2ee6"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-policy.md",
+      "sha256": "7c15c29d190bff1e5964caf33f07097b8c1fa1ab457810803ce47e0a2cda2ee6"
+    },
+    {
+      "file": ".claude/agents/gate-proxy.md",
+      "sha256": "0ccba86babaca03753bea8cd9c845576ea724a6c28ebc0574992372b9b9a5c48"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-proxy.md",
+      "sha256": "0ccba86babaca03753bea8cd9c845576ea724a6c28ebc0574992372b9b9a5c48"
+    },
+    {
+      "file": ".claude/agents/gate-streams.md",
+      "sha256": "2c1479114e383588feaa3617829b5792ce31161397b381c871ca12867af696f3"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-streams.md",
+      "sha256": "2c1479114e383588feaa3617829b5792ce31161397b381c871ca12867af696f3"
+    },
+    {
+      "file": ".claude/agents/gate-control-plane.md",
+      "sha256": "4e09c349957e6e861ec70b30da32e7b92b9f01372d3e35a4e7f74d2a78b10116"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-control-plane.md",
+      "sha256": "4e09c349957e6e861ec70b30da32e7b92b9f01372d3e35a4e7f74d2a78b10116"
+    },
+    {
+      "file": ".claude/agents/gate-console.md",
+      "sha256": "988d2a88571bbe1c93eec3236ec0614ad9d7eab1166699072b8d52ed56479993"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-console.md",
+      "sha256": "988d2a88571bbe1c93eec3236ec0614ad9d7eab1166699072b8d52ed56479993"
+    },
+    {
+      "file": ".claude/agents/gate-sdk.md",
+      "sha256": "da2fd764e6ceec462055d70677caccbe5eb78cd9ce06939821f24d6aa1ab9643"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-sdk.md",
+      "sha256": "da2fd764e6ceec462055d70677caccbe5eb78cd9ce06939821f24d6aa1ab9643"
+    },
+    {
+      "file": ".claude/agents/gate-operations.md",
+      "sha256": "a5b121e6226da094a8b9b96431527b7a08a703bbb8caf1e6bcc2c986320945f2"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-operations.md",
+      "sha256": "a5b121e6226da094a8b9b96431527b7a08a703bbb8caf1e6bcc2c986320945f2"
+    },
+    {
+      "file": ".claude/agents/gate-reviewer.md",
+      "sha256": "9db5f30252b67f127b3e13af70e5ccafd4238cd52fa4b7a45dfac1dd0190ef56"
+    },
+    {
+      "file": "plugins/flint-gate/agents/gate-reviewer.md",
+      "sha256": "9db5f30252b67f127b3e13af70e5ccafd4238cd52fa4b7a45dfac1dd0190ef56"
+    },
+    {
+      "file": "plugins/flint-gate/.claude-plugin/plugin.json",
+      "sha256": "edccdbd2f51ffe4ca8d146a8c0ccb7fe7fb195570d447d5d837acf99515b4b79"
+    },
+    {
+      "file": ".claude-plugin/marketplace.json",
+      "sha256": "8caecbffe62f60a6f5d03bc86b81334c1db8bcf1299becf33685874579093c2b"
+    },
+    {
+      "file": "export-receipt.json",
+      "sha256": "02acf18ba17edcf34e205cd182546a9018ca5b78c357f3637d721db59c4127c4"
+    }
+  ]
+}

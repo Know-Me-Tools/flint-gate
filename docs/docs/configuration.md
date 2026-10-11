@@ -329,6 +329,92 @@ post_response:
       log_to_db: true
 ```
 
+### `ext_authz` (Envoy external authorization)
+
+An HTTP check endpoint for Envoy's `ext_authz` filter, configured from Envoy
+Gateway with a `SecurityPolicy` (`spec.extAuth.http`). Envoy asks the gate
+before it routes a client request; the gate authenticates the request with
+the provider of the gate route that matches it and answers allow or deny.
+Disabled by default.
+
+```yaml
+ext_authz:
+  enabled: true
+```
+
+**Endpoint.** `/ext-authz/<original path>` on the proxy port, any method.
+Envoy keeps the client's method and `Host`, appends the client path (and
+query) to `extAuth.http.path`, and sends no body. The gate matches
+`(Host, original path, method)` against `sites`/`routes` as the proxy does,
+then runs that route's `auth` provider (or the site's `default_auth`):
+`kratos`, `jwt`, `api_key`, `anonymous` or `mcp`.
+
+| Outcome | Status | Headers |
+|---|---|---|
+| Allow | `200` | `Authorization: Bearer <gate-minted JWT>`, `x-envoy-auth-headers-to-remove: <API-key headers>`, `Cache-Control: no-store` |
+| Missing or invalid credential | `401` | no token |
+| No route for the host and path; insufficient scope; route not supported (below) | `403` | no token |
+| Auth provider error (Kratos down, no database for `api_key`) | `502` | no token |
+| JWT minting not configured | `503` | no token |
+
+The minted JWT is signed by the `jwt` signing key (ES256 in production), so it
+verifies against `/.well-known/jwks.json`. If the route has a
+`claims_enhancement` hook with `mint_jwt`, its `additional_claims` are rendered
+into the token (for example `aud`).
+
+**Routes the check does not evaluate.** The check runs authentication and
+minting only. A route with any other pre-request hook (`authorize`,
+`max_token_budget`, `guardrail`, `body_transform`, `aso_clinical_authorize`,
+`claims_enhancement` with `inject_headers` or `aso_replica_grant`) is denied
+with `403 route_not_supported_by_ext_authz`, so its controls are never skipped.
+In authority mode, Kratos routes are denied with `503`, as in the proxy.
+
+**SecurityPolicy.** Forward the credential headers to the gate, and copy only
+`authorization` back to the upstream:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: knowme-site-gate
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: knowme-site
+  extAuth:
+    timeout: 200ms
+    failOpen: false            # true only for anonymous-allow public sites
+    # Only Host, Method, Path, Content-Length and Authorization are sent by
+    # default. Add the headers the route's provider reads.
+    headersToExtAuth: ["cookie", "x-api-key", "x-forwarded-for"]
+    http:
+      backendRefs:
+        - name: flint-gate      # the in-cluster Service, proxy port
+          port: 4456
+      path: /ext-authz
+      headersToBackend: ["authorization"]
+```
+
+- `headersToBackend: ["authorization"]` makes Envoy overwrite the client's
+  `Authorization` with the gate bearer. Without it the client's own
+  `Authorization` reaches the upstream and the gate token does not.
+- Envoy removes the headers named in `x-envoy-auth-headers-to-remove`
+  (`x-api-key` and every configured `api_key` header) whatever the policy
+  says. Envoy applies removals after `headersToBackend`, so the gate never
+  lists `authorization` there.
+- Cookies are not removed: the upstream still receives the client's `Cookie`
+  header, including a Kratos session cookie.
+- `failOpen` covers only an unreachable gate. A gate `5xx` is a response, so
+  Envoy denies it even with `failOpen: true`.
+- With `server.rate_limit` enabled, include `x-forwarded-for` in
+  `headersToExtAuth`; otherwise every anonymous check is keyed on Envoy's IP.
+
+**Exposure.** Any caller that can reach `/ext-authz` with a valid credential
+for a gate route receives a gate-minted bearer, including a `sub: anonymous`
+token for an anonymous route. Envoy should reach the gate through the
+in-cluster Service; the public gate host should not route `/ext-authz`.
+
 ## Logging
 
 Controlled via `RUST_LOG` or `--log`:

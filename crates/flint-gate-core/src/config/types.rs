@@ -40,6 +40,23 @@ pub struct GateConfig {
     /// load, never a second authority). Empty by default.
     #[serde(default)]
     pub agent_tool_policies: Vec<AgentToolPolicy>,
+    /// Envoy external-authorization check endpoint. Disabled by default.
+    #[serde(default)]
+    pub ext_authz: ExtAuthzConfig,
+}
+
+/// Envoy external-authorization (`ext_authz`, HTTP service) check endpoint.
+///
+/// When enabled, the proxy port answers checks at
+/// [`crate::middleware::ext_authz::EXT_AUTHZ_PATH`]. The endpoint returns a
+/// gate-minted bearer to any caller holding a valid credential for a gate
+/// route, so it is off by default: enable it only where the gate route that
+/// faces the internet does not expose this path (Envoy should reach it through
+/// the in-cluster Service).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExtAuthzConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// Human-in-the-loop approval settings.

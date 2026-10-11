@@ -97,9 +97,10 @@ safe policies.
 
 ---
 
-## Approval Store Backend
+## Governed-effect approval backend
 
-Flint Gate supports two approval store backends, selected at startup:
+Flint Gate supports two stores for `afc.governed-effect/1` approval
+challenges, selected at startup:
 
 | Backend | Durability | Cross-replica | Use case |
 |---------|-----------|--------------|----------|
@@ -122,68 +123,42 @@ Or override at startup via environment:
 FLINT_APPROVAL_BACKEND=postgres flint-gate -c config.yaml
 ```
 
-If `approval.backend: postgres` is set but no `database.url` is configured,
-the gateway warns and falls back to `memory` automatically.
+If `approval.backend: postgres` is set without `database.url`, the gateway
+refuses to start. Gate never silently weakens a requested durable authority
+store to process-local memory.
 
 ### Database migration
 
-The approval store requires the `pending_approvals` table. Apply the
-migration before switching to the Postgres backend:
+The governed-effect store requires the `governed_effect_approvals` table.
+Normal gateway startup applies the bundled migrations. For an explicit
+database-initialization deployment, apply the migrations before switching to
+the Postgres backend:
 
 ```sh
 # Using the bundled migrations
 sqlx migrate run --source crates/flint-gate-core/migrations
 ```
 
-Or apply manually:
-
-```sql
--- migration: 0003_pending_approvals.sql
-CREATE TABLE IF NOT EXISTS pending_approvals (
-    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_sub     TEXT        NOT NULL,
-    tool_name     TEXT        NOT NULL,
-    reason        TEXT        NOT NULL DEFAULT '',
-    registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at    TIMESTAMPTZ NOT NULL,
-    decision      TEXT        CHECK (decision IN ('approved', 'rejected')),
-    decided_at    TIMESTAMPTZ
-);
-CREATE INDEX IF NOT EXISTS idx_pending_approvals_expires
-    ON pending_approvals (expires_at)
-    WHERE decision IS NULL;
-```
-
 ### Admin API endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/approvals` | List pending (undecided, non-expired) approvals |
-| `POST` | `/approvals` | Register a new approval request |
-| `GET` | `/approvals/:id` | Status of a single approval |
-| `POST` | `/approvals/:id/decide` | Record approved/rejected decision |
+| `POST` | `/authority/effects/evaluate` | Evaluate an exact `afc.governed-effect/1` request |
+| `POST` | `/authority/effects/revalidate` | Revalidate the bound request after an approval wait |
+| `POST` | `/authority/effects/{issuer}/{challenge_id}/decision` | Record an authenticated administrator decision |
 
-```sh
-# Register a pending approval
-curl -X POST http://localhost:4457/approvals \
-  -H 'Content-Type: application/json' \
-  -d '{"agent_sub":"my-agent","tool_name":"send_email","reason":"customer contact","expires_at":"2026-07-15T00:00:00Z"}'
-
-# List pending approvals
-curl http://localhost:4457/approvals
-
-# Approve it
-curl -X POST http://localhost:4457/approvals/<id>/decide \
-  -H 'Content-Type: application/json' \
-  -d '{"decision":"approved"}'
-```
+Evaluation and revalidation require `server.admin_auth` with a pinned issuer
+using JWT, MCP, or Kratos authentication. Gate records the provider type,
+configured issuer, and authenticated subject as the P1 execution-owner fact
+source for lease and budget inputs. Loopback access alone, anonymous auth, API
+keys, and issuer-unpinned providers cannot attest these facts.
 
 ### Multi-replica note
 
 When running two or more replicas with the Postgres backend, approvals
 registered on one replica are visible and decidable from any other replica.
-A `pg_notify('flintgate_approval_decided', <id>)` is sent on each decision so
-replicas holding a long-poll can wake up immediately.
+Callers resume by invoking revalidation against the same issuer-scoped
+challenge; Gate does not execute or schedule the effect.
 
 If you are using the `memory` backend with multiple replicas, decisions made
 on one replica are invisible to others — use `sessionAffinity: ClientIP` on

@@ -58,6 +58,7 @@ sites:
 
 approval:
   enabled: true
+  backend: memory
   ttl_seconds: 5
   janitor_interval_seconds: 1
 

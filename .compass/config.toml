@@ -1,0 +1,8 @@
+version = 2
+
+[build]
+include = ["crates/*/src/**/*.rs", "web/src/**/*.ts", "web/src/**/*.tsx", "sdks/typescript/src/**/*.ts", "sdks/go/**/*.go", "sdks/flutter/lib/**/*.dart"]
+exclude = ["**/tests/**", "**/test/**", "**/__tests__/**", "**/e2e/**", "**/tests.rs", "**/*_test.rs", "**/*_tests.rs", "**/*_test.go", "**/*.test.*", "**/*.spec.*", "**/node_modules/**", "**/target/**", "**/dist/**", "**/build/**", "**/generated/**", "**/vendor/**", "**/.worktrees/**", "**/*.d.ts"]
+
+[storage]
+store = "sqlite"

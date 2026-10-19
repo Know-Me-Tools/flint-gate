@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "compass-flint-gate": {
+      "command": "/usr/local/bin/compass",
+      "args": [
+        "serve",
+        "--graph",
+        "/Users/gqadonis/Projects/prometheus/flint-gate/compass-out/graph.json",
+        "--transport",
+        "stdio"
+      ]
+    }
+  }
+}

@@ -1,6 +1,4 @@
-use super::{
-    AuthenticatedAdmin, ChallengeDecision, ChallengeRecord, ChallengeStore,
-};
+use super::{AuthenticatedAdmin, ChallengeDecision, ChallengeRecord, ChallengeStore};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
@@ -68,7 +66,8 @@ impl ChallengeStore for PostgresChallengeStore {
 
         row.map(|row| {
             let request = serde_json::from_value(
-                row.try_get("request_json").context("reading request_json")?,
+                row.try_get("request_json")
+                    .context("reading request_json")?,
             )?;
             let binding = serde_json::from_value(
                 row.try_get("authority_binding")
@@ -89,9 +88,9 @@ impl ChallengeStore for PostgresChallengeStore {
             let decided_by_issuer: Option<String> = row
                 .try_get("decided_by_issuer")
                 .context("reading decided_by_issuer")?;
-            let decided_by = decided_by_subject.zip(decided_by_issuer).map(
-                |(subject, issuer)| AuthenticatedAdmin { issuer, subject },
-            );
+            let decided_by = decided_by_subject
+                .zip(decided_by_issuer)
+                .map(|(subject, issuer)| AuthenticatedAdmin { issuer, subject });
             Ok(ChallengeRecord {
                 issuer: row.try_get("issuer").context("reading issuer")?,
                 challenge_id: row

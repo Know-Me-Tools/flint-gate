@@ -1584,6 +1584,31 @@ mod tests {
     use super::AuthzAuditDecision;
     use crate::config::types::BudgetWindow;
 
+    /// sqlx keys `_sqlx_migrations` by version, so two embedded files sharing a
+    /// version make the migrator reject a database that applied either one.
+    /// Two branches each adding a `0006_*` file broke a know-me rollout.
+    #[test]
+    fn embedded_migration_versions_are_unique() {
+        let migrator = sqlx::migrate!();
+        let mut versions: Vec<i64> = migrator.iter().map(|m| m.version).collect();
+        let total = versions.len();
+        versions.sort_unstable();
+        versions.dedup();
+        assert_eq!(versions.len(), total, "duplicate migration version");
+    }
+
+    /// Production applied version 6 as `oauth_client_claims`; that slot must
+    /// never be reassigned or the deployed database fails its checksum check.
+    #[test]
+    fn migration_six_is_oauth_client_claims() {
+        let migrator = sqlx::migrate!();
+        let six = migrator
+            .iter()
+            .find(|m| m.version == 6)
+            .expect("migration 6 present");
+        assert_eq!(six.description, "oauth client claims");
+    }
+
     /// The `decision` column value is stable and lowercase (with `step_up`
     /// snake-cased). A change to any of these wire strings breaks stored-row
     /// comparability and the admin `/audit` filter, so pin them explicitly.

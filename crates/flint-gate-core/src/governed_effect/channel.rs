@@ -432,9 +432,7 @@ impl PostgresChannelAuthority {
             }
             serde_json::Value::Array(items) => {
                 items.retain(|item| !item.is_null());
-                items
-                    .iter_mut()
-                    .for_each(Self::remove_null_context_values);
+                items.iter_mut().for_each(Self::remove_null_context_values);
             }
             _ => {}
         }

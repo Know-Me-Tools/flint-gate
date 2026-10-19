@@ -1934,12 +1934,10 @@ async fn decide_governed_effect_handler(
 
 async fn channel_capabilities_handler(State(state): State<AdminState>) -> impl IntoResponse {
     let available = if let Some(db) = state.db.as_ref() {
-        sqlx::query_scalar::<_, bool>(
-            "SELECT to_regclass('governed_channel_grants') IS NOT NULL",
-        )
-        .fetch_one(&db.pool())
-        .await
-        .unwrap_or(false)
+        sqlx::query_scalar::<_, bool>("SELECT to_regclass('governed_channel_grants') IS NOT NULL")
+            .fetch_one(&db.pool())
+            .await
+            .unwrap_or(false)
     } else {
         false
     };
@@ -1978,10 +1976,7 @@ const CHANNEL_EFFECT_EXECUTE_SCOPE: &str = "afc.channel.effects.execute";
 /// issuer. Only their verified token scopes are used here; Kratos public
 /// metadata may be self-service-writable and is never channel authority.
 fn has_verified_channel_scope(identity: &Identity, required: &str) -> bool {
-    if identity.session_id.is_some()
-        || identity.id.trim().is_empty()
-        || identity.id == "unknown"
-    {
+    if identity.session_id.is_some() || identity.id.trim().is_empty() || identity.id == "unknown" {
         return false;
     }
     identity
@@ -2026,9 +2021,10 @@ async fn put_channel_grant_handler(
         )
             .into_response();
     };
-    if !identity.as_ref().is_some_and(|identity| {
-        has_verified_channel_scope(&identity.0, CHANNEL_GRANT_WRITE_SCOPE)
-    }) {
+    if !identity
+        .as_ref()
+        .is_some_and(|identity| has_verified_channel_scope(&identity.0, CHANNEL_GRANT_WRITE_SCOPE))
+    {
         return channel_scope_denied(CHANNEL_GRANT_WRITE_SCOPE);
     }
     match state
@@ -2062,9 +2058,10 @@ async fn revoke_channel_grant_handler(
         )
             .into_response();
     };
-    if !identity.as_ref().is_some_and(|identity| {
-        has_verified_channel_scope(&identity.0, CHANNEL_GRANT_WRITE_SCOPE)
-    }) {
+    if !identity
+        .as_ref()
+        .is_some_and(|identity| has_verified_channel_scope(&identity.0, CHANNEL_GRANT_WRITE_SCOPE))
+    {
         return channel_scope_denied(CHANNEL_GRANT_WRITE_SCOPE);
     }
     match state
@@ -2636,12 +2633,10 @@ mod tests {
             config,
             authz: Arc::clone(&authz),
             approval_manager: Arc::new(ApprovalManager::new()),
-            governed_effects: Arc::new(
-                crate::governed_effect::CedarGovernedEffectAuthority::new(
-                    authz,
-                    crate::governed_effect::MemoryChallengeStore::new(),
-                ),
-            ),
+            governed_effects: Arc::new(crate::governed_effect::CedarGovernedEffectAuthority::new(
+                authz,
+                crate::governed_effect::MemoryChallengeStore::new(),
+            )),
             admin_events: None,
         }
     }
@@ -3007,12 +3002,10 @@ mod tests {
             config,
             authz: Arc::clone(&engine),
             approval_manager: Arc::new(ApprovalManager::new()),
-            governed_effects: Arc::new(
-                crate::governed_effect::CedarGovernedEffectAuthority::new(
-                    Arc::clone(&engine),
-                    crate::governed_effect::MemoryChallengeStore::new(),
-                ),
-            ),
+            governed_effects: Arc::new(crate::governed_effect::CedarGovernedEffectAuthority::new(
+                Arc::clone(&engine),
+                crate::governed_effect::MemoryChallengeStore::new(),
+            )),
             admin_events: None,
         };
 
@@ -3105,12 +3098,10 @@ mod tests {
             config,
             authz: Arc::clone(&engine),
             approval_manager: Arc::new(ApprovalManager::new()),
-            governed_effects: Arc::new(
-                crate::governed_effect::CedarGovernedEffectAuthority::new(
-                    engine,
-                    crate::governed_effect::MemoryChallengeStore::new(),
-                ),
-            ),
+            governed_effects: Arc::new(crate::governed_effect::CedarGovernedEffectAuthority::new(
+                engine,
+                crate::governed_effect::MemoryChallengeStore::new(),
+            )),
             admin_events: None,
         };
 

@@ -16,6 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check migrations
+        env:
+          # A reviewed renumbering of migrations that never reached production
+          # can opt out of the immutability check with this PR label.
+          ALLOW_MIGRATION_CHANGES: ${{ contains(github.event.pull_request.labels.*.name, 'migration-renumber') && '1' || '0' }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            scripts/check-migrations.sh "origin/${{ github.base_ref }}"
+          else
+            scripts/check-migrations.sh
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

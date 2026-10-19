@@ -12,7 +12,7 @@
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use chrono::Utc;
-use flint_gate_core::approval::{durable::MemoryApprovalStore, ApprovalManager};
+use flint_gate_core::approval::ApprovalManager;
 use flint_gate_core::auth::jwks_publish::{build_jwks, jwks_handler};
 use flint_gate_core::auth::{build_authenticators, Identity, JwtMinter};
 use flint_gate_core::authz::AuthzEngine;
@@ -187,7 +187,6 @@ routes:
         lookup_registry: Arc::new(LookupRegistry::new(db)),
         authz: Arc::new(AuthzEngine::empty()),
         approval_manager: ApprovalManager::new(),
-        approval_store: MemoryApprovalStore::new(),
         #[cfg(feature = "redis-l2")]
         rate_limiter: None,
     });

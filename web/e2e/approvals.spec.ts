@@ -104,7 +104,8 @@ test.describe('Approvals page — auto-polling via fake clock', () => {
     await page.clock.runFor(5_001);
 
     // At least one more call should have fired.
-    expect(callCount, 'expected at least one poll after 5s').toBeGreaterThan(afterMount);
+    // The poll's request reaches the route handler asynchronously after the tick.
+    await expect.poll(() => callCount, { message: 'expected at least one poll after 5s' }).toBeGreaterThan(afterMount);
   });
 
   test('fires a third API call after 10 seconds have elapsed', async ({ page }) => {
@@ -121,11 +122,14 @@ test.describe('Approvals page — auto-polling via fake clock', () => {
     await page.goto('/approvals');
     await expect(page.getByRole('heading', { name: 'Pending Approvals' })).toBeVisible();
 
+    // Let each poll land before the next tick; a refetch that fires while the
+    // previous one is still in flight is deduplicated, as it would be in real time.
     await page.clock.runFor(5_001);
+    await expect.poll(() => callCount).toBeGreaterThanOrEqual(2);
     await page.clock.runFor(5_001);
 
     // Initial + 2 interval ticks = at least 3 calls
-    expect(callCount, 'expected ≥3 calls after two 5-second ticks').toBeGreaterThanOrEqual(3);
+    await expect.poll(() => callCount, { message: 'expected ≥3 calls after two 5-second ticks' }).toBeGreaterThanOrEqual(3);
   });
 });
 

@@ -316,6 +316,20 @@ permit(principal, action == Action::"call_tool", resource);"#,
         );
     }
 
+    /// The route-level `authorize` hook evaluates `Action::"invoke"`, so the
+    /// gateway schema must let an operator write a policy naming it.
+    #[test]
+    fn route_invoke_action_is_accepted_at_write_time() {
+        let rec = record(
+            r#"permit(principal, action == Action::"invoke", resource == Route::"orders");"#,
+            None,
+        );
+        assert!(
+            validate_policy_for_gateway(&rec).is_ok(),
+            "the route-level invoke action must be writable"
+        );
+    }
+
     /// task 7: policy referencing undefined entity type → rejected with gateway schema.
     #[test]
     fn undefined_entity_type_in_policy_is_rejected_at_write_time() {

@@ -261,20 +261,26 @@ func (c *Client) GetReady(ctx context.Context) (ReadyStatus, error) {
 
 // GetRoutes calls GET /routes and returns all configured routes.
 func (c *Client) GetRoutes(ctx context.Context) ([]RouteConfig, error) {
-	var routes []RouteConfig
-	if err := c.doJSON(ctx, http.MethodGet, "/routes", nil, &routes); err != nil {
+	var resp struct {
+		Routes []routeRecord `json:"routes"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/routes", nil, &resp); err != nil {
 		return nil, err
+	}
+	routes := make([]RouteConfig, 0, len(resp.Routes))
+	for _, rec := range resp.Routes {
+		routes = append(routes, rec.route())
 	}
 	return routes, nil
 }
 
 // GetRoute calls GET /routes/{id}.
 func (c *Client) GetRoute(ctx context.Context, id string) (RouteConfig, error) {
-	var r RouteConfig
-	if err := c.doJSON(ctx, http.MethodGet, "/routes/"+url.PathEscape(id), nil, &r); err != nil {
-		return r, err
+	var rec routeRecord
+	if err := c.doJSON(ctx, http.MethodGet, "/routes/"+url.PathEscape(id), nil, &rec); err != nil {
+		return RouteConfig{}, err
 	}
-	return r, nil
+	return rec.route(), nil
 }
 
 // CreateRoute calls POST /routes. The returned RouteConfig reflects the
@@ -283,11 +289,11 @@ func (c *Client) CreateRoute(ctx context.Context, r RouteConfig) (RouteConfig, e
 	if r.ID == "" {
 		return RouteConfig{}, errors.New("flintgate: CreateRoute: route id is required")
 	}
-	var out RouteConfig
-	if err := c.doJSON(ctx, http.MethodPost, "/routes", r, &out); err != nil {
-		return out, err
+	var ack writeAck
+	if err := c.doJSON(ctx, http.MethodPost, "/routes", r, &ack); err != nil {
+		return RouteConfig{}, err
 	}
-	return out, nil
+	return c.GetRoute(ctx, ack.ID)
 }
 
 // UpsertRoute calls PUT /routes/{id}.
@@ -295,11 +301,11 @@ func (c *Client) UpsertRoute(ctx context.Context, r RouteConfig) (RouteConfig, e
 	if r.ID == "" {
 		return RouteConfig{}, errors.New("flintgate: UpsertRoute: route id is required")
 	}
-	var out RouteConfig
-	if err := c.doJSON(ctx, http.MethodPut, "/routes/"+url.PathEscape(r.ID), r, &out); err != nil {
-		return out, err
+	var ack writeAck
+	if err := c.doJSON(ctx, http.MethodPut, "/routes/"+url.PathEscape(r.ID), r, &ack); err != nil {
+		return RouteConfig{}, err
 	}
-	return out, nil
+	return c.GetRoute(ctx, ack.ID)
 }
 
 // DeleteRoute calls DELETE /routes/{id}. It is idempotent; a 404 is not
@@ -318,11 +324,13 @@ func (c *Client) DeleteRoute(ctx context.Context, id string) error {
 
 // ListAPIKeys calls GET /api-keys.
 func (c *Client) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
-	var keys []APIKey
-	if err := c.doJSON(ctx, http.MethodGet, "/api-keys", nil, &keys); err != nil {
+	var resp struct {
+		APIKeys []APIKey `json:"api_keys"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api-keys", nil, &resp); err != nil {
 		return nil, err
 	}
-	return keys, nil
+	return resp.APIKeys, nil
 }
 
 // CreateAPIKey calls POST /api-keys. The server returns the full key value

@@ -60,7 +60,7 @@ impl ChannelScope {
             && self
                 .thread
                 .as_ref()
-                .map_or(true, |value| !value.trim().is_empty())
+                .is_none_or(|value| !value.trim().is_empty())
     }
 }
 
@@ -408,7 +408,7 @@ impl PostgresChannelAuthority {
         ))
         .unwrap_or_default();
         let mut context = serde_json::to_value(request).unwrap_or_default();
-        Self::remove_null_context_values(&mut context);
+        crate::authz::remove_null_values(&mut context);
         match authz.authorize_as(
             request.identity.subject_kind.into(),
             &request.identity.subject,
@@ -419,22 +419,6 @@ impl PostgresChannelAuthority {
             AuthzDecision::Allow => None,
             AuthzDecision::Deny => Some("channel_policy_denied"),
             AuthzDecision::RequireApproval(_) => Some("channel_policy_approval_required"),
-        }
-    }
-
-    fn remove_null_context_values(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(fields) => {
-                fields.retain(|_, field| !field.is_null());
-                fields
-                    .values_mut()
-                    .for_each(Self::remove_null_context_values);
-            }
-            serde_json::Value::Array(items) => {
-                items.retain(|item| !item.is_null());
-                items.iter_mut().for_each(Self::remove_null_context_values);
-            }
-            _ => {}
         }
     }
 
@@ -594,9 +578,7 @@ impl PostgresChannelAuthority {
         });
         let disposition = if stage_released {
             ChannelDisposition::Uncertain
-        } else if stage_record.is_some() {
-            ChannelDisposition::Withheld
-        } else if reason.is_some() {
+        } else if stage_record.is_some() || reason.is_some() {
             ChannelDisposition::Withheld
         } else if release {
             ChannelDisposition::Released

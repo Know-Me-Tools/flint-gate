@@ -190,18 +190,10 @@ struct PendingToolCall {
     held_start: Option<AgUiEvent>,
     held_end: Option<AgUiEvent>,
     args_buffer: String,
-    stage: PendingStage,
     /// Monotonic deadline for this approval — mirrors the instant stored in the
     /// ApprovalManager so the pipeline can compute its select! deadline from
     /// processor state alone (immune to the janitor's concurrent purge).
     deadline: std::time::Instant,
-}
-
-/// Whether approval was requested at START or at END.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingStage {
-    Start,
-    End,
 }
 
 /// Handle used by the processor to register approvals and emit decision
@@ -428,51 +420,26 @@ impl AgUiProcessor {
         _approval_id: &str,
         pending: PendingToolCall,
     ) -> Vec<AgUiEvent> {
-        match pending.stage {
-            PendingStage::Start => {
-                // Restore the call to the active set so ARGS/END can resume.
-                let tool_call_id = pending
-                    .held_start
-                    .as_ref()
-                    .and_then(|e| e.tool_call_id())
-                    .map(str::to_string);
-                let Some(id) = tool_call_id else {
-                    return Vec::new();
-                };
-                self.tool_calls.borrow_mut().insert(
-                    id,
-                    ToolCallState {
-                        tool_name: pending.tool_name,
-                        held_start: pending.held_start,
-                        start_allowed: true,
-                        args_buffer: pending.args_buffer,
-                    },
-                );
-                Vec::new()
-            }
-            PendingStage::End => {
-                // Flush the held call now.
-                let mut out = Vec::with_capacity(3);
-                let tool_call_id = pending
-                    .held_start
-                    .as_ref()
-                    .and_then(|e| e.tool_call_id())
-                    .map(str::to_string);
-                if let Some(start) = pending.held_start {
-                    out.push(start);
-                }
-                if !pending.args_buffer.trim().is_empty() {
-                    out.push(coalesced_args_event(
-                        tool_call_id.as_deref().unwrap_or(""),
-                        &pending.args_buffer,
-                    ));
-                }
-                if let Some(end) = pending.held_end {
-                    out.push(end);
-                }
-                out
-            }
+        // Approvals are only requested at END, so approving flushes the held call.
+        let mut out = Vec::with_capacity(3);
+        let tool_call_id = pending
+            .held_start
+            .as_ref()
+            .and_then(|e| e.tool_call_id())
+            .map(str::to_string);
+        if let Some(start) = pending.held_start {
+            out.push(start);
         }
+        if !pending.args_buffer.trim().is_empty() {
+            out.push(coalesced_args_event(
+                tool_call_id.as_deref().unwrap_or(""),
+                &pending.args_buffer,
+            ));
+        }
+        if let Some(end) = pending.held_end {
+            out.push(end);
+        }
+        out
     }
 
     /// Route a tool-call event through the buffer-until-authorized state
@@ -484,7 +451,8 @@ impl AgUiProcessor {
     /// Tool-call model (buffer-until-authorized; args are display-only until
     /// END so holding them adds no client-visible semantics):
     /// - `TOOL_CALL_START`: coarse by-name check. Deny → mark id blocked, emit a
-    ///   RUN_ERROR, hold nothing. Allow → HOLD the START, emit nothing.
+    ///   RUN_ERROR, hold nothing. Allow or RequireApproval → HOLD the START, emit
+    ///   nothing; approval is requested once, at END, with the full arguments.
     /// - `TOOL_CALL_ARGS`: append the delta to the id's buffer (cap-checked).
     ///   Emit nothing. If the id was blocked or unknown → drop. Cap exceeded →
     ///   deny the call (drop state, emit RUN_ERROR).
@@ -531,7 +499,9 @@ impl AgUiProcessor {
 
         // Coarse by-name check (no args yet) — an early-reject optimization.
         match authz.authorize(&name, &Value::Null) {
-            AuthzDecision::Allow => {
+            // RequireApproval is not requested here: the arguments are not known
+            // yet, and END re-evaluates the full call and asks the human once.
+            AuthzDecision::Allow | AuthzDecision::RequireApproval(_) => {
                 // HOLD the START; emit nothing until END authorizes the full call.
                 self.tool_calls.borrow_mut().insert(
                     id,
@@ -544,15 +514,6 @@ impl AgUiProcessor {
                 );
                 Vec::new()
             }
-            AuthzDecision::RequireApproval(ctx) => self.request_approval(
-                ctx,
-                Some(&id),
-                name,
-                Some(event),
-                None,
-                String::new(),
-                PendingStage::Start,
-            ),
             AuthzDecision::Deny => {
                 // Blocked at START: record the block so later ARGS/END drop, and
                 // replace the START with a single RUN_ERROR.
@@ -583,7 +544,6 @@ impl AgUiProcessor {
         held_start: Option<AgUiEvent>,
         held_end: Option<AgUiEvent>,
         args_buffer: String,
-        stage: PendingStage,
     ) -> Vec<AgUiEvent> {
         let Some(handle) = &self.approval_handle else {
             tracing::warn!(
@@ -642,7 +602,6 @@ impl AgUiProcessor {
                 held_start,
                 held_end,
                 args_buffer,
-                stage,
                 deadline,
             },
         );
@@ -650,7 +609,6 @@ impl AgUiProcessor {
         tracing::info!(
             approval_id = %id,
             tool_call_id = ?tool_call_id,
-            stage = ?stage,
             "tool call requires human approval — pausing stream"
         );
         vec![approval_request_event(&wire_context, tool_call_id)]
@@ -756,7 +714,6 @@ impl AgUiProcessor {
                 state.held_start,
                 Some(event),
                 state.args_buffer,
-                PendingStage::End,
             ),
             AuthzDecision::Deny => {
                 tracing::info!(

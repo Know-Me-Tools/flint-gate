@@ -6,13 +6,12 @@
  *
  *   INTEGRATION_GATEWAY_URL=http://localhost:4457 pnpm test:integration
  *
- * The test fixture (docker-compose.test.yml) binds the admin port to
- * loopback inside the container (config.test.yaml: admin_listen: 127.0.0.1:4457)
- * and the docker port mapping exposes it on host :4457 — no auth required
- * (AllowLoopback posture, admin_auth not configured).
+ * The test fixture (docker-compose.test.yml) binds the admin port on all
+ * interfaces with an anonymous admin_auth provider (config.test.yaml), so no
+ * credentials are required.
  */
 import { createHmac } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FlintGateAdmin } from "../admin";
 import { FlintGateClient } from "../client";
 import { asRouteId, asSiteId } from "../types";
@@ -73,13 +72,25 @@ async function pollForApproval(
 
 describe.skipIf(!gatewayUrl)("FlintGateAdmin integration", () => {
   let admin: FlintGateAdmin;
+  // Strict governance authorizes the stream route itself before any tool call
+  // reaches the @require_approval policies the approval tests create.
+  const routeInvokePolicyId = uniqueId("integ-stream-route-invoke");
 
-  beforeAll(() => {
+  beforeAll(async () => {
     const client = new FlintGateClient({
       baseUrl: gatewayUrl!,
       adminUrl: gatewayUrl!,
     });
     admin = new FlintGateAdmin(client);
+    await admin.createPolicy({
+      id: routeInvokePolicyId,
+      policy_text: `permit(principal, action == Action::"invoke", resource == Route::"stream-test");`,
+      enabled: true,
+    });
+  });
+
+  afterAll(async () => {
+    await admin?.deletePolicy(routeInvokePolicyId).catch(() => {});
   });
 
   // ── Health / readiness ─────────────────────────────────────────────────────

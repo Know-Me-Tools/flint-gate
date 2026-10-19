@@ -99,6 +99,57 @@ interface RawFrame {
     readonly type: string;
     readonly [k: string]: unknown;
 }
+/** A Cedar authorization policy stored in Flint Gate. */
+interface PolicyRow {
+    readonly id: string;
+    readonly policy_text: string;
+    readonly schema_json?: Record<string, unknown> | null;
+    readonly entities_json?: Record<string, unknown> | null;
+    readonly enabled: boolean;
+    /** JWT `sub` of the operator who last modified this policy. */
+    readonly written_by?: string | null;
+}
+/** A single version snapshot in a policy's history. */
+interface PolicyVersionRow {
+    readonly id: string;
+    readonly policy_id: string;
+    readonly version_num: number;
+    readonly policy_text: string;
+    readonly schema_json?: Record<string, unknown> | null;
+    readonly entities_json?: Record<string, unknown> | null;
+    readonly written_by?: string | null;
+    readonly written_at: string;
+}
+/** Response from GET /policies/{id}/history. */
+interface PolicyHistoryResponse {
+    readonly policy_id: string;
+    /** Server-side row count hint. May be null when count is unavailable. */
+    readonly total_hint: number | null;
+    readonly versions: readonly PolicyVersionRow[];
+}
+/** Response from POST /policies/{id}/rollback. */
+interface RollbackResponse {
+    readonly status: string;
+    readonly policy_id: string;
+    readonly from_version: number;
+    readonly to_version: number;
+}
+/** Input for creating or updating a Cedar policy. */
+interface UpsertPolicyInput {
+    /** Policy id. Required on create; matched against path param on update. */
+    readonly id: string;
+    readonly policy_text: string;
+    readonly schema_json?: Record<string, unknown> | null;
+    readonly entities_json?: Record<string, unknown> | null;
+    readonly enabled?: boolean;
+}
+/** Response from POST /policies or PUT /policies/{id}. */
+interface UpsertPolicyResponse {
+    readonly status: string;
+    readonly id: string;
+    readonly reloaded?: boolean;
+    readonly warnings?: readonly string[];
+}
 /** Path/method matcher for a route. Glob patterns compile to regex server-side. */
 interface RouteMatch {
     /** Glob path, e.g. `/api/**`. */
@@ -165,7 +216,7 @@ interface ApiKey {
     /** Granted scope list. */
     readonly scopes: readonly string[];
     /** ISO-8601 creation timestamp. */
-    readonly createdAt: string;
+    readonly createdAt?: string;
     /** ISO-8601 optional revocation timestamp. */
     readonly revokedAt?: string;
     /** Human label. */
@@ -175,8 +226,9 @@ interface ApiKey {
 interface CreateApiKeyInput {
     readonly clientId: string;
     readonly scopes?: readonly string[];
+    /** @deprecated Not accepted by the server; ignored. */
     readonly description?: string;
-    /** Optional explicit key value. If omitted the server generates one. */
+    /** @deprecated The server always generates the key; ignored. */
     readonly key?: string;
 }
 /** Response from POST /api-keys. `key` is the plaintext and is only seen here. */
@@ -185,6 +237,28 @@ interface CreateApiKeyResponse {
     /** Plaintext key — store this immediately; the server only keeps the hash. */
     readonly key: ApiKeyValue;
 }
+/**
+ * Read-only view of a pending human-in-the-loop approval returned by
+ * GET /approvals and GET /approvals/{id}.
+ */
+interface ApprovalStatus {
+    /** Opaque approval request id. */
+    readonly approvalId: string;
+    /** Principal (agent / user) that triggered the tool call. */
+    readonly principalId: string;
+    /** Action string identifying the tool call (e.g. "tool:read_file"). */
+    readonly action: string;
+    /** Resource id the action targets. */
+    readonly resourceId: string;
+    /** Optional human-readable reason the call was flagged for approval. */
+    readonly reason?: string;
+    /** ISO-8601 timestamp after which the approval request expires. */
+    readonly expiresAt: string;
+    /** True when the request has already expired (included for polling convenience). */
+    readonly expired: boolean;
+}
+/** Decision value for POST /approvals/{id}/decision. */
+type ApprovalDecision = "approve" | "deny";
 interface HealthStatus {
     readonly status: "ok";
     readonly version?: string;
@@ -196,6 +270,22 @@ interface ReadyStatus {
         ok: boolean;
         detail?: string;
     }>>;
+}
+/** Response from DELETE /policies/{id}. */
+interface DeletePolicyResponse {
+    readonly status: "deleted" | string;
+    readonly id: string;
+}
+/** One historical revision of a policy. */
+interface PolicyVersion {
+    readonly version_num: number;
+    readonly policy_text: string;
+    readonly created_at: string;
+}
+/** Options for getPolicyHistory pagination. */
+interface PolicyHistoryOptions {
+    readonly offset?: number;
+    readonly limit?: number;
 }
 /** Base class for all SDK errors. Carries optional HTTP status and code. */
 declare class FlintGateError extends Error {
@@ -217,6 +307,18 @@ declare class StreamClosedError extends FlintGateError {
 declare class StreamProtocolError extends FlintGateError {
     constructor(message: string, code?: string, status?: number);
 }
+/**
+ * An async function that returns a bearer token string.
+ *
+ * Use this for dynamic token sources — JWTs that need periodic refresh,
+ * tokens from an in-memory credential cache, etc. The SDK calls this before
+ * every request (or on 401 retry) so the implementation should cache
+ * internally when appropriate.
+ *
+ * For static tokens use {@link FlintGateClientConfig.token} — it is wrapped
+ * in a `StaticTokenProvider` automatically and is backwards-compatible.
+ */
+type TokenProvider = () => Promise<string>;
 /** Constructor options for {@link FlintGateClient}. */
 interface FlintGateClientConfig {
     /**
@@ -232,12 +334,30 @@ interface FlintGateClientConfig {
     readonly adminUrl?: string | URL;
     /** Auth strategy applied to proxied data-plane requests. */
     readonly auth?: AuthConfig;
+    /**
+     * Static bearer token for the data plane. Convenience shorthand for
+     * `auth: { type: "bearer", token: "..." }`. Takes precedence over `auth`
+     * when both are supplied. Backwards-compatible with previous `token` field.
+     */
+    readonly token?: string;
+    /**
+     * Async token provider for dynamic/refreshable bearer tokens.
+     * When supplied, the SDK calls this before every request and sets the
+     * `Authorization: Bearer <token>` header with the returned value.
+     * Takes precedence over both `token` and `auth.token` (for bearer auth).
+     */
+    readonly tokenProvider?: TokenProvider;
     /** Extra default headers merged onto every request. */
     readonly headers?: Readonly<Record<string, string>>;
     /** Optional default AbortSignal-shortening timeout in ms. */
     readonly timeoutMs?: number;
     /** Custom fetch implementation. Defaults to `globalThis.fetch`. */
     readonly fetch?: typeof fetch;
+    /**
+     * Maximum number of automatic retries on HTTP 429 (Rate Limited) responses.
+     * Default: 3. Set to 0 to disable.
+     */
+    readonly maxRetries?: number;
 }
 
 /**
@@ -253,9 +373,11 @@ declare class FlintGateClient {
     readonly adminUrl: string | null;
     /** Immutable auth config. */
     readonly auth: AuthConfig;
+    private readonly tokenProvider;
     private readonly headers;
     private readonly timeoutMs?;
     private readonly fetchImpl;
+    private readonly maxRetries;
     constructor(config: FlintGateClientConfig);
     /**
      * Issue a request through Flint Gate's data plane. Auth headers are applied
@@ -284,6 +406,23 @@ declare class FlintGateClient {
     private mergeHeaders;
     private applyTimeout;
 }
+/**
+ * Returns true if `err` is a 429 Rate Limited response from Flint Gate.
+ */
+declare function isRateLimited(err: unknown): boolean;
+/**
+ * Returns true if `err` is a 401 Unauthorized response from Flint Gate.
+ */
+declare function isUnauthorized(err: unknown): boolean;
+/**
+ * Returns true if `err` is a 403 Forbidden response from Flint Gate,
+ * typically indicating approval is required before the action can proceed.
+ */
+declare function isApprovalRequired(err: unknown): boolean;
+/**
+ * Returns true if `err` is a 404 Not Found response from Flint Gate.
+ */
+declare function isNotFound(err: unknown): boolean;
 
 /**
  * Admin API surface for Flint Gate.
@@ -318,6 +457,47 @@ declare class FlintGateAdmin {
     createApiKey(input: CreateApiKeyInput, signal?: AbortSignal): Promise<CreateApiKeyResponse>;
     /** Revoke an API key by id. */
     revokeApiKey(id: string, signal?: AbortSignal): Promise<void>;
+    /** List all Cedar authorization policies (enabled and disabled). */
+    listPolicies(signal?: AbortSignal): Promise<PolicyRow[]>;
+    /** Fetch a single policy by id. */
+    getPolicy(id: string, signal?: AbortSignal): Promise<PolicyRow>;
+    /** Create a new Cedar policy. */
+    createPolicy(input: UpsertPolicyInput, signal?: AbortSignal): Promise<UpsertPolicyResponse>;
+    /** Update (upsert) an existing Cedar policy by id. */
+    updatePolicy(id: string, input: UpsertPolicyInput, signal?: AbortSignal): Promise<UpsertPolicyResponse>;
+    /** Delete a Cedar policy by id. */
+    deletePolicy(id: string, signal?: AbortSignal): Promise<{
+        status: string;
+        id: string;
+    }>;
+    /**
+     * Fetch version history for a policy.
+     * @param opts.offset - Page offset (default 0).
+     * @param opts.limit  - Page size (default 20).
+     */
+    getPolicyHistory(id: string, opts?: {
+        offset?: number;
+        limit?: number;
+    }, signal?: AbortSignal): Promise<PolicyHistoryResponse>;
+    /**
+     * Roll back a policy to a prior version.
+     * Creates a new version row equal to the target — the rollback is fully
+     * auditable in the version history.
+     */
+    rollbackPolicy(id: string, versionNum: number, signal?: AbortSignal): Promise<RollbackResponse>;
+    /** List all non-expired pending human-in-the-loop approvals on this replica. */
+    listApprovals(signal?: AbortSignal): Promise<ApprovalStatus[]>;
+    /**
+     * Get a single pending approval by id.
+     * Throws {@link FlintGateApiError} with status 404 when not found or already resolved.
+     */
+    getApproval(id: string, signal?: AbortSignal): Promise<ApprovalStatus>;
+    /**
+     * Approve or deny a pending approval request.
+     * Throws {@link FlintGateApiError} with status 404 (not found / already resolved)
+     * or 410 (expired).
+     */
+    decideApproval(id: string, decision: ApprovalDecision, signal?: AbortSignal): Promise<void>;
 }
 
 /**
@@ -332,6 +512,31 @@ declare class FlintGateAdmin {
  * Edge-runtime safe: uses TextDecoder only. No Node.js imports.
  */
 declare function streamSSE(source: Response | ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<StreamEvent, void, unknown>;
+/**
+ * Options for {@link streamSSEWithReconnect}.
+ */
+interface SSEReconnectOptions {
+    /** Maximum reconnect attempts after a network drop or 5xx. Default: 5. */
+    maxReconnects?: number;
+    /** Custom fetch implementation. Defaults to `globalThis.fetch`. */
+    fetch?: typeof globalThis.fetch;
+    /** Extra request headers. */
+    headers?: Record<string, string>;
+    /** Bearer token for `Authorization` header. */
+    bearerToken?: string;
+    /** AbortSignal to cancel the stream. */
+    signal?: AbortSignal;
+}
+/**
+ * Fetch an SSE endpoint with automatic reconnect on network drops or 5xx errors.
+ *
+ * - Tracks the last `id:` field and sends `Last-Event-ID` on reconnect.
+ * - Reconnects up to `maxReconnects` times (default 5) with exponential backoff:
+ *   250ms * 2^attempt, capped at 8s.
+ * - HTTP 4xx responses are fatal and are not retried.
+ * - Yields the same {@link StreamEvent} values as {@link streamSSE}.
+ */
+declare function streamSSEWithReconnect(urlStr: string, opts?: SSEReconnectOptions): AsyncGenerator<StreamEvent, void, unknown>;
 /**
  * Consume an NDJSON (newline-delimited JSON) stream as an async iterable of
  * typed {@link StreamEvent} values. Each non-empty line is parsed as JSON
@@ -467,4 +672,4 @@ declare function readFlintIdentity(headers: Headers | Record<string, string | st
  */
 declare function forwardApiKey(headerValue: string, headerName?: string): AuthConfig;
 
-export { type ApiKey, type ApiKeyValue, type AuthConfig, type AuthProviderRef, type BodyTransformHook, type CreateApiKeyInput, type CreateApiKeyResponse, type CreateRouteInput, type Done, FlintGateAdmin, FlintGateApiError, FlintGateClient, type FlintGateClientConfig, FlintGateError, type FlintGateMiddlewareConfig, type FlintGateWSOptions, type FlintIdentity, type HealthStatus, type InjectHeadersHook, type MintJwtHook, type PreRequestHook, type RawFrame, type ReadyStatus, type RouteConfig, type RouteId, type RouteMatch, type SiteId, StreamClosedError, type StreamError, type StreamEvent, StreamProtocolError, type TextDelta, type TokenUsage, type ToolCall, asApiKeyValue, asRouteId, asSiteId, createFlintGateMiddleware, expressFlintGateAdapter, forwardApiKey, readFlintIdentity, streamNDJSON, streamSSE, streamWS };
+export { type ApiKey, type ApiKeyValue, type ApprovalDecision, type ApprovalStatus, type AuthConfig, type AuthProviderRef, type BodyTransformHook, type CreateApiKeyInput, type CreateApiKeyResponse, type CreateRouteInput, type DeletePolicyResponse, type Done, FlintGateAdmin, FlintGateApiError, FlintGateClient, type FlintGateClientConfig, FlintGateError, type FlintGateMiddlewareConfig, type FlintGateWSOptions, type FlintIdentity, type HealthStatus, type InjectHeadersHook, type MintJwtHook, type PolicyHistoryOptions, type PolicyHistoryResponse, type PolicyRow, type PolicyVersion, type PolicyVersionRow, type PreRequestHook, type RawFrame, type ReadyStatus, type RollbackResponse, type RouteConfig, type RouteId, type RouteMatch, type SSEReconnectOptions, type SiteId, StreamClosedError, type StreamError, type StreamEvent, StreamProtocolError, type TextDelta, type TokenProvider, type TokenUsage, type ToolCall, type UpsertPolicyInput, type UpsertPolicyResponse, asApiKeyValue, asRouteId, asSiteId, createFlintGateMiddleware, expressFlintGateAdapter, forwardApiKey, isApprovalRequired, isNotFound, isRateLimited, isUnauthorized, readFlintIdentity, streamNDJSON, streamSSE, streamSSEWithReconnect, streamWS };

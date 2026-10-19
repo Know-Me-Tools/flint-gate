@@ -586,6 +586,25 @@ fn make_uid(type_name: &str, id: &str) -> Result<EntityUid, AuthzError> {
     Ok(EntityUid::from_type_name_and_id(etype, eid))
 }
 
+/// Drop JSON `null`s from objects and arrays, recursively.
+///
+/// Cedar has no null value, so an unset field (an anonymous identity's traits,
+/// an optional Kratos trait) is encoded as an absent attribute; policies test
+/// for it with `has`.
+pub(crate) fn remove_null_values(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            fields.retain(|_, field| !field.is_null());
+            fields.values_mut().for_each(remove_null_values);
+        }
+        Value::Array(items) => {
+            items.retain(|item| !item.is_null());
+            items.iter_mut().for_each(remove_null_values);
+        }
+        _ => {}
+    }
+}
+
 /// Map a JSON value into a Cedar request `Context`.
 ///
 /// A JSON object becomes the context record. `Null` becomes an empty context.
@@ -596,8 +615,12 @@ fn make_uid(type_name: &str, id: &str) -> Result<EntityUid, AuthzError> {
 fn build_context(value: &Value) -> Result<Context, AuthzError> {
     match value {
         Value::Null => Ok(Context::empty()),
-        Value::Object(_) => Context::from_json_value(value.clone(), None)
-            .map_err(|e| AuthzError::RequestBuild(format!("invalid context record: {e}"))),
+        Value::Object(_) => {
+            let mut record = value.clone();
+            remove_null_values(&mut record);
+            Context::from_json_value(record, None)
+                .map_err(|e| AuthzError::RequestBuild(format!("invalid context record: {e}")))
+        }
         _ => Err(AuthzError::RequestBuild(
             "context must be a JSON object".to_string(),
         )),
@@ -624,6 +647,31 @@ mod tests {
             AuthzEngine::from_records(&[record("p", r#"permit(principal, action, resource);"#)])
                 .expect("compiles");
         let decision = engine.authorize("alice", DEFAULT_ACTION, "route-1", &json!({}));
+        assert_eq!(decision, AuthzDecision::Allow);
+    }
+
+    /// Cedar has no null. An identity without traits (anonymous) or with an
+    /// unset optional trait must be evaluated with that attribute absent, not
+    /// denied as an unbuildable request.
+    #[test]
+    fn null_context_values_are_treated_as_absent() {
+        let engine = AuthzEngine::from_records(&[record(
+            "p",
+            r#"permit(principal, action, resource) unless { context has identity };"#,
+        )])
+        .expect("compiles");
+        let context = json!({ "path": "/x", "identity": null });
+        let decision = engine.authorize("anon", DEFAULT_ACTION, "route-1", &context);
+        assert_eq!(decision, AuthzDecision::Allow);
+
+        let engine = AuthzEngine::from_records(&[record(
+            "p",
+            r#"permit(principal, action, resource)
+               when { context.identity has name && !(context.identity has email) };"#,
+        )])
+        .expect("compiles");
+        let context = json!({ "identity": { "name": "u", "email": null, "tags": [null, "a"] } });
+        let decision = engine.authorize("alice", DEFAULT_ACTION, "route-1", &context);
         assert_eq!(decision, AuthzDecision::Allow);
     }
 

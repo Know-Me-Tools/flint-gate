@@ -17,3 +17,6 @@ node_modules/
 /.compass/*.log
 /.compass/setup-baseline.json
 /.agent-team/
+
+# Generated LLM prompt captures; never commit
+/.prometheus/knowledge/.prompt-snapshots/

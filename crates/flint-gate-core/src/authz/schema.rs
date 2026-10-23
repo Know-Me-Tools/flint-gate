@@ -9,7 +9,8 @@
 //! | Principal  | `Agent`   | Delegated agent identity (NHI)               |
 //! | Principal  | `Service` | Service / workload identity (client_creds)   |
 //! | Resource   | `Route`   | A proxy route (the Cedar resource)           |
-//! | Action     | `call_tool` | The only valid gateway action               |
+//! | Action     | `invoke`    | Route-level check by the `authorize` hook   |
+//! | Action     | `call_tool` | Per-tool-call check inside a stream         |
 //!
 //! ## Annotation semantics
 //!
@@ -29,6 +30,11 @@ entity User;
 entity Agent;
 entity Service;
 entity Route;
+
+action "invoke" appliesTo {
+    principal: [User, Agent, Service],
+    resource:  [Route]
+};
 
 action "call_tool" appliesTo {
     principal: [User, Agent, Service],
@@ -57,7 +63,7 @@ pub fn validate_annotations(policy_text: &str) -> Result<(), String> {
     };
     for policy in policy_set.policies() {
         for (key, _value) in policy.annotations() {
-            let key_str = key.as_ref();
+            let key_str = key;
             if !KNOWN_ANNOTATIONS.contains(&key_str) {
                 let policy_id: &str = policy.id().as_ref();
                 return Err(format!(

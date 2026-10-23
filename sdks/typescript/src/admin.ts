@@ -46,8 +46,8 @@ export class FlintGateAdmin {
 
   /** List all enabled routes. */
   async getRoutes(signal?: AbortSignal): Promise<RouteConfig[]> {
-    const rows = await this.client.adminRequest<unknown[]>("/routes", { signal });
-    return rows.map(normalizeRoute);
+    const res = await this.client.adminRequest<{ routes: unknown[] }>("/routes", { signal });
+    return res.routes.map(normalizeRoute);
   }
 
   /** Get a single route by id. */
@@ -61,13 +61,14 @@ export class FlintGateAdmin {
 
   /** Create or upsert a route. Returns the stored record. */
   async createRoute(input: CreateRouteInput, signal?: AbortSignal): Promise<RouteConfig> {
-    const row = await this.client.adminRequest<unknown>("/routes", {
+    // The server acknowledges a write with `{ status, id }`; read the record back.
+    const ack = await this.client.adminRequest<{ id: string }>("/routes", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(serializeRoute(input)),
       signal,
     });
-    return normalizeRoute(row);
+    return this.getRoute(ack.id, signal);
   }
 
   /** Update an existing route by id. */
@@ -76,7 +77,7 @@ export class FlintGateAdmin {
     input: CreateRouteInput,
     signal?: AbortSignal,
   ): Promise<RouteConfig> {
-    const row = await this.client.adminRequest<unknown>(
+    const ack = await this.client.adminRequest<{ id: string }>(
       `/routes/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -85,7 +86,7 @@ export class FlintGateAdmin {
         signal,
       },
     );
-    return normalizeRoute(row);
+    return this.getRoute(ack.id, signal);
   }
 
   /** Delete a route by id. */
@@ -100,7 +101,8 @@ export class FlintGateAdmin {
 
   /** List all API keys (hashed values are never returned). */
   async getApiKeys(signal?: AbortSignal): Promise<ApiKey[]> {
-    return this.client.adminRequest<ApiKey[]>("/api-keys", { signal });
+    const res = await this.client.adminRequest<{ api_keys: unknown[] }>("/api-keys", { signal });
+    return res.api_keys.map(normalizeApiKey);
   }
 
   /**
@@ -111,23 +113,20 @@ export class FlintGateAdmin {
     input: CreateApiKeyInput,
     signal?: AbortSignal,
   ): Promise<CreateApiKeyResponse> {
-    const res = await this.client.adminRequest<{
-      apiKey: ApiKey;
-      key: string;
-    }>("/api-keys", {
+    // The server speaks snake_case and returns the record fields flat,
+    // alongside the one-time plaintext `key`.
+    const res = await this.client.adminRequest<Record<string, unknown>>("/api-keys", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        clientId: input.clientId,
+        client_id: input.clientId,
         scopes: input.scopes ?? [],
-        description: input.description,
-        key: input.key,
       }),
       signal,
     });
     return {
-      apiKey: res.apiKey,
-      key: asApiKeyValue(res.key),
+      apiKey: normalizeApiKey(res),
+      key: asApiKeyValue(String(res.key)),
     };
   }
 
@@ -302,8 +301,25 @@ function normalizeApproval(raw: unknown): ApprovalStatus {
   };
 }
 
+function normalizeApiKey(row: unknown): ApiKey {
+  const k = row as Record<string, unknown>;
+  return {
+    id: String(k.id),
+    clientId: String(k.client_id),
+    scopes: Array.isArray(k.scopes) ? (k.scopes as string[]) : [],
+    createdAt: typeof k.created_at === "string" ? k.created_at : undefined,
+    revokedAt: typeof k.revoked_at === "string" ? k.revoked_at : undefined,
+  };
+}
+
 function normalizeRoute(row: unknown): RouteConfig {
-  const r = row as Record<string, unknown>;
+  // Stored routes come back as `{ id, config, priority, enabled }`; the route
+  // itself lives in `config`, with priority/enabled kept on the record.
+  const record = row as Record<string, unknown>;
+  const r =
+    record.config && typeof record.config === "object"
+      ? { ...(record.config as Record<string, unknown>), priority: record.priority, enabled: record.enabled }
+      : record;
   const id = asRouteId(String(r.id));
   const site = asSiteId(String(r.site));
   const match = r.match as RouteConfig["match"];

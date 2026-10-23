@@ -570,6 +570,54 @@ mod tests {
         assert!(proc.pending_approvals().is_empty());
     }
 
+    /// An argument-independent `@require_approval` policy matches at START as
+    /// well as END. The human must be asked once, with the full call, not
+    /// once per stage.
+    #[test]
+    fn ndjson_ag_ui_unconditional_approval_is_requested_once() {
+        let engine = AuthzEngine::from_records(&[PolicyRecord {
+            id: "always".to_string(),
+            policy_text: r#"@require_approval("always")
+                permit(principal, action, resource);"#
+                .to_string(),
+            schema_json: None,
+            entities_json: None,
+        }])
+        .expect("compiles");
+        let manager = ApprovalManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(String, ApprovalDecision)>();
+        let mut proc = NdjsonStreamProcessor::with_tool_authz_and_approval(
+            ndjson_ag_ui_enabled_config(),
+            vec![],
+            serde_json::Map::new(),
+            None,
+            Some(ctx(engine)),
+            Some((manager, tx, None)),
+        );
+
+        proc.process_chunk(
+            b"{\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"c1\",\"toolCallName\":\"x\"}\n",
+        );
+        assert!(
+            proc.pending_approvals().is_empty(),
+            "no approval before the call's arguments are known"
+        );
+        proc.process_chunk(
+            b"{\"type\":\"TOOL_CALL_ARGS\",\"toolCallId\":\"c1\",\"delta\":\"{\\\"x\\\":1}\"}\n",
+        );
+        proc.process_chunk(b"{\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"c1\"}\n");
+        let pending = proc.pending_approvals();
+        assert_eq!(pending.len(), 1, "exactly one approval for the call");
+
+        let released = proc
+            .resolve_approval(&pending[0], ApprovalDecision::Approve)
+            .unwrap();
+        let s = std::str::from_utf8(&released).unwrap();
+        assert!(s.contains("TOOL_CALL_START"), "START released: {s}");
+        assert!(s.contains("TOOL_CALL_END"), "END released: {s}");
+        assert!(proc.pending_approvals().is_empty());
+    }
+
     #[test]
     fn ndjson_ag_ui_approve_at_end_releases_full_call() {
         let manager = ApprovalManager::new();

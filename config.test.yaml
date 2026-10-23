@@ -9,9 +9,15 @@
 
 server:
   listen: "0.0.0.0:4456"
-  # Loopback bind → AllowLoopback posture → no admin_auth required.
-  # The docker port mapping "4457:4457" still exposes it to the test host.
-  admin_listen: "127.0.0.1:4457"
+  # Docker port mappings cannot reach a loopback bind inside the container, so
+  # the admin API binds all interfaces. A non-loopback bind requires
+  # admin_auth; this isolated fixture uses the anonymous provider so the SDK
+  # tests can call it without credentials. Never do this outside tests.
+  admin_listen: "0.0.0.0:4457"
+  admin_auth:
+    provider:
+      type: anonymous
+      default_subject: "integration-admin"
   allow_insecure_upstream: true
   # Strict agent governance is the default (true). All test routes must have
   # an authorize hook — see the stream-test route below.
@@ -36,6 +42,11 @@ auth_providers:
     jwks_url: "http://hydra:4444/.well-known/jwks.json"
     issuer: "http://hydra:4444"
     leeway_seconds: 5
+  # The approval-flow tests exercise Cedar tool-call approval, not
+  # authentication, so their stream route uses an anonymous identity.
+  integration_anon:
+    type: anonymous
+    default_subject: "integration-agent"
 
 jwt:
   signing_algorithm: "HS256"
@@ -72,9 +83,15 @@ routes:
       path: "/stream-test"
       methods: ["POST"]
     upstream: "http://mock-upstream:9999"
+    auth: integration_anon
     stream:
       enabled: true
       protocol: ndjson
+      # Tool calls are only governed when AG-UI event parsing is enabled.
+      ai:
+        ag_ui:
+          enabled: true
+          validate_events: false
     hooks:
       pre_request:
         - type: authorize

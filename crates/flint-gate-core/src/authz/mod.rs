@@ -25,6 +25,7 @@ mod tool_authz;
 mod validator;
 
 pub use bundle::{CedarBundle, PolicyRecord};
+pub(crate) use engine::remove_null_values;
 pub use engine::{
     ActivePolicySet, ApprovalContext, AuthzDecision, AuthzEngine, PrincipalKind, ReloadStatus,
     DEFAULT_ACTION, DEFAULT_APPROVAL_TTL_SECONDS,

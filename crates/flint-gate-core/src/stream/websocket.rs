@@ -42,6 +42,10 @@ struct WsBridgeApprovalHandle {
 /// `tool_authz` — when `Some`, Cedar policy is evaluated per tool call.
 /// `approval_handle` — when `Some`, `RequireApproval` Cedar decisions pause
 /// the stream until a human decision arrives via the shared `ApprovalManager`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent per-connection input"
+)]
 pub async fn ws_bridge(
     client_socket: WebSocket,
     upstream_url: &str,

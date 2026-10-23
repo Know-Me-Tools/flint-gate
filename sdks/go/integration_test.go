@@ -23,8 +23,8 @@ import (
 
 // integrationClient returns a Client pointed at the running test fixture.
 // INTEGRATION_GATEWAY_URL defaults to http://127.0.0.1:4457.
-// The admin port is bound to loopback in config.test.yaml (AllowLoopback
-// posture) so no auth token is required.
+// config.test.yaml binds the admin port on all interfaces with an anonymous
+// admin_auth provider, so no auth token is required.
 func integrationClient(t *testing.T) *flintgate.Client {
 	t.Helper()
 	baseURL := os.Getenv("INTEGRATION_GATEWAY_URL")
@@ -36,6 +36,26 @@ func integrationClient(t *testing.T) *flintgate.Client {
 		t.Fatalf("NewClient: %v", err)
 	}
 	return c
+}
+
+// allowStreamRouteInvoke permits invoking the /stream-test route. Strict
+// governance authorizes the route itself before any tool call reaches the
+// @require_approval policy a test creates.
+func allowStreamRouteInvoke(ctx context.Context, t *testing.T, c *flintgate.Client) {
+	t.Helper()
+	policyID := uniqueID("integ-stream-route-invoke")
+	if _, err := c.CreatePolicy(ctx, flintgate.UpsertPolicyInput{
+		ID:         policyID,
+		PolicyText: `permit(principal, action == Action::"invoke", resource == Route::"stream-test");`,
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("CreatePolicy (route invoke): %v", err)
+	}
+	t.Cleanup(func() {
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = c.DeletePolicy(cleanCtx, policyID)
+	})
 }
 
 // integrationProxyURL returns the agent-facing proxy base URL.
@@ -382,6 +402,7 @@ func TestIntegration_ApprovalExpiry(t *testing.T) {
 	ctx := context.Background()
 	c := integrationClient(t)
 	proxyBase := integrationProxyURL()
+	allowStreamRouteInvoke(ctx, t, c)
 
 	// ── 1. Seed the @require_approval Cedar policy ────────────────────────────
 	policyID := uniqueID("integ-expiry-policy")
@@ -563,6 +584,7 @@ func TestIntegration_ApprovalFlow(t *testing.T) {
 	ctx := context.Background()
 	c := integrationClient(t)
 	proxyBase := integrationProxyURL()
+	allowStreamRouteInvoke(ctx, t, c)
 
 	// ── 1. Seed the @require_approval Cedar policy ────────────────────────────
 	policyID := uniqueID("integ-approval-policy")

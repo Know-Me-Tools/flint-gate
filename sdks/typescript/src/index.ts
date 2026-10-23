@@ -24,7 +24,6 @@ export {
   isApprovalRequired,
   isNotFound,
 } from "./client";
-export type { TokenProvider } from "./client";
 
 export {
   FlintGateAdmin,

@@ -7,11 +7,11 @@ import (
 
 // HealthStatus is the body returned by GET /health on the admin server.
 type HealthStatus struct {
-	Status     string    `json:"status"`               // "ok" | "degraded" | "down"
-	Version    string    `json:"version,omitempty"`    // flint-gate semver
-	Commit     string    `json:"commit,omitempty"`     // build commit sha
-	UptimeSec  float64   `json:"uptime_seconds"`       // process uptime
-	CheckedAt  time.Time `json:"checked_at"`           // server time of check
+	Status     string                     `json:"status"`            // "ok" | "degraded" | "down"
+	Version    string                     `json:"version,omitempty"` // flint-gate semver
+	Commit     string                     `json:"commit,omitempty"`  // build commit sha
+	UptimeSec  float64                    `json:"uptime_seconds"`    // process uptime
+	CheckedAt  time.Time                  `json:"checked_at"`        // server time of check
 	Components map[string]ComponentHealth `json:"components,omitempty"`
 }
 
@@ -27,6 +27,25 @@ type ReadyStatus struct {
 	Ready    bool   `json:"ready"`
 	Reason   string `json:"reason,omitempty"` // populated when not ready
 	Revision string `json:"revision,omitempty"`
+}
+
+// UnmarshalJSON decodes the server's `{"status": "ready"|"not ready", "db": ...}`
+// readiness body; the db field explains why the gateway is not ready.
+func (r *ReadyStatus) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Status   string `json:"status"`
+		DB       string `json:"db"`
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	r.Ready = wire.Status == "ready"
+	r.Revision = wire.Revision
+	if !r.Ready {
+		r.Reason = wire.DB
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +71,31 @@ type RouteConfig struct {
 	Stream   StreamCfg  `json:"stream,omitempty"`
 	Priority int        `json:"priority,omitempty"`
 	Enabled  bool       `json:"enabled"`
+}
+
+// routeRecord is a stored route as the admin API returns it: the route
+// itself lives in config, with priority and enabled kept on the record.
+type routeRecord struct {
+	ID       string      `json:"id"`
+	Config   RouteConfig `json:"config"`
+	Priority int         `json:"priority"`
+	Enabled  bool        `json:"enabled"`
+}
+
+func (rec routeRecord) route() RouteConfig {
+	r := rec.Config
+	if r.ID == "" {
+		r.ID = rec.ID
+	}
+	r.Priority = rec.Priority
+	r.Enabled = rec.Enabled
+	return r
+}
+
+// writeAck is the admin API's acknowledgement of a write: {"status", "id"}.
+type writeAck struct {
+	Status string `json:"status"`
+	ID     string `json:"id"`
 }
 
 // Hooks mirrors the Flint Gate pre-request hook configuration.
@@ -99,7 +143,7 @@ type APIKeyCreate struct {
 // field is the only time the raw key is visible to the caller.
 type APIKeyWithSecret struct {
 	APIKey
-	Secret string `json:"secret"` // raw key — persist immediately, never log
+	Secret string `json:"key"` // raw key — persist immediately, never log
 }
 
 // ---------------------------------------------------------------------------
@@ -108,10 +152,10 @@ type APIKeyWithSecret struct {
 
 // CacheStats is returned by GET /cache/stats.
 type CacheStats struct {
-	RouteEntries  int `json:"route_entries"`
-	SessionEntries int `json:"session_entries"`
-	ApiKeyEntries int `json:"api_key_entries"`
-	HitRate       float64 `json:"hit_rate"`
+	RouteEntries   int     `json:"route_entries"`
+	SessionEntries int     `json:"session_entries"`
+	ApiKeyEntries  int     `json:"api_key_entries"`
+	HitRate        float64 `json:"hit_rate"`
 }
 
 // ---------------------------------------------------------------------------
@@ -193,13 +237,13 @@ type RollbackPolicyResponse struct {
 // ApprovalStatus is the read-only view of a pending approval returned by
 // GET /approvals and GET /approvals/{id}.
 type ApprovalStatus struct {
-	ApprovalID  string     `json:"approval_id"`
-	PrincipalID string     `json:"principal_id"`
-	Action      string     `json:"action"`
-	ResourceID  string     `json:"resource_id"`
-	Reason      *string    `json:"reason,omitempty"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	Expired     bool       `json:"expired"`
+	ApprovalID  string    `json:"approval_id"`
+	PrincipalID string    `json:"principal_id"`
+	Action      string    `json:"action"`
+	ResourceID  string    `json:"resource_id"`
+	Reason      *string   `json:"reason,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Expired     bool      `json:"expired"`
 }
 
 // ApprovalDecision is the value sent in POST /approvals/{id}/decision.
@@ -219,9 +263,9 @@ const (
 // Identity is the authenticated subject resolved by Flint Gate.
 type Identity struct {
 	Subject   string   `json:"subject"`
-	Provider  string   `json:"provider"`            // "kratos" | "jwt" | "api_key" | "anonymous"
+	Provider  string   `json:"provider"` // "kratos" | "jwt" | "api_key" | "anonymous"
 	Scopes    []string `json:"scopes,omitempty"`
-	ClientID  string   `json:"client_id,omitempty"` // api_key provider
+	ClientID  string   `json:"client_id,omitempty"`  // api_key provider
 	SessionID string   `json:"session_id,omitempty"` // kratos session
 	Issuer    string   `json:"issuer,omitempty"`     // jwt issuer
 	Audience  []string `json:"audience,omitempty"`   // jwt audiences

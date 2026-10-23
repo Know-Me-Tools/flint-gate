@@ -43,16 +43,29 @@ var FlintGateClient = class {
   adminUrl;
   /** Immutable auth config. */
   auth;
+  tokenProvider;
   headers;
   timeoutMs;
   fetchImpl;
+  maxRetries;
   constructor(config) {
     this.baseUrl = normalizeBase(config.baseUrl);
     this.adminUrl = config.adminUrl ? normalizeBase(config.adminUrl) : null;
-    this.auth = config.auth ?? { type: "anonymous" };
     this.headers = { ...config.headers ?? {} };
     this.timeoutMs = config.timeoutMs;
     this.fetchImpl = config.fetch ?? defaultFetch;
+    this.maxRetries = config.maxRetries ?? 3;
+    if (config.tokenProvider) {
+      this.tokenProvider = config.tokenProvider;
+      this.auth = config.auth ?? { type: "anonymous" };
+    } else if (config.token) {
+      const staticToken = config.token;
+      this.tokenProvider = () => Promise.resolve(staticToken);
+      this.auth = config.auth ?? { type: "anonymous" };
+    } else {
+      this.tokenProvider = null;
+      this.auth = config.auth ?? { type: "anonymous" };
+    }
   }
   /**
    * Issue a request through Flint Gate's data plane. Auth headers are applied
@@ -66,9 +79,11 @@ var FlintGateClient = class {
    * `Response` so callers can hand it to {@link streamSSE} / {@link streamNDJSON}.
    */
   async requestStream(path, init = {}) {
-    const headers = this.mergeHeaders({
-      Accept: "text/event-stream, application/x-ndjson"
-    });
+    const token = this.tokenProvider ? await this.tokenProvider() : null;
+    const headers = this.mergeHeaders(
+      { Accept: "text/event-stream, application/x-ndjson" },
+      token
+    );
     const signal = this.applyTimeout(init.signal);
     const res = await this.fetchImpl(this.url(path), {
       ...init,
@@ -104,22 +119,61 @@ var FlintGateClient = class {
     return joinUrl(this.baseUrl, path);
   }
   async do(url, init, isAdmin) {
-    const headers = isAdmin ? this.mergeHeaders(normalizeHeadersInit(init.headers)) : this.mergeHeaders(normalizeHeadersInit(init.headers));
+    const token = !isAdmin && this.tokenProvider ? await this.tokenProvider() : null;
+    const headers = this.mergeHeaders(normalizeHeadersInit(init.headers), token);
     const signal = this.applyTimeout(init.signal);
-    const res = await this.fetchImpl(url, { ...init, headers, signal });
-    if (!res.ok) {
-      await consumeAndThrow(res);
+    let lastError;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (attempt > 0) {
+        await sleep(retryDelay(attempt - 1));
+      }
+      let res;
+      try {
+        res = await this.fetchImpl(url, { ...init, headers, signal });
+      } catch (err) {
+        throw new FlintGateError(
+          `flint-gate fetch failed: ${String(err)}`,
+          { code: "FETCH_ERROR" }
+        );
+      }
+      if (res.status === 429 && attempt < this.maxRetries) {
+        const retryAfter = res.headers.get("retry-after");
+        if (retryAfter) {
+          const ms = parseRetryAfter(retryAfter);
+          if (ms > 0) {
+            await sleep(ms);
+            lastError = new FlintGateApiError(
+              `flint-gate rate limited (429)`,
+              { status: 429, code: "RATE_LIMITED" }
+            );
+            continue;
+          }
+        }
+        lastError = new FlintGateApiError(
+          `flint-gate rate limited (429)`,
+          { status: 429, code: "RATE_LIMITED" }
+        );
+        continue;
+      }
+      if (!res.ok) {
+        await consumeAndThrow(res);
+      }
+      if (res.status === 204) return void 0;
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        return await res.json();
+      }
+      return await res.text();
     }
-    if (res.status === 204) return void 0;
-    const ct = res.headers.get("content-type") ?? "";
-    if (ct.includes("application/json")) {
-      return await res.json();
-    }
-    return await res.text();
+    throw lastError;
   }
-  mergeHeaders(extra) {
+  mergeHeaders(extra, token) {
     const out = { ...this.headers };
-    applyAuth(out, this.auth);
+    if (token) {
+      out["authorization"] = `Bearer ${token}`;
+    } else {
+      applyAuth(out, this.auth);
+    }
     if (extra) {
       if (typeof extra.forEach === "function") {
         extra.forEach((v, k) => out[k] = v);
@@ -141,6 +195,18 @@ var FlintGateClient = class {
     return ctrl.signal;
   }
 };
+function isRateLimited(err) {
+  return err instanceof FlintGateApiError && err.status === 429;
+}
+function isUnauthorized(err) {
+  return err instanceof FlintGateApiError && err.status === 401;
+}
+function isApprovalRequired(err) {
+  return err instanceof FlintGateApiError && err.status === 403;
+}
+function isNotFound(err) {
+  return err instanceof FlintGateApiError && err.status === 404;
+}
 function normalizeBase(base) {
   const s = base instanceof URL ? base.toString() : base;
   return s.replace(/\/+$/, "");
@@ -228,6 +294,21 @@ function emptySignal() {
   }
   return new AbortController().signal;
 }
+function retryDelay(attempt) {
+  const base = 500 * Math.pow(2, attempt);
+  const jitter = base * 0.2 * (Math.random() * 2 - 1);
+  return Math.round(base + jitter);
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function parseRetryAfter(value) {
+  const n = Number(value);
+  if (!Number.isNaN(n)) return n * 1e3;
+  const d = Date.parse(value);
+  if (!Number.isNaN(d)) return Math.max(0, d - Date.now());
+  return 0;
+}
 
 // src/admin.ts
 var FlintGateAdmin = class {
@@ -247,8 +328,8 @@ var FlintGateAdmin = class {
   // ----------------------------------------------------------------- routes
   /** List all enabled routes. */
   async getRoutes(signal) {
-    const rows = await this.client.adminRequest("/routes", { signal });
-    return rows.map(normalizeRoute);
+    const res = await this.client.adminRequest("/routes", { signal });
+    return res.routes.map(normalizeRoute);
   }
   /** Get a single route by id. */
   async getRoute(id, signal) {
@@ -260,17 +341,17 @@ var FlintGateAdmin = class {
   }
   /** Create or upsert a route. Returns the stored record. */
   async createRoute(input, signal) {
-    const row = await this.client.adminRequest("/routes", {
+    const ack = await this.client.adminRequest("/routes", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(serializeRoute(input)),
       signal
     });
-    return normalizeRoute(row);
+    return this.getRoute(ack.id, signal);
   }
   /** Update an existing route by id. */
   async updateRoute(id, input, signal) {
-    const row = await this.client.adminRequest(
+    const ack = await this.client.adminRequest(
       `/routes/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -279,7 +360,7 @@ var FlintGateAdmin = class {
         signal
       }
     );
-    return normalizeRoute(row);
+    return this.getRoute(ack.id, signal);
   }
   /** Delete a route by id. */
   async deleteRoute(id, signal) {
@@ -291,7 +372,8 @@ var FlintGateAdmin = class {
   // --------------------------------------------------------------- api keys
   /** List all API keys (hashed values are never returned). */
   async getApiKeys(signal) {
-    return this.client.adminRequest("/api-keys", { signal });
+    const res = await this.client.adminRequest("/api-keys", { signal });
+    return res.api_keys.map(normalizeApiKey);
   }
   /**
    * Create a new API key. The plaintext `key` is returned exactly once —
@@ -302,16 +384,14 @@ var FlintGateAdmin = class {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        clientId: input.clientId,
-        scopes: input.scopes ?? [],
-        description: input.description,
-        key: input.key
+        client_id: input.clientId,
+        scopes: input.scopes ?? []
       }),
       signal
     });
     return {
-      apiKey: res.apiKey,
-      key: asApiKeyValue(res.key)
+      apiKey: normalizeApiKey(res),
+      key: asApiKeyValue(String(res.key))
     };
   }
   /** Revoke an API key by id. */
@@ -321,9 +401,143 @@ var FlintGateAdmin = class {
       signal
     });
   }
+  // ------------------------------------------------------------ policies
+  /** List all Cedar authorization policies (enabled and disabled). */
+  async listPolicies(signal) {
+    const body = await this.client.adminRequest(
+      "/policies",
+      { signal }
+    );
+    return body.policies ?? [];
+  }
+  /** Fetch a single policy by id. */
+  async getPolicy(id, signal) {
+    return this.client.adminRequest(
+      `/policies/${encodeURIComponent(id)}`,
+      { signal }
+    );
+  }
+  /** Create a new Cedar policy. */
+  async createPolicy(input, signal) {
+    return this.client.adminRequest("/policies", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal
+    });
+  }
+  /** Update (upsert) an existing Cedar policy by id. */
+  async updatePolicy(id, input, signal) {
+    return this.client.adminRequest(
+      `/policies/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal
+      }
+    );
+  }
+  /** Delete a Cedar policy by id. */
+  async deletePolicy(id, signal) {
+    return this.client.adminRequest(
+      `/policies/${encodeURIComponent(id)}`,
+      { method: "DELETE", signal }
+    );
+  }
+  /**
+   * Fetch version history for a policy.
+   * @param opts.offset - Page offset (default 0).
+   * @param opts.limit  - Page size (default 20).
+   */
+  async getPolicyHistory(id, opts, signal) {
+    const params = new URLSearchParams();
+    if (opts?.offset !== void 0) params.set("offset", String(opts.offset));
+    if (opts?.limit !== void 0) params.set("limit", String(opts.limit));
+    const qs = params.size > 0 ? `?${params.toString()}` : "";
+    return this.client.adminRequest(
+      `/policies/${encodeURIComponent(id)}/history${qs}`,
+      { signal }
+    );
+  }
+  /**
+   * Roll back a policy to a prior version.
+   * Creates a new version row equal to the target — the rollback is fully
+   * auditable in the version history.
+   */
+  async rollbackPolicy(id, versionNum, signal) {
+    return this.client.adminRequest(
+      `/policies/${encodeURIComponent(id)}/rollback`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version_num: versionNum }),
+        signal
+      }
+    );
+  }
+  // --------------------------------------------------------------- approvals
+  /** List all non-expired pending human-in-the-loop approvals on this replica. */
+  async listApprovals(signal) {
+    const body = await this.client.adminRequest(
+      "/approvals",
+      { signal }
+    );
+    return (body.approvals ?? []).map(normalizeApproval);
+  }
+  /**
+   * Get a single pending approval by id.
+   * Throws {@link FlintGateApiError} with status 404 when not found or already resolved.
+   */
+  async getApproval(id, signal) {
+    const raw = await this.client.adminRequest(
+      `/approvals/${encodeURIComponent(id)}`,
+      { signal }
+    );
+    return normalizeApproval(raw);
+  }
+  /**
+   * Approve or deny a pending approval request.
+   * Throws {@link FlintGateApiError} with status 404 (not found / already resolved)
+   * or 410 (expired).
+   */
+  async decideApproval(id, decision, signal) {
+    await this.client.adminRequest(
+      `/approvals/${encodeURIComponent(id)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision }),
+        signal
+      }
+    );
+  }
 };
+function normalizeApproval(raw) {
+  const r = raw;
+  return {
+    approvalId: String(r["approval_id"]),
+    principalId: String(r["principal_id"]),
+    action: String(r["action"]),
+    resourceId: String(r["resource_id"]),
+    reason: typeof r["reason"] === "string" ? r["reason"] : void 0,
+    expiresAt: String(r["expires_at"]),
+    expired: r["expired"] === true
+  };
+}
+function normalizeApiKey(row) {
+  const k = row;
+  return {
+    id: String(k.id),
+    clientId: String(k.client_id),
+    scopes: Array.isArray(k.scopes) ? k.scopes : [],
+    createdAt: typeof k.created_at === "string" ? k.created_at : void 0,
+    revokedAt: typeof k.revoked_at === "string" ? k.revoked_at : void 0
+  };
+}
 function normalizeRoute(row) {
-  const r = row;
+  const record = row;
+  const r = record.config && typeof record.config === "object" ? { ...record.config, priority: record.priority, enabled: record.enabled } : record;
   const id = asRouteId(String(r.id));
   const site = asSiteId(String(r.site));
   const match = r.match;
@@ -356,6 +570,9 @@ function serializeRoute(input) {
 
 // src/stream.ts
 async function* streamSSE(source, signal) {
+  yield* streamSSEInternal(source, signal);
+}
+async function* streamSSEInternal(source, signal, onId) {
   const lines = readLines(toStream(source), signal);
   let event = "message";
   let dataBuffer = "";
@@ -388,6 +605,8 @@ async function* streamSSE(source, signal) {
     } else if (field === "data") {
       dataBuffer = dataBuffer === "" ? value : `${dataBuffer}
 ${value}`;
+    } else if (field === "id") {
+      onId?.(value);
     }
   }
   if (dataBuffer !== "" && !signal?.aborted) {
@@ -397,6 +616,95 @@ ${value}`;
       if (evt) yield evt;
     }
   }
+}
+async function* streamSSEWithReconnect(urlStr, opts = {}) {
+  const maxReconnects = opts.maxReconnects ?? 5;
+  const fetchImpl = opts.fetch ?? globalThis.fetch;
+  const signal = opts.signal;
+  let lastEventId;
+  let attempt = 0;
+  while (attempt <= maxReconnects) {
+    if (signal?.aborted) return;
+    const headers = { ...opts.headers };
+    if (opts.bearerToken) {
+      headers["Authorization"] = `Bearer ${opts.bearerToken}`;
+    }
+    if (lastEventId !== void 0) {
+      headers["Last-Event-ID"] = lastEventId;
+    }
+    headers["Accept"] = "text/event-stream";
+    headers["Cache-Control"] = "no-cache";
+    let res;
+    try {
+      res = await fetchImpl(urlStr, { headers, signal });
+    } catch (err) {
+      if (signal?.aborted) return;
+      if (attempt >= maxReconnects) {
+        throw new FlintGateError(
+          `SSE connection failed after ${attempt} retries: ${String(err)}`,
+          { code: "SSE_CONNECT_FAILED" }
+        );
+      }
+      await sleep2(sseBackoff(attempt));
+      attempt++;
+      continue;
+    }
+    if (res.status >= 400 && res.status < 500) {
+      let body = "";
+      try {
+        body = await res.text();
+      } catch {
+      }
+      throw new FlintGateApiError(
+        body || `SSE endpoint returned ${res.status}`,
+        { status: res.status }
+      );
+    }
+    if (!res.ok) {
+      if (attempt >= maxReconnects) {
+        throw new FlintGateApiError(
+          `SSE endpoint returned ${res.status} after ${attempt} retries`,
+          { status: res.status }
+        );
+      }
+      await sleep2(sseBackoff(attempt));
+      attempt++;
+      continue;
+    }
+    attempt = 0;
+    let streamError = null;
+    let receivedDone = false;
+    try {
+      const idTracker = (id) => {
+        lastEventId = id;
+      };
+      for await (const evt of streamSSEInternal(res, signal, idTracker)) {
+        if (signal?.aborted) return;
+        yield evt;
+        if (evt.type === "done") {
+          receivedDone = true;
+          return;
+        }
+      }
+      if (receivedDone) return;
+    } catch (err) {
+      if (signal?.aborted) return;
+      streamError = err;
+    }
+    if (signal?.aborted) return;
+    if (attempt >= maxReconnects) {
+      if (streamError) throw streamError;
+      return;
+    }
+    await sleep2(sseBackoff(attempt));
+    attempt++;
+  }
+}
+function sseBackoff(attempt) {
+  return Math.min(250 * Math.pow(2, attempt), 8e3);
+}
+function sleep2(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 async function* streamNDJSON(source, signal) {
   for await (const line of readLines(toStream(source), signal)) {
@@ -424,7 +732,21 @@ async function* readLines(stream, signal) {
   try {
     while (true) {
       if (signal?.aborted) return;
-      const { value, done } = await reader.read();
+      let readResult;
+      if (signal) {
+        const abortPromise = new Promise((resolve) => {
+          const onAbort = () => resolve({ done: true, value: void 0 });
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener("abort", onAbort, { once: true });
+        });
+        readResult = await Promise.race([reader.read(), abortPromise]);
+      } else {
+        readResult = await reader.read();
+      }
+      const { value, done } = readResult;
       if (done) break;
       if (value == null) continue;
       buffer += decoder.decode(value, { stream: true });
@@ -788,9 +1110,14 @@ export {
   createFlintGateMiddleware,
   expressFlintGateAdapter,
   forwardApiKey,
+  isApprovalRequired,
+  isNotFound,
+  isRateLimited,
+  isUnauthorized,
   readFlintIdentity,
   streamNDJSON,
   streamSSE,
+  streamSSEWithReconnect,
   streamWS
 };
 //# sourceMappingURL=index.mjs.map

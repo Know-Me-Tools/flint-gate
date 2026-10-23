@@ -1491,6 +1491,8 @@ fn authority_decision_unavailable() -> Response {
         .into_response()
 }
 
+// An axum `Response` is the handler's early return; boxing it buys nothing.
+#[expect(clippy::result_large_err, reason = "Err is the handler's Response")]
 async fn complete_before_authority_deadline<T>(
     deadline: tokio::time::Instant,
     operation: impl std::future::Future<Output = T>,
@@ -1500,6 +1502,7 @@ async fn complete_before_authority_deadline<T>(
         .map_err(|_| authority_decision_unavailable())
 }
 
+#[expect(clippy::result_large_err, reason = "Err is the handler's Response")]
 async fn configuration_snapshot_or_unavailable(
     cache: &crate::cache::GateCache,
     deadline: tokio::time::Instant,

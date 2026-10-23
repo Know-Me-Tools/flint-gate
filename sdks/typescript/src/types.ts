@@ -277,7 +277,7 @@ export interface ApiKey {
   /** Granted scope list. */
   readonly scopes: readonly string[];
   /** ISO-8601 creation timestamp. */
-  readonly createdAt: string;
+  readonly createdAt?: string;
   /** ISO-8601 optional revocation timestamp. */
   readonly revokedAt?: string;
   /** Human label. */
@@ -288,8 +288,9 @@ export interface ApiKey {
 export interface CreateApiKeyInput {
   readonly clientId: string;
   readonly scopes?: readonly string[];
+  /** @deprecated Not accepted by the server; ignored. */
   readonly description?: string;
-  /** Optional explicit key value. If omitted the server generates one. */
+  /** @deprecated The server always generates the key; ignored. */
   readonly key?: string;
 }
 

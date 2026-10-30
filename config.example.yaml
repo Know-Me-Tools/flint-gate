@@ -165,6 +165,28 @@ token_exchange:
   # (ory/hydra#3723) — validate your Hydra audience config before relying on it.
   # delegate_to_hydra: false
   # hydra_token_url: "https://hydra.example.com/oauth2/token"
+  #
+  # Local-minting policy (refused at startup together with delegate_to_hydra).
+  # A caller MAY authenticate as an oauth_clients client (HTTP Basic or
+  # client_id/client_secret form fields); it is then recorded as `act.sub`.
+  # Bad or unverifiable client credentials are refused (401 invalid_client).
+  # clients:
+  #   # On-behalf-of: POST grant_type=<token-exchange>, client auth,
+  #   # requested_subject=<person id>, audience=<one of these>, no subject_token.
+  #   # Issues sub=<person>, aud=<audience>, act.sub=<client_id>.
+  #   openbot-server:
+  #     on_behalf_of_audiences: ["knowduet-gateway"]
+  #   # Requested claims: form field `topics=["a","b"]` becomes the `topics`
+  #   # claim (JSON when it parses, else a string). Other callers are refused.
+  #   knowduet-gateway:
+  #     requested_claims: ["topics"]
+  # audiences:
+  #   # Claims for every exchanged token issued with aud=flint-forge.
+  #   flint-forge:
+  #     copy_claims: ["tenant_id"]        # from the verified subject token
+  #     claims: { role: "authenticated" } # fixed; wins over copied/requested
+  # A request may also send `expires_in=<seconds>` to SHORTEN the issued
+  # lifetime (never lengthen it). The response always carries `expires_in`.
   # NOTE: an `actor_token` (multi-hop delegation) is rejected (400 invalid_request)
   # — single-hop `act` only this release.
   # NOTE: in delegate mode the RELAYED Hydra token carries Hydra's claims, NOT the

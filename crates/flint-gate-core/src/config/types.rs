@@ -430,6 +430,50 @@ pub struct TokenExchangeConfig {
     /// The Hydra token endpoint used when `delegate_to_hydra` is set.
     #[serde(default)]
     pub hydra_token_url: Option<String>,
+    /// Per-client exchange policy, keyed by `oauth_clients.client_id`. A caller
+    /// that authenticates as one of these clients (HTTP Basic or the
+    /// `client_id`/`client_secret` form fields) may use the capabilities its
+    /// entry grants: on-behalf-of exchange (`requested_subject`) and requested
+    /// claims. Needs the database-backed client store. Local minting only.
+    #[serde(default)]
+    pub clients: HashMap<String, ExchangeClientPolicy>,
+    /// Per-audience claim policy for locally minted exchanged tokens, keyed by
+    /// the issued token's `aud`. Local minting only.
+    #[serde(default)]
+    pub audiences: HashMap<String, ExchangeAudiencePolicy>,
+}
+
+/// What one authenticated client may do on the token-exchange grant.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExchangeClientPolicy {
+    /// Audiences for which this client may obtain a token for a named person
+    /// with `requested_subject` and no `subject_token` (on-behalf-of). The
+    /// issued token has `sub` = the named person and `act.sub` = this client.
+    /// Empty: on-behalf-of is refused for this client.
+    #[serde(default)]
+    pub on_behalf_of_audiences: Vec<String>,
+    /// Claim names this client may set on the issued token through form fields
+    /// of the same name. A field value that parses as JSON is copied as that
+    /// JSON value; any other value is copied as a string. Reserved claims
+    /// (`iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, `jti`, `act`, `scope`,
+    /// `client_id`, `flint_kind`) and the grant's own parameter names are
+    /// refused at startup. Any other caller that sends one of these fields is
+    /// refused.
+    #[serde(default)]
+    pub requested_claims: Vec<String>,
+}
+
+/// Claims set on every locally minted exchanged token for one audience.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExchangeAudiencePolicy {
+    /// Claim names copied from the verified subject token (its profile traits
+    /// or other claims). A name the subject token does not carry is omitted.
+    #[serde(default)]
+    pub copy_claims: Vec<String>,
+    /// Fixed claims, for example `role: authenticated`. They take precedence
+    /// over copied and requested claims. Reserved names are refused at startup.
+    #[serde(default)]
+    pub claims: serde_json::Map<String, serde_json::Value>,
 }
 
 /// HTTP server bind configuration.

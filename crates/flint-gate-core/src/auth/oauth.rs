@@ -9,7 +9,10 @@ use crate::auth::client_credentials::{
 };
 use crate::auth::introspect::{delegate_to_hydra, TokenVerifier};
 use crate::auth::jwt_mint::SharedJwtMinter;
-use crate::auth::token_exchange::{exchange, TokenExchangeRequest, GRANT_TYPE_TOKEN_EXCHANGE};
+use crate::auth::token_exchange::{
+    exchange_with_policy, ClientCredentials, ExchangePolicy, TokenExchangeRequest,
+    GRANT_PARAMETERS, GRANT_TYPE_TOKEN_EXCHANGE,
+};
 use crate::auth::Authenticator;
 use crate::db::Database;
 use axum::{
@@ -22,11 +25,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Token-exchange dependencies: the JWKS subject-token verifier, the delegated
-/// token TTL, and an optional Ory Hydra delegate (federate-first proxying).
+/// token TTL, an optional Ory Hydra delegate (federate-first proxying), and the
+/// client / audience policy for local minting.
 pub type TokenExchangeDeps = (
     Arc<dyn Authenticator>,
     Option<u64>,
     Option<crate::auth::token_exchange::HydraDelegate>,
+    ExchangePolicy,
 );
 
 /// State for the unified `/oauth/token` + `/oauth/introspect` endpoints. Each
@@ -142,13 +147,28 @@ pub async fn token_endpoint(
 
     match grant {
         GRANT_TYPE_TOKEN_EXCHANGE => {
-            let Some((verifier, ttl, delegate)) = &state.token_exchange else {
+            let Some((verifier, ttl, delegate, policy)) = &state.token_exchange else {
                 return oauth_error(
                     StatusCode::BAD_REQUEST,
                     "unsupported_grant_type",
                     "token exchange is not enabled".into(),
                 );
             };
+            let auth_header = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok());
+            let client_credentials =
+                extract_client_credentials(auth_header, &form).map(|(client_id, client_secret)| {
+                    ClientCredentials {
+                        client_id,
+                        client_secret,
+                    }
+                });
+            let extra_fields = form
+                .iter()
+                .filter(|(k, _)| !GRANT_PARAMETERS.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             let req = TokenExchangeRequest {
                 grant_type: grant.to_string(),
                 subject_token: form.get("subject_token").cloned().unwrap_or_default(),
@@ -157,18 +177,24 @@ pub async fn token_endpoint(
                 resource: form.get("resource").cloned(),
                 audience: form.get("audience").cloned(),
                 actor_token: form.get("actor_token").cloned(),
+                requested_token_type: form.get("requested_token_type").cloned(),
+                requested_subject: form.get("requested_subject").cloned(),
+                expires_in: form.get("expires_in").cloned(),
+                client_credentials,
+                extra_fields,
             };
-            match exchange(&req, verifier, &state.minter, *ttl, delegate.as_ref()).await {
+            match exchange_with_policy(
+                &req,
+                verifier,
+                &state.minter,
+                *ttl,
+                delegate.as_ref(),
+                policy,
+            )
+            .await
+            {
                 Ok(body) => (StatusCode::OK, Json(body)).into_response(),
-                Err(e) => {
-                    let status = match &e {
-                        crate::auth::token_exchange::ExchangeError::MintFailed(_) => {
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        }
-                        _ => StatusCode::BAD_REQUEST,
-                    };
-                    oauth_error(status, e.oauth_code(), e.message())
-                }
+                Err(e) => oauth_error(e.http_status(), e.oauth_code(), e.message()),
             }
         }
         GRANT_TYPE_CLIENT_CREDENTIALS => {
@@ -427,5 +453,150 @@ mod tests {
         // auth disabled → endpoint answers (garbage token → 200 active:false).
         let st = post_introspect(introspect_app(false).await, "token=not.a.jwt", None).await;
         assert_eq!(st, StatusCode::OK);
+    }
+
+    // ── token endpoint: exchange policy through the form (router integration) ─
+
+    struct OneSubject;
+
+    #[async_trait::async_trait]
+    impl Authenticator for OneSubject {
+        async fn authenticate(
+            &self,
+            _parts: &http::request::Parts,
+        ) -> Result<crate::auth::AuthResult, crate::auth::AuthError> {
+            Ok(crate::auth::AuthResult {
+                identity: crate::auth::identity::Identity {
+                    id: "person-1".into(),
+                    ..Default::default()
+                },
+                method: crate::auth::AuthMethod::BearerJwt,
+            })
+        }
+    }
+
+    struct OneClient;
+
+    #[async_trait::async_trait]
+    impl crate::auth::token_exchange::ClientVerifier for OneClient {
+        async fn verify(
+            &self,
+            client_id: &str,
+            client_secret: &str,
+        ) -> anyhow::Result<Option<crate::auth::token_exchange::VerifiedClient>> {
+            Ok(
+                (client_id == "knowduet-gateway" && client_secret == "pw").then(|| {
+                    crate::auth::token_exchange::VerifiedClient {
+                        client_id: client_id.into(),
+                        scopes: vec![],
+                    }
+                }),
+            )
+        }
+    }
+
+    async fn token_app() -> Router {
+        let cfg = crate::config::types::JwtConfig {
+            signing_algorithm: "HS256".into(),
+            signing_key_secret: Some("oauth-endpoint-test-secret".into()),
+            issuer: "flint-gate".into(),
+            default_ttl_seconds: 300,
+            ..Default::default()
+        };
+        let minter = crate::auth::jwt_mint::JwtMinter::from_config(&cfg)
+            .await
+            .unwrap();
+        let mut policy = ExchangePolicy {
+            client_verifier: Some(Arc::new(OneClient)),
+            ..Default::default()
+        };
+        policy.clients.insert(
+            "knowduet-gateway".into(),
+            crate::config::types::ExchangeClientPolicy {
+                requested_claims: vec!["topics".into()],
+                ..Default::default()
+            },
+        );
+        let state = OAuthState {
+            minter: Arc::new(tokio::sync::RwLock::new(Some(minter))),
+            token_exchange: Some((Arc::new(OneSubject), None, None, policy)),
+            client_credentials: None,
+            introspection: None,
+            #[cfg(feature = "redis-l2")]
+            token_limiter: None,
+            #[cfg(feature = "redis-l2")]
+            introspect_limiter: None,
+        };
+        Router::new()
+            .route("/oauth/token", post(token_endpoint))
+            .with_state(state)
+    }
+
+    async fn post_token(body: &str, auth: Option<&str>) -> (StatusCode, Value) {
+        let mut req = http::Request::builder()
+            .method("POST")
+            .uri("/oauth/token")
+            .header("content-type", "application/x-www-form-urlencoded");
+        if let Some(a) = auth {
+            req = req.header("authorization", a);
+        }
+        let resp = token_app()
+            .await
+            .oneshot(req.body(axum::body::Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    const TICKET_FORM: &str =
+        "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange\
+        &subject_token=a.b.c&audience=fabric&expires_in=60\
+        &topics=%5B%22user%3Aperson-1%22%5D";
+
+    #[tokio::test]
+    async fn token_endpoint_issues_a_ticket_to_an_authenticated_client() {
+        let (status, body) = post_token(TICKET_FORM, Some(&basic("knowduet-gateway", "pw"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["expires_in"], 60);
+        use base64::Engine;
+        let payload = body["access_token"]
+            .as_str()
+            .unwrap()
+            .split('.')
+            .nth(1)
+            .unwrap();
+        let claims: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims["topics"], serde_json::json!(["user:person-1"]));
+        assert_eq!(claims["aud"], "fabric");
+        assert_eq!(claims["sub"], "person-1");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_accepts_form_client_authentication() {
+        let body = format!("{TICKET_FORM}&client_id=knowduet-gateway&client_secret=pw");
+        let (status, _) = post_token(&body, None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_refuses_topics_without_client_authentication() {
+        let (status, body) = post_token(TICKET_FORM, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_client");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_refuses_a_wrong_client_secret() {
+        let (status, _) = post_token(TICKET_FORM, Some(&basic("knowduet-gateway", "no"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

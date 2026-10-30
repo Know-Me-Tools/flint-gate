@@ -252,6 +252,11 @@ impl JwtMinter {
         Ok((algorithm, encoding_key))
     }
 
+    /// Lifetime (seconds) used by [`Self::mint`] when no TTL is passed.
+    pub fn default_ttl_seconds(&self) -> u64 {
+        self.default_ttl_seconds
+    }
+
     /// Mint a JWT for the given identity, merging in `additional_claims`.
     pub fn mint(
         &self,

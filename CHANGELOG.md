@@ -13,6 +13,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (opt-in, `ext_authz.enabled`). It authenticates with the matched route's
   provider and answers `200` with a gate-minted `Authorization: Bearer` JWT,
   or `401`/`403` with no token.
+- Token exchange (`POST /oauth/token`, RFC 8693) policy for gateway-local
+  minting, all opt-in under `token_exchange`:
+  - Optional client authentication (HTTP Basic or `client_id`/`client_secret`
+    form fields, verified against `oauth_clients`). An authenticated client is
+    recorded as `act.sub`. Presented credentials that fail, or that cannot be
+    verified because no database is configured, are refused with
+    `401 invalid_client`; they are never ignored.
+  - On-behalf-of exchange: a client listed in `token_exchange.clients` with
+    `on_behalf_of_audiences` sends `requested_subject` (and no
+    `subject_token`) to obtain a token with `sub` = that person for one of
+    those audiences. Each issue is logged on the `flint_gate::audit` target.
+  - Requested claims: a client's `requested_claims` names (for example
+    `topics`) are copied from form fields of the same name onto the issued
+    token. Any other caller that sends such a field is refused. Reserved
+    claims cannot be configured.
+  - Per-audience claims: `token_exchange.audiences.<aud>.copy_claims` copies
+    claims from the verified subject token and `.claims` sets fixed claims
+    (for example `role: authenticated` for a PostgREST-style upstream).
+  - `expires_in` request field: shortens, never lengthens, the issued
+    lifetime. The exchange response now always carries `expires_in`.
 
 ## [0.1.0-beta] - 2026-07-09
 

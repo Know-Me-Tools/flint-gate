@@ -11,12 +11,28 @@
 //! `delegate_to_hydra` (config) proxies the exchange to an Ory Hydra token
 //! endpoint (federate-first) instead of minting locally — see [`HydraDelegate`]
 //! and [`delegate_exchange_to_hydra`]. Local minting is the default.
+//!
+//! Local minting also honors an [`ExchangePolicy`]:
+//! - **Client authentication** (optional): HTTP Basic or `client_id` /
+//!   `client_secret` form fields, verified against the `oauth_clients` store.
+//!   An authenticated client is recorded as `act.sub`.
+//! - **On-behalf-of** (`requested_subject`, no `subject_token`): an
+//!   authenticated client allow-listed in `token_exchange.clients` obtains a
+//!   token naming a person for one of its permitted audiences.
+//! - **Requested claims**: an allow-listed client sets named claims (for
+//!   example `topics`) through form fields of the same name.
+//! - **Per-audience claims**: claims copied from the subject token and fixed
+//!   claims, configured per issued `aud` in `token_exchange.audiences`.
+//! - **Requested lifetime** (`expires_in`): shortens, never lengthens, the
+//!   issued token's lifetime. The response always carries `expires_in`.
 
 use crate::auth::identity::Identity;
 use crate::auth::jwt_mint::SharedJwtMinter;
 use crate::auth::{AuthError, Authenticator};
+use crate::config::types::{ExchangeAudiencePolicy, ExchangeClientPolicy, TokenExchangeConfig};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// RFC 8693 grant type.
@@ -24,8 +40,63 @@ pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:to
 /// RFC 8693 token-type URN for an access token (the type we issue).
 pub const TOKEN_TYPE_ACCESS_TOKEN: &str = "urn:ietf:params:oauth:token-type:access_token";
 
+/// Form parameters the token-exchange grant itself interprets. None of them can
+/// be configured as a requested claim.
+pub const GRANT_PARAMETERS: &[&str] = &[
+    "grant_type",
+    "subject_token",
+    "subject_token_type",
+    "scope",
+    "resource",
+    "audience",
+    "actor_token",
+    "actor_token_type",
+    "requested_token_type",
+    "requested_subject",
+    "expires_in",
+    "client_id",
+    "client_secret",
+];
+
+/// Claims the gateway owns on an exchanged token. Neither per-audience claims
+/// nor requested claims can set them.
+pub const EXCHANGE_RESERVED_CLAIMS: &[&str] = &[
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "nbf",
+    "jti",
+    "act",
+    "scope",
+    "client_id",
+    crate::auth::identity::FLINT_KIND_CLAIM,
+];
+
+/// Whether `name` is a gateway-owned claim on an exchanged token.
+pub fn is_exchange_reserved_claim(name: &str) -> bool {
+    EXCHANGE_RESERVED_CLAIMS.contains(&name)
+}
+
+/// OAuth client credentials presented on the exchange. `Debug` never prints
+/// the secret.
+#[derive(Clone, Default)]
+pub struct ClientCredentials {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+impl std::fmt::Debug for ClientCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientCredentials")
+            .field("client_id", &self.client_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// RFC 8693 request parameters (form-encoded). Only the fields we honor.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct TokenExchangeRequest {
     pub grant_type: String,
     pub subject_token: String,
@@ -42,6 +113,24 @@ pub struct TokenExchangeRequest {
     /// Optional actor token (the agent acting on behalf of the subject).
     #[serde(default)]
     pub actor_token: Option<String>,
+    /// RFC 8693 `requested_token_type`. Checked on the on-behalf-of path, where
+    /// only the access-token type is issued.
+    #[serde(default)]
+    pub requested_token_type: Option<String>,
+    /// On-behalf-of: the person the issued token names (`sub`). Needs an
+    /// authenticated, allow-listed client and no `subject_token`.
+    #[serde(default)]
+    pub requested_subject: Option<String>,
+    /// Requested lifetime in seconds. Only shortens: the issued lifetime is the
+    /// smaller of this and the configured exchange TTL.
+    #[serde(default)]
+    pub expires_in: Option<String>,
+    /// Client credentials (HTTP Basic or form), filled in by the token endpoint.
+    #[serde(skip)]
+    pub client_credentials: Option<ClientCredentials>,
+    /// Form fields that are not [`GRANT_PARAMETERS`]: requested-claim candidates.
+    #[serde(skip)]
+    pub extra_fields: BTreeMap<String, String>,
 }
 
 /// A structured token-exchange failure mapped to an OAuth 2.0 error response.
@@ -60,6 +149,14 @@ pub enum ExchangeError {
     UnsupportedActorToken,
     /// Minting the delegated token failed.
     MintFailed(String),
+    /// A malformed or unsupported parameter combination.
+    InvalidRequest(String),
+    /// Client authentication was required, missing, or failed.
+    InvalidClient,
+    /// The authenticated client is not permitted to do what it asked.
+    UnauthorizedClient(String),
+    /// The requested audience is not permitted for this client.
+    InvalidTarget(String),
 }
 
 impl ExchangeError {
@@ -72,6 +169,10 @@ impl ExchangeError {
             ExchangeError::NotEnabled => "invalid_request",
             ExchangeError::UnsupportedActorToken => "invalid_request",
             ExchangeError::MintFailed(_) => "server_error",
+            ExchangeError::InvalidRequest(_) => "invalid_request",
+            ExchangeError::InvalidClient => "invalid_client",
+            ExchangeError::UnauthorizedClient(_) => "unauthorized_client",
+            ExchangeError::InvalidTarget(_) => "invalid_target",
         }
     }
 
@@ -80,11 +181,25 @@ impl ExchangeError {
             ExchangeError::UnsupportedGrantType(m)
             | ExchangeError::InvalidSubjectToken(m)
             | ExchangeError::InvalidScope(m)
-            | ExchangeError::MintFailed(m) => m.clone(),
+            | ExchangeError::MintFailed(m)
+            | ExchangeError::InvalidRequest(m)
+            | ExchangeError::UnauthorizedClient(m)
+            | ExchangeError::InvalidTarget(m) => m.clone(),
+            ExchangeError::InvalidClient => "invalid client credentials".to_string(),
             ExchangeError::NotEnabled => "token exchange is not enabled".to_string(),
             ExchangeError::UnsupportedActorToken => {
                 "actor_token (multi-hop delegation) is not supported".to_string()
             }
+        }
+    }
+
+    /// The HTTP status for this failure: `401` for client authentication,
+    /// `500` for a mint failure, otherwise `400`.
+    pub fn http_status(&self) -> http::StatusCode {
+        match self {
+            ExchangeError::MintFailed(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
+            ExchangeError::InvalidClient => http::StatusCode::UNAUTHORIZED,
+            _ => http::StatusCode::BAD_REQUEST,
         }
     }
 }
@@ -292,11 +407,17 @@ pub fn build_delegated_claims(
 }
 
 /// The RFC 8693 §2.2.1 success response for an issued access token.
-pub fn token_exchange_response(access_token: String, granted_scopes: &[String]) -> Value {
+/// `expires_in` is the issued token's lifetime in seconds.
+pub fn token_exchange_response(
+    access_token: String,
+    granted_scopes: &[String],
+    expires_in: u64,
+) -> Value {
     json!({
         "access_token": access_token,
         "issued_token_type": TOKEN_TYPE_ACCESS_TOKEN,
         "token_type": "Bearer",
+        "expires_in": expires_in,
         "scope": granted_scopes.join(" "),
     })
 }
@@ -334,20 +455,14 @@ pub async fn token_exchange_handler(
     .await
     {
         Ok(body) => (StatusCode::OK, axum::response::Json(body)).into_response(),
-        Err(e) => {
-            let status = match &e {
-                ExchangeError::MintFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                _ => StatusCode::BAD_REQUEST,
-            };
-            (
-                status,
-                axum::response::Json(json!({
-                    "error": e.oauth_code(),
-                    "error_description": e.message(),
-                })),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            e.http_status(),
+            axum::response::Json(json!({
+                "error": e.oauth_code(),
+                "error_description": e.message(),
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -448,13 +563,330 @@ pub async fn delegate_exchange_to_hydra(
     }
 }
 
-/// End-to-end token exchange: validate → (delegate to Hydra when configured, OR
-/// verify `subject_token` → downscope → mint a delegated token via [`JwtMinter`]).
-/// Returns the RFC 8693 response body or a mapped [`ExchangeError`].
-///
-/// Fail-closed at every step: a bad grant, an `actor_token`, an unverifiable
-/// subject token, scope escalation, an unavailable minter, or a Hydra delegate
-/// error all reject rather than issue a token.
+/// A client authenticated against the `oauth_clients` store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedClient {
+    pub client_id: String,
+    /// The client's granted scopes (the ceiling for on-behalf-of tokens).
+    pub scopes: Vec<String>,
+}
+
+/// Verifies OAuth client credentials. Implemented by the database client store;
+/// a trait so the exchange is testable without Postgres.
+#[async_trait::async_trait]
+pub trait ClientVerifier: Send + Sync {
+    /// `Ok(None)` for an unknown client or a wrong secret.
+    async fn verify(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> anyhow::Result<Option<VerifiedClient>>;
+}
+
+#[async_trait::async_trait]
+impl ClientVerifier for crate::db::Database {
+    async fn verify(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> anyhow::Result<Option<VerifiedClient>> {
+        Ok(self
+            .verify_client_credentials(client_id, client_secret)
+            .await?
+            .map(|record| VerifiedClient {
+                client_id: record.client_id,
+                scopes: record.scopes,
+            }))
+    }
+}
+
+/// Client and audience policy for gateway-local exchange. The default (empty)
+/// policy reproduces the plain RFC 8693 exchange: no on-behalf-of, no requested
+/// claims, no per-audience claims.
+#[derive(Clone, Default)]
+pub struct ExchangePolicy {
+    pub clients: HashMap<String, ExchangeClientPolicy>,
+    pub audiences: HashMap<String, ExchangeAudiencePolicy>,
+    /// Verifies presented client credentials. `None`: any presented client
+    /// credentials are refused (`invalid_client`), never ignored.
+    pub client_verifier: Option<Arc<dyn ClientVerifier>>,
+}
+
+impl ExchangePolicy {
+    /// The policy from config, with `client_verifier` left to the caller.
+    pub fn from_config(cfg: &TokenExchangeConfig) -> Self {
+        Self {
+            clients: cfg.clients.clone(),
+            audiences: cfg.audiences.clone(),
+            client_verifier: None,
+        }
+    }
+
+    /// Whether `name` is a requested claim for any configured client.
+    fn is_requestable_claim(&self, name: &str) -> bool {
+        self.clients
+            .values()
+            .any(|p| p.requested_claims.iter().any(|c| c == name))
+    }
+}
+
+/// Startup guard for `token_exchange.clients` / `token_exchange.audiences`.
+/// Refuses reserved claim names, claim names that collide with grant
+/// parameters, empty names, and (with `delegate_to_hydra`) any policy at all,
+/// since the delegate path mints nothing locally. Pure and unit-testable.
+pub fn validate_exchange_policy(cfg: &TokenExchangeConfig) -> Result<(), String> {
+    if cfg.delegate_to_hydra && (!cfg.clients.is_empty() || !cfg.audiences.is_empty()) {
+        return Err(
+            "token_exchange.clients and token_exchange.audiences apply to local minting only; \
+             they cannot be combined with delegate_to_hydra"
+                .to_string(),
+        );
+    }
+    for (client_id, policy) in &cfg.clients {
+        if client_id.trim().is_empty() {
+            return Err("token_exchange.clients has an empty client_id".to_string());
+        }
+        for aud in &policy.on_behalf_of_audiences {
+            if aud.trim().is_empty() {
+                return Err(format!(
+                    "token_exchange.clients.{client_id}.on_behalf_of_audiences has an empty audience"
+                ));
+            }
+        }
+        for name in &policy.requested_claims {
+            if name.trim().is_empty()
+                || is_exchange_reserved_claim(name)
+                || GRANT_PARAMETERS.contains(&name.as_str())
+            {
+                return Err(format!(
+                    "token_exchange.clients.{client_id}.requested_claims: {name:?} is a reserved \
+                     claim or grant parameter and cannot be requested"
+                ));
+            }
+        }
+    }
+    for (aud, policy) in &cfg.audiences {
+        let names = policy
+            .copy_claims
+            .iter()
+            .map(String::as_str)
+            .chain(policy.claims.keys().map(String::as_str));
+        for name in names {
+            if name.trim().is_empty() || is_exchange_reserved_claim(name) {
+                return Err(format!(
+                    "token_exchange.audiences.{aud}: {name:?} is a reserved claim and cannot be set"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The longest `requested_subject` accepted.
+pub const MAX_REQUESTED_SUBJECT_LEN: usize = 255;
+
+/// Validate the on-behalf-of request envelope: grant type, no actor token, no
+/// subject token, an access-token `requested_token_type` when present, and a
+/// well-formed `requested_subject`. Returns the subject. Pure.
+pub fn validate_on_behalf_of_request(req: &TokenExchangeRequest) -> Result<&str, ExchangeError> {
+    if req.grant_type != GRANT_TYPE_TOKEN_EXCHANGE {
+        return Err(ExchangeError::UnsupportedGrantType(format!(
+            "unsupported grant_type: {}",
+            req.grant_type
+        )));
+    }
+    if req
+        .actor_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Err(ExchangeError::UnsupportedActorToken);
+    }
+    if !req.subject_token.trim().is_empty() {
+        return Err(ExchangeError::InvalidRequest(
+            "requested_subject cannot be combined with subject_token".to_string(),
+        ));
+    }
+    if let Some(t) = req.requested_token_type.as_deref() {
+        if t != TOKEN_TYPE_ACCESS_TOKEN {
+            return Err(ExchangeError::InvalidRequest(format!(
+                "unsupported requested_token_type: {t}"
+            )));
+        }
+    }
+    let subject = req.requested_subject.as_deref().unwrap_or("");
+    if subject.is_empty()
+        || subject.len() > MAX_REQUESTED_SUBJECT_LEN
+        || subject.trim() != subject
+        || subject.chars().any(char::is_control)
+    {
+        return Err(ExchangeError::InvalidRequest(
+            "requested_subject must be a non-empty identifier without surrounding whitespace \
+             or control characters"
+                .to_string(),
+        ));
+    }
+    Ok(subject)
+}
+
+/// Parse `expires_in`: a positive integer number of seconds, or absent.
+pub fn parse_requested_ttl(raw: Option<&str>) -> Result<Option<u64>, ExchangeError> {
+    let Some(raw) = raw else { return Ok(None) };
+    raw.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|v| *v > 0)
+        .map(Some)
+        .ok_or_else(|| {
+            ExchangeError::InvalidRequest(
+                "expires_in must be a positive integer number of seconds".to_string(),
+            )
+        })
+}
+
+/// Authenticate presented client credentials. No credentials → `Ok(None)`.
+/// Credentials with no verifier, an unknown client or a wrong secret →
+/// `InvalidClient` (fail closed, never ignored).
+async fn authenticate_client(
+    req: &TokenExchangeRequest,
+    policy: &ExchangePolicy,
+) -> Result<Option<VerifiedClient>, ExchangeError> {
+    let Some(creds) = &req.client_credentials else {
+        return Ok(None);
+    };
+    let Some(verifier) = &policy.client_verifier else {
+        return Err(ExchangeError::InvalidClient);
+    };
+    match verifier
+        .verify(&creds.client_id, &creds.client_secret)
+        .await
+    {
+        Ok(Some(client)) => Ok(Some(client)),
+        Ok(None) => Err(ExchangeError::InvalidClient),
+        Err(e) => Err(ExchangeError::MintFailed(format!("client store: {e}"))),
+    }
+}
+
+/// Collect the requested claims from the extra form fields. A field is a
+/// requested claim only if some configured client may request that name; other
+/// unknown fields are ignored as before. A requested claim from a caller that
+/// is not authenticated, or whose policy does not list it, is refused.
+pub fn collect_requested_claims(
+    req: &TokenExchangeRequest,
+    policy: &ExchangePolicy,
+    client: Option<&VerifiedClient>,
+) -> Result<Map<String, Value>, ExchangeError> {
+    let allowed: &[String] = client
+        .and_then(|c| policy.clients.get(&c.client_id))
+        .map(|p| p.requested_claims.as_slice())
+        .unwrap_or(&[]);
+    let mut out = Map::new();
+    for (name, raw) in &req.extra_fields {
+        if !policy.is_requestable_claim(name) {
+            continue;
+        }
+        if client.is_none() {
+            return Err(ExchangeError::InvalidClient);
+        }
+        if !allowed.iter().any(|a| a == name) {
+            return Err(ExchangeError::UnauthorizedClient(format!(
+                "this client may not request the {name:?} claim"
+            )));
+        }
+        let value = serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.clone()));
+        out.insert(name.clone(), value);
+    }
+    Ok(out)
+}
+
+/// A claim of the verified subject: a profile trait, else another claim.
+fn subject_claim<'a>(subject: &'a Identity, name: &str) -> Option<&'a Value> {
+    subject
+        .traits
+        .get(name)
+        .or_else(|| subject.metadata_public.get(name))
+}
+
+/// Add per-audience and requested claims to the delegated claims. Precedence,
+/// lowest first: claims copied from the subject, requested claims, fixed
+/// audience claims. Reserved claims are never written. Pure.
+pub fn apply_exchange_claims(
+    additional: &mut Value,
+    subject: &Identity,
+    audience_policy: Option<&ExchangeAudiencePolicy>,
+    requested: &Map<String, Value>,
+) {
+    let Value::Object(map) = additional else {
+        return;
+    };
+    let mut put = |name: &str, value: &Value| {
+        if !is_exchange_reserved_claim(name) {
+            map.insert(name.to_string(), value.clone());
+        }
+    };
+    if let Some(policy) = audience_policy {
+        for name in &policy.copy_claims {
+            if let Some(value) = subject_claim(subject, name) {
+                put(name, value);
+            }
+        }
+    }
+    for (name, value) in requested {
+        put(name, value);
+    }
+    if let Some(policy) = audience_policy {
+        for (name, value) in &policy.claims {
+            put(name, value);
+        }
+    }
+}
+
+/// The subject, granted scopes and audience of an on-behalf-of exchange. The
+/// client must be authenticated and allow-listed for the requested audience;
+/// scopes are capped by the client's own grant.
+fn on_behalf_of_grant<'r>(
+    req: &'r TokenExchangeRequest,
+    subject: &str,
+    client: Option<&VerifiedClient>,
+    policy: &ExchangePolicy,
+) -> Result<(Identity, Vec<String>, &'r str), ExchangeError> {
+    let client = client.ok_or(ExchangeError::InvalidClient)?;
+    let permitted = policy
+        .clients
+        .get(&client.client_id)
+        .map(|p| p.on_behalf_of_audiences.as_slice())
+        .unwrap_or(&[]);
+    if permitted.is_empty() {
+        return Err(ExchangeError::UnauthorizedClient(
+            "this client may not request tokens on behalf of a person".to_string(),
+        ));
+    }
+    let audience = req
+        .resource
+        .as_deref()
+        .or(req.audience.as_deref())
+        .filter(|a| !a.trim().is_empty())
+        .ok_or_else(|| {
+            ExchangeError::InvalidRequest(
+                "an on-behalf-of exchange requires `audience` or `resource`".to_string(),
+            )
+        })?;
+    if !permitted.iter().any(|a| a == audience) {
+        return Err(ExchangeError::InvalidTarget(format!(
+            "this client may not request on-behalf-of tokens for audience {audience:?}"
+        )));
+    }
+    let granted = downscope(req.scope.as_deref(), &client.scopes)?;
+    let identity = Identity {
+        id: subject.to_string(),
+        ..Default::default()
+    };
+    Ok((identity, granted, audience))
+}
+
+/// End-to-end token exchange with the empty [`ExchangePolicy`]: the plain
+/// RFC 8693 exchange. See [`exchange_with_policy`].
 pub async fn exchange(
     req: &TokenExchangeRequest,
     verifier: &Arc<dyn Authenticator>,
@@ -462,66 +894,143 @@ pub async fn exchange(
     delegated_ttl_seconds: Option<u64>,
     delegate: Option<&HydraDelegate>,
 ) -> Result<Value, ExchangeError> {
-    // In delegate mode, a rejected actor_token is a delegate-path denial — record
-    // it before returning so the metric captures every delegate outcome.
-    if let Err(e) = validate_request(req) {
-        if delegate.is_some() && matches!(e, ExchangeError::UnsupportedActorToken) {
-            crate::metrics::record_delegate("deny_actor_token");
+    exchange_with_policy(
+        req,
+        verifier,
+        minter,
+        delegated_ttl_seconds,
+        delegate,
+        &ExchangePolicy::default(),
+    )
+    .await
+}
+
+/// End-to-end token exchange: validate → (delegate to Hydra when configured, OR
+/// authenticate the client → resolve the subject (verify `subject_token`, or
+/// the on-behalf-of `requested_subject`) → downscope → apply audience and
+/// requested claims → mint a delegated token via [`JwtMinter`]).
+/// Returns the RFC 8693 response body or a mapped [`ExchangeError`].
+///
+/// Fail-closed at every step: a bad grant, an `actor_token`, an unverifiable
+/// subject token, bad client credentials, a capability the client is not
+/// allow-listed for, scope escalation, an unavailable minter, or a Hydra
+/// delegate error all reject rather than issue a token.
+///
+/// [`JwtMinter`]: crate::auth::jwt_mint::JwtMinter
+pub async fn exchange_with_policy(
+    req: &TokenExchangeRequest,
+    verifier: &Arc<dyn Authenticator>,
+    minter: &SharedJwtMinter,
+    delegated_ttl_seconds: Option<u64>,
+    delegate: Option<&HydraDelegate>,
+    policy: &ExchangePolicy,
+) -> Result<Value, ExchangeError> {
+    // A `requested_subject` (even an empty one) selects the on-behalf-of path,
+    // whose envelope has no subject token.
+    let on_behalf_of = req.requested_subject.is_some();
+    let obo_subject = if on_behalf_of {
+        Some(validate_on_behalf_of_request(req)?)
+    } else {
+        // In delegate mode, a rejected actor_token is a delegate-path denial — record
+        // it before returning so the metric captures every delegate outcome.
+        if let Err(e) = validate_request(req) {
+            if delegate.is_some() && matches!(e, ExchangeError::UnsupportedActorToken) {
+                crate::metrics::record_delegate("deny_actor_token");
+            }
+            return Err(e);
         }
-        return Err(e);
-    }
+        None
+    };
 
     // Federate-first: when a Hydra delegate is configured, proxy the exchange to
-    // it (Hydra owns RFC 8693) instead of minting locally.
+    // it (Hydra owns RFC 8693) instead of minting locally. The local-only
+    // capabilities are refused rather than silently dropped.
     if let Some(delegate) = delegate {
+        if on_behalf_of || req.expires_in.is_some() || req.client_credentials.is_some() {
+            crate::metrics::record_delegate("deny_unsupported");
+            return Err(ExchangeError::InvalidRequest(
+                "requested_subject, expires_in and client authentication are not supported \
+                 when the exchange is delegated to Hydra"
+                    .to_string(),
+            ));
+        }
         return delegate_exchange_to_hydra(delegate, req).await;
     }
 
     // Local-mint path. Instrument every outcome (result label) so this mode is
     // observable symmetrically with the Hydra-delegate path. The `?`-propagation
-    // is unrolled into explicit arms: each fail-closed exit records its reason
-    // and still returns the SAME error it did before (behavior preserved).
-    let subject = match verify_subject_token(verifier, &req.subject_token).await {
-        Ok(s) => s,
-        Err(e) => {
-            crate::metrics::record_local_exchange("deny_verify");
-            return Err(e);
-        }
+    // is unrolled into explicit arms: each fail-closed exit records its reason.
+    let deny = |reason: &'static str, e: ExchangeError| {
+        crate::metrics::record_local_exchange(reason);
+        e
     };
-    let granted = match downscope(req.scope.as_deref(), &subject.scopes) {
-        Ok(g) => g,
-        Err(e) => {
-            crate::metrics::record_local_exchange("deny_downscope");
-            return Err(e);
-        }
+    let requested_ttl =
+        parse_requested_ttl(req.expires_in.as_deref()).map_err(|e| deny("deny_request", e))?;
+    let client = authenticate_client(req, policy)
+        .await
+        .map_err(|e| deny("deny_client", e))?;
+    let requested_claims = collect_requested_claims(req, policy, client.as_ref())
+        .map_err(|e| deny("deny_client", e))?;
+
+    let (identity, granted, audience, actor) = if let Some(subject) = obo_subject {
+        let (identity, granted, audience) =
+            on_behalf_of_grant(req, subject, client.as_ref(), policy).map_err(|e| {
+                let reason = match e {
+                    ExchangeError::InvalidScope(_) => "deny_downscope",
+                    ExchangeError::InvalidRequest(_) => "deny_request",
+                    _ => "deny_client",
+                };
+                deny(reason, e)
+            })?;
+        (identity, granted, Some(audience), client.as_ref())
+    } else {
+        let subject = verify_subject_token(verifier, &req.subject_token)
+            .await
+            .map_err(|e| deny("deny_verify", e))?;
+        let granted = downscope(req.scope.as_deref(), &subject.scopes)
+            .map_err(|e| deny("deny_downscope", e))?;
+        // RFC 8707: prefer `resource`, then `audience`, as the issued token's `aud`.
+        let audience = req.resource.as_deref().or(req.audience.as_deref());
+        (subject.identity, granted, audience, client.as_ref())
     };
 
-    // RFC 8707: prefer `resource`, then `audience`, as the issued token's `aud`.
-    let audience = req.resource.as_deref().or(req.audience.as_deref());
-    // A distinct verified actor is out of scope this change (single-hop `act`),
-    // so the delegate is recorded as the subject itself — the token is still
-    // explicitly a delegated token via the `act` claim.
-    let additional = build_delegated_claims(&subject.identity, &granted, audience, None);
+    // `act.sub` is the authenticated client when there is one; otherwise the
+    // subject itself, so the token is still explicitly a delegated token.
+    let actor_sub = actor.map(|c| c.client_id.as_str());
+    let mut additional = build_delegated_claims(&identity, &granted, audience, actor_sub);
+    apply_exchange_claims(
+        &mut additional,
+        &identity,
+        audience.and_then(|a| policy.audiences.get(a)),
+        &requested_claims,
+    );
 
     let guard = minter.read().await;
-    let token = match guard.as_ref() {
-        Some(m) => match m.mint(&subject.identity, Some(&additional), delegated_ttl_seconds) {
-            Ok(t) => t,
-            Err(e) => {
-                crate::metrics::record_local_exchange("mint_failed");
-                return Err(ExchangeError::MintFailed(e.to_string()));
-            }
-        },
-        None => {
-            crate::metrics::record_local_exchange("mint_failed");
-            return Err(ExchangeError::MintFailed(
-                "JWT minter is not configured".to_string(),
-            ));
-        }
+    let Some(m) = guard.as_ref() else {
+        return Err(deny(
+            "mint_failed",
+            ExchangeError::MintFailed("JWT minter is not configured".to_string()),
+        ));
     };
+    let base_ttl = delegated_ttl_seconds.unwrap_or_else(|| m.default_ttl_seconds());
+    let ttl = requested_ttl.map_or(base_ttl, |r| r.min(base_ttl));
+    let token = m
+        .mint(&identity, Some(&additional), Some(ttl))
+        .map_err(|e| deny("mint_failed", ExchangeError::MintFailed(e.to_string())))?;
 
+    if on_behalf_of {
+        tracing::info!(
+            target: "flint_gate::audit",
+            event = "token_exchange.on_behalf_of",
+            client_id = actor_sub.unwrap_or_default(),
+            sub = %identity.id,
+            aud = audience.unwrap_or_default(),
+            ttl_seconds = ttl,
+            "issued an on-behalf-of token"
+        );
+    }
     crate::metrics::record_local_exchange("success");
-    Ok(token_exchange_response(token, &granted))
+    Ok(token_exchange_response(token, &granted, ttl))
 }
 
 #[cfg(test)]
@@ -538,6 +1047,7 @@ mod tests {
             resource: None,
             audience: None,
             actor_token: None,
+            ..Default::default()
         }
     }
 
@@ -752,8 +1262,9 @@ mod tests {
 
     #[test]
     fn response_has_rfc8693_shape() {
-        let resp = token_exchange_response("tok.abc".into(), &["read".into()]);
+        let resp = token_exchange_response("tok.abc".into(), &["read".into()], 60);
         assert_eq!(resp["access_token"], "tok.abc");
+        assert_eq!(resp["expires_in"], 60);
         assert_eq!(resp["token_type"], "Bearer");
         assert_eq!(resp["issued_token_type"], TOKEN_TYPE_ACCESS_TOKEN);
         assert_eq!(resp["scope"], "read");
@@ -815,6 +1326,7 @@ mod tests {
             resource: Some("https://api.example.com".into()),
             audience: None,
             actor_token: None,
+            ..Default::default()
         }
     }
 
@@ -1148,5 +1660,576 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ExchangeError::MintFailed(_)));
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    //! Client authentication, on-behalf-of, requested claims, per-audience
+    //! claims and requested lifetime on the gateway-local exchange.
+    use super::*;
+    use crate::auth::jwt_mint::JwtMinter;
+    use crate::auth::{AuthMethod, AuthResult};
+    use crate::config::types::JwtConfig;
+    use base64::Engine;
+    use http::request::Parts;
+    use tokio::sync::RwLock;
+
+    /// A subject token for `person-1` with profile, tenant and app-role claims.
+    struct PersonVerifier;
+
+    #[async_trait::async_trait]
+    impl Authenticator for PersonVerifier {
+        async fn authenticate(&self, _parts: &Parts) -> Result<AuthResult, AuthError> {
+            Ok(AuthResult {
+                identity: Identity {
+                    id: "person-1".into(),
+                    traits: json!({ "email": "p@example.test" }),
+                    metadata_public: json!({
+                        "scope": "chat",
+                        "tenant_id": "tenant-a",
+                        "role": "admin",
+                        "aud": "knowduet-gateway",
+                    }),
+                    ..Default::default()
+                },
+                method: AuthMethod::BearerJwt,
+            })
+        }
+    }
+
+    /// The client store: `openbot-server` and `knowduet-gateway`, secret `pw`.
+    struct StubClients;
+
+    #[async_trait::async_trait]
+    impl ClientVerifier for StubClients {
+        async fn verify(
+            &self,
+            client_id: &str,
+            client_secret: &str,
+        ) -> anyhow::Result<Option<VerifiedClient>> {
+            let known = ["openbot-server", "knowduet-gateway", "other-service"];
+            Ok(
+                (known.contains(&client_id) && client_secret == "pw").then(|| VerifiedClient {
+                    client_id: client_id.to_string(),
+                    scopes: vec!["chat".into(), "runs".into()],
+                }),
+            )
+        }
+    }
+
+    fn policy() -> ExchangePolicy {
+        let mut p = ExchangePolicy {
+            client_verifier: Some(Arc::new(StubClients)),
+            ..Default::default()
+        };
+        p.clients.insert(
+            "openbot-server".into(),
+            ExchangeClientPolicy {
+                on_behalf_of_audiences: vec!["knowduet-gateway".into()],
+                requested_claims: vec![],
+            },
+        );
+        p.clients.insert(
+            "knowduet-gateway".into(),
+            ExchangeClientPolicy {
+                on_behalf_of_audiences: vec![],
+                requested_claims: vec!["topics".into()],
+            },
+        );
+        p.audiences.insert(
+            "flint-forge".into(),
+            ExchangeAudiencePolicy {
+                copy_claims: vec!["tenant_id".into(), "email".into()],
+                claims: json!({ "role": "authenticated" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+        );
+        p
+    }
+
+    async fn minter() -> SharedJwtMinter {
+        let cfg = JwtConfig {
+            signing_algorithm: "HS256".into(),
+            signing_key_secret: Some("test-secret-key-minimum-length".into()),
+            issuer: "flint-gate".into(),
+            default_ttl_seconds: 300,
+            ..Default::default()
+        };
+        Arc::new(RwLock::new(Some(
+            JwtMinter::from_config(&cfg).await.unwrap(),
+        )))
+    }
+
+    fn verifier() -> Arc<dyn Authenticator> {
+        Arc::new(PersonVerifier)
+    }
+
+    fn creds(client_id: &str, secret: &str) -> Option<ClientCredentials> {
+        Some(ClientCredentials {
+            client_id: client_id.into(),
+            client_secret: secret.into(),
+        })
+    }
+
+    fn obo_req(subject: &str, audience: &str) -> TokenExchangeRequest {
+        TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            requested_subject: Some(subject.into()),
+            audience: Some(audience.into()),
+            client_credentials: creds("openbot-server", "pw"),
+            ..Default::default()
+        }
+    }
+
+    fn ticket_req() -> TokenExchangeRequest {
+        let mut extra = BTreeMap::new();
+        extra.insert(
+            "topics".to_string(),
+            r#"["user:person-1","bot:b1"]"#.to_string(),
+        );
+        TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: "gateway.subject.jwt".into(),
+            subject_token_type: Some(TOKEN_TYPE_ACCESS_TOKEN.into()),
+            audience: Some("fabric".into()),
+            expires_in: Some("60".into()),
+            client_credentials: creds("knowduet-gateway", "pw"),
+            extra_fields: extra,
+            ..Default::default()
+        }
+    }
+
+    async fn run(req: &TokenExchangeRequest, p: &ExchangePolicy) -> Result<Value, ExchangeError> {
+        exchange_with_policy(req, &verifier(), &minter().await, None, None, p).await
+    }
+
+    /// The minted token's claims (signature already covered by the minter).
+    fn claims(resp: &Value) -> Value {
+        let token = resp["access_token"].as_str().unwrap();
+        let payload = token.split('.').nth(1).unwrap();
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ── On-behalf-of (FG-7) ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn on_behalf_of_names_the_person_and_records_the_client_as_actor() {
+        let resp = run(&obo_req("user-9", "knowduet-gateway"), &policy())
+            .await
+            .expect("allow-listed on-behalf-of exchange");
+        let c = claims(&resp);
+        assert_eq!(c["sub"], "user-9");
+        assert_eq!(c["aud"], "knowduet-gateway");
+        assert_eq!(c["act"]["sub"], "openbot-server");
+        assert_eq!(c["flint_kind"], "agent");
+        assert!(c["jti"].as_str().is_some_and(|j| !j.is_empty()));
+        assert_eq!(c["exp"].as_i64().unwrap() - c["iat"].as_i64().unwrap(), 300);
+        assert_eq!(resp["expires_in"], 300);
+        assert_eq!(resp["issued_token_type"], TOKEN_TYPE_ACCESS_TOKEN);
+        // Scopes are the client's grant, not anyone's subject token.
+        assert_eq!(c["scope"], "chat runs");
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_requires_client_authentication() {
+        let mut r = obo_req("user-9", "knowduet-gateway");
+        r.client_credentials = None;
+        assert_eq!(
+            run(&r, &policy()).await.unwrap_err(),
+            ExchangeError::InvalidClient
+        );
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_refuses_a_wrong_secret() {
+        let mut r = obo_req("user-9", "knowduet-gateway");
+        r.client_credentials = creds("openbot-server", "wrong");
+        let err = run(&r, &policy()).await.unwrap_err();
+        assert_eq!(err, ExchangeError::InvalidClient);
+        assert_eq!(err.http_status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_refuses_a_client_that_is_not_allow_listed() {
+        let mut r = obo_req("user-9", "knowduet-gateway");
+        r.client_credentials = creds("other-service", "pw");
+        let err = run(&r, &policy()).await.unwrap_err();
+        assert!(matches!(err, ExchangeError::UnauthorizedClient(_)));
+        // A client allow-listed only for requested claims cannot impersonate.
+        r.client_credentials = creds("knowduet-gateway", "pw");
+        let err = run(&r, &policy()).await.unwrap_err();
+        assert!(matches!(err, ExchangeError::UnauthorizedClient(_)));
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_refuses_an_audience_outside_the_allow_list() {
+        let err = run(&obo_req("user-9", "flint-forge"), &policy())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::InvalidTarget(_)));
+        assert_eq!(err.oauth_code(), "invalid_target");
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_requires_an_audience() {
+        let mut r = obo_req("user-9", "knowduet-gateway");
+        r.audience = None;
+        assert!(matches!(
+            run(&r, &policy()).await.unwrap_err(),
+            ExchangeError::InvalidRequest(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_refuses_malformed_envelopes() {
+        let mut with_subject_token = obo_req("user-9", "knowduet-gateway");
+        with_subject_token.subject_token = "a.b.c".into();
+        let mut wrong_type = obo_req("user-9", "knowduet-gateway");
+        wrong_type.requested_token_type = Some("urn:ietf:params:oauth:token-type:id_token".into());
+        for bad in [
+            with_subject_token,
+            wrong_type,
+            obo_req("", "knowduet-gateway"),
+            obo_req(" user-9", "knowduet-gateway"),
+            obo_req("user\n9", "knowduet-gateway"),
+            obo_req(
+                &"x".repeat(MAX_REQUESTED_SUBJECT_LEN + 1),
+                "knowduet-gateway",
+            ),
+        ] {
+            assert!(matches!(
+                run(&bad, &policy()).await.unwrap_err(),
+                ExchangeError::InvalidRequest(_)
+            ));
+        }
+        let mut with_actor = obo_req("user-9", "knowduet-gateway");
+        with_actor.actor_token = Some("x.y.z".into());
+        assert_eq!(
+            run(&with_actor, &policy()).await.unwrap_err(),
+            ExchangeError::UnsupportedActorToken
+        );
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_accepts_the_access_token_type() {
+        let mut r = obo_req("user-9", "knowduet-gateway");
+        r.requested_token_type = Some(TOKEN_TYPE_ACCESS_TOKEN.into());
+        assert!(run(&r, &policy()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_scope_is_capped_by_the_client_grant() {
+        let mut r = obo_req("user-9", "knowduet-gateway");
+        r.scope = Some("chat admin".into());
+        assert!(matches!(
+            run(&r, &policy()).await.unwrap_err(),
+            ExchangeError::InvalidScope(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_is_refused_by_the_default_policy() {
+        // `exchange()` (no policy) has no client verifier → fail closed.
+        let err = exchange(
+            &obo_req("user-9", "knowduet-gateway"),
+            &verifier(),
+            &minter().await,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, ExchangeError::InvalidClient);
+    }
+
+    // ── Requested claims and lifetime (FG-9) ───────────────────────────────
+
+    #[tokio::test]
+    async fn realtime_ticket_carries_topics_audience_short_ttl_and_fresh_jti() {
+        let p = policy();
+        let first = run(&ticket_req(), &p).await.expect("ticket exchange");
+        let second = run(&ticket_req(), &p).await.expect("ticket exchange");
+        let c = claims(&first);
+        assert_eq!(c["sub"], "person-1");
+        assert_eq!(c["aud"], "fabric");
+        assert_eq!(c["topics"], json!(["user:person-1", "bot:b1"]));
+        assert_eq!(c["act"]["sub"], "knowduet-gateway");
+        assert_eq!(c["exp"].as_i64().unwrap() - c["iat"].as_i64().unwrap(), 60);
+        assert_eq!(first["expires_in"], 60);
+        let jti = c["jti"].as_str().unwrap().to_string();
+        assert!(!jti.is_empty());
+        assert_ne!(claims(&second)["jti"].as_str().unwrap(), jti);
+    }
+
+    #[tokio::test]
+    async fn requested_claim_is_refused_from_an_unauthenticated_caller() {
+        let mut r = ticket_req();
+        r.client_credentials = None;
+        assert_eq!(
+            run(&r, &policy()).await.unwrap_err(),
+            ExchangeError::InvalidClient
+        );
+    }
+
+    #[tokio::test]
+    async fn requested_claim_is_refused_from_a_client_not_allowed_it() {
+        let mut r = ticket_req();
+        r.client_credentials = creds("openbot-server", "pw");
+        assert!(matches!(
+            run(&r, &policy()).await.unwrap_err(),
+            ExchangeError::UnauthorizedClient(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn unknown_extra_fields_are_still_ignored() {
+        let mut r = ticket_req();
+        r.extra_fields.clear();
+        r.extra_fields.insert("unrelated".into(), "x".into());
+        r.client_credentials = None;
+        let c = claims(&run(&r, &policy()).await.unwrap());
+        assert!(c.get("unrelated").is_none());
+        // Without an authenticated client the subject is its own actor.
+        assert_eq!(c["act"]["sub"], "person-1");
+    }
+
+    #[tokio::test]
+    async fn non_json_claim_value_is_copied_as_a_string() {
+        let mut r = ticket_req();
+        r.extra_fields
+            .insert("topics".into(), "user:person-1".into());
+        assert_eq!(
+            claims(&run(&r, &policy()).await.unwrap())["topics"],
+            "user:person-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn expires_in_only_shortens_the_lifetime() {
+        let mut r = ticket_req();
+        r.expires_in = Some("86400".into());
+        let resp = run(&r, &policy()).await.unwrap();
+        let c = claims(&resp);
+        assert_eq!(c["exp"].as_i64().unwrap() - c["iat"].as_i64().unwrap(), 300);
+        assert_eq!(resp["expires_in"], 300);
+    }
+
+    #[tokio::test]
+    async fn expires_in_must_be_a_positive_integer() {
+        for bad in ["0", "-5", "abc", ""] {
+            let mut r = ticket_req();
+            r.expires_in = Some(bad.into());
+            assert!(matches!(
+                run(&r, &policy()).await.unwrap_err(),
+                ExchangeError::InvalidRequest(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn client_credentials_without_a_store_are_refused() {
+        let mut p = policy();
+        p.client_verifier = None;
+        assert_eq!(
+            run(&ticket_req(), &p).await.unwrap_err(),
+            ExchangeError::InvalidClient
+        );
+    }
+
+    #[test]
+    fn requested_claims_never_override_reserved_claims() {
+        let subject = Identity {
+            id: "person-1".into(),
+            ..Default::default()
+        };
+        let mut additional =
+            build_delegated_claims(&subject, &["chat".into()], Some("fabric"), Some("gw"));
+        let requested = json!({ "sub": "root", "aud": "x", "jti": "j", "act": {}, "topics": [] });
+        apply_exchange_claims(
+            &mut additional,
+            &subject,
+            None,
+            requested.as_object().unwrap(),
+        );
+        assert_eq!(additional["aud"], "fabric");
+        assert_eq!(additional["act"]["sub"], "gw");
+        assert!(additional.get("sub").is_none());
+        assert!(additional.get("jti").is_none());
+        assert_eq!(additional["topics"], json!([]));
+    }
+
+    // ── Per-audience claims (FG-8) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn audience_policy_copies_tenant_and_fixes_role() {
+        let r = TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: "gateway.subject.jwt".into(),
+            audience: Some("flint-forge".into()),
+            ..Default::default()
+        };
+        let c = claims(&run(&r, &policy()).await.unwrap());
+        assert_eq!(c["aud"], "flint-forge");
+        assert_eq!(c["tenant_id"], "tenant-a");
+        // The subject's app role is not passed through; forge gets its PG role.
+        assert_eq!(c["role"], "authenticated");
+        assert_eq!(c["email"], "p@example.test");
+    }
+
+    #[tokio::test]
+    async fn audience_policy_applies_only_to_its_audience() {
+        let r = TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: "gateway.subject.jwt".into(),
+            audience: Some("uar".into()),
+            ..Default::default()
+        };
+        let c = claims(&run(&r, &policy()).await.unwrap());
+        assert!(c.get("tenant_id").is_none());
+        assert!(c.get("role").is_none());
+    }
+
+    #[tokio::test]
+    async fn audience_policy_fixed_claims_apply_to_on_behalf_of_tokens() {
+        let mut p = policy();
+        p.clients
+            .get_mut("openbot-server")
+            .unwrap()
+            .on_behalf_of_audiences
+            .push("flint-forge".into());
+        let c = claims(&run(&obo_req("user-9", "flint-forge"), &p).await.unwrap());
+        assert_eq!(c["sub"], "user-9");
+        assert_eq!(c["role"], "authenticated");
+        // Nothing to copy: an on-behalf-of subject carries no claims.
+        assert!(c.get("tenant_id").is_none());
+    }
+
+    // ── Delegate mode and startup validation ──────────────────────────────
+
+    #[tokio::test]
+    async fn delegate_mode_refuses_local_only_capabilities() {
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::new(),
+            token_url: "http://127.0.0.1:1/oauth2/token".into(),
+        };
+        for r in [obo_req("user-9", "knowduet-gateway"), ticket_req()] {
+            let err = exchange_with_policy(
+                &r,
+                &verifier(),
+                &minter().await,
+                None,
+                Some(&delegate),
+                &policy(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, ExchangeError::InvalidRequest(_)));
+        }
+    }
+
+    fn config_with(
+        clients: &[(&str, ExchangeClientPolicy)],
+        audiences: &[(&str, ExchangeAudiencePolicy)],
+    ) -> TokenExchangeConfig {
+        TokenExchangeConfig {
+            clients: clients
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+            audiences: audiences
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn policy_validation_accepts_the_knowduet_shape() {
+        let p = policy();
+        let cfg = config_with(
+            &[
+                ("openbot-server", p.clients["openbot-server"].clone()),
+                ("knowduet-gateway", p.clients["knowduet-gateway"].clone()),
+            ],
+            &[("flint-forge", p.audiences["flint-forge"].clone())],
+        );
+        assert!(validate_exchange_policy(&cfg).is_ok());
+    }
+
+    #[test]
+    fn policy_validation_refuses_reserved_and_grant_parameter_names() {
+        for name in [
+            "sub",
+            "aud",
+            "exp",
+            "jti",
+            "act",
+            "scope",
+            "flint_kind",
+            "client_secret",
+            "expires_in",
+            "",
+        ] {
+            let cfg = config_with(
+                &[(
+                    "c",
+                    ExchangeClientPolicy {
+                        requested_claims: vec![name.into()],
+                        ..Default::default()
+                    },
+                )],
+                &[],
+            );
+            assert!(validate_exchange_policy(&cfg).is_err(), "{name:?}");
+        }
+        for name in ["iss", "sub", "act"] {
+            let cfg = config_with(
+                &[],
+                &[(
+                    "forge",
+                    ExchangeAudiencePolicy {
+                        claims: json!({ name: "x" }).as_object().unwrap().clone(),
+                        ..Default::default()
+                    },
+                )],
+            );
+            assert!(validate_exchange_policy(&cfg).is_err(), "{name:?}");
+            let cfg = config_with(
+                &[],
+                &[(
+                    "forge",
+                    ExchangeAudiencePolicy {
+                        copy_claims: vec![name.into()],
+                        ..Default::default()
+                    },
+                )],
+            );
+            assert!(validate_exchange_policy(&cfg).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn policy_validation_refuses_policy_with_hydra_delegate() {
+        let mut cfg = config_with(&[("c", ExchangeClientPolicy::default())], &[]);
+        cfg.delegate_to_hydra = true;
+        assert!(validate_exchange_policy(&cfg).is_err());
+    }
+
+    #[test]
+    fn client_credentials_debug_hides_the_secret() {
+        let c = ClientCredentials {
+            client_id: "svc".into(),
+            client_secret: "s3cret".into(),
+        };
+        let shown = format!("{c:?}");
+        assert!(shown.contains("svc"));
+        assert!(!shown.contains("s3cret"));
     }
 }

@@ -772,7 +772,9 @@ async fn main() -> Result<()> {
     {
         use flint_gate_core::auth::introspect::TokenVerifier;
         use flint_gate_core::auth::oauth::{IntrospectionState, OAuthState};
-        use flint_gate_core::auth::token_exchange::validate_subject_provider;
+        use flint_gate_core::auth::token_exchange::{
+            validate_exchange_policy, validate_subject_provider, ClientVerifier, ExchangePolicy,
+        };
         use flint_gate_core::config::types::OAuthExposurePosture;
 
         // Exposure gate: refuse to start with an under-guarded /oauth/* surface
@@ -858,7 +860,28 @@ async fn main() -> Result<()> {
                 info!("RFC 8693 token exchange enabled (gateway-local)");
                 None
             };
-            Some((verifier, tx_cfg.delegated_ttl_seconds, delegate))
+            if let Err(reason) = validate_exchange_policy(tx_cfg) {
+                anyhow::bail!("refusing to enable token exchange: {reason}");
+            }
+            // Client authentication on the exchange verifies against the
+            // oauth_clients store. Per-client policy is unusable without it.
+            if !tx_cfg.clients.is_empty() && db.is_none() {
+                anyhow::bail!(
+                    "token_exchange.clients is set but no database is configured \
+                     (the client store lives in Postgres)"
+                );
+            }
+            let mut policy = ExchangePolicy::from_config(tx_cfg);
+            policy.client_verifier = db
+                .clone()
+                .map(|database| database as Arc<dyn ClientVerifier>);
+            if !tx_cfg.clients.is_empty() {
+                info!(
+                    clients = tx_cfg.clients.len(),
+                    "token exchange client policy enabled (on-behalf-of / requested claims)"
+                );
+            }
+            Some((verifier, tx_cfg.delegated_ttl_seconds, delegate, policy))
         } else {
             None
         };

@@ -659,7 +659,11 @@ Enabled per capability under `oauth:` / `token_exchange:` (see `config.example.y
 
 - `POST /oauth/token` — RFC 8693 token exchange + RFC 6749 client-credentials,
   dispatched by `grant_type`. Callers present their grant credentials in-body;
-  enable `oauth.rate_limit` to throttle the endpoint.
+  enable `oauth.rate_limit` to throttle the endpoint. Token exchange also takes
+  optional client authentication, an on-behalf-of `requested_subject` for
+  allow-listed clients, allow-listed requested claims, per-audience claims and
+  a shortening `expires_in` (`token_exchange.clients` / `token_exchange.audiences`
+  in `config.example.yaml`).
 - `POST /oauth/introspect` — RFC 7662 introspection for gateway-minted tokens.
   **Authenticated by default** (`oauth.introspect_auth: true`): the caller must
   present OAuth client credentials (`client_id`/`client_secret` via HTTP Basic or

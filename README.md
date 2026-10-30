@@ -663,7 +663,10 @@ Enabled per capability under `oauth:` / `token_exchange:` (see `config.example.y
   optional client authentication, an on-behalf-of `requested_subject` for
   allow-listed clients, allow-listed requested claims, per-audience claims and
   a shortening `expires_in` (`token_exchange.clients` / `token_exchange.audiences`
-  in `config.example.yaml`).
+  in `config.example.yaml`). A public client (a native app, no secret) can
+  exchange a Kratos session token (`subject_token_type=urn:ory:kratos:session-token`)
+  for a short-lived token for an allow-listed audience, so a desktop app needs
+  neither `/ext-authz` nor a client secret.
 - `POST /oauth/introspect` — RFC 7662 introspection for gateway-minted tokens.
   **Authenticated by default** (`oauth.introspect_auth: true`): the caller must
   present OAuth client credentials (`client_id`/`client_secret` via HTTP Basic or

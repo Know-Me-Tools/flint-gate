@@ -164,6 +164,15 @@ pub async fn token_endpoint(
                         client_secret,
                     }
                 });
+            // A `client_id` with no secret (and no HTTP Basic) names a public
+            // client; whether it is one is decided by the exchange policy.
+            let public_client_id = if client_credentials.is_none() && auth_header.is_none() {
+                form.get("client_id")
+                    .filter(|_| !form.contains_key("client_secret"))
+                    .cloned()
+            } else {
+                None
+            };
             let extra_fields = form
                 .iter()
                 .filter(|(k, _)| !GRANT_PARAMETERS.contains(&k.as_str()))
@@ -181,6 +190,7 @@ pub async fn token_endpoint(
                 requested_subject: form.get("requested_subject").cloned(),
                 expires_in: form.get("expires_in").cloned(),
                 client_credentials,
+                public_client_id,
                 extra_fields,
             };
             match exchange_with_policy(
@@ -198,6 +208,23 @@ pub async fn token_endpoint(
             }
         }
         GRANT_TYPE_CLIENT_CREDENTIALS => {
+            // A public token-exchange client may use only the session-token
+            // exchange, even if an `oauth_clients` row with its id exists.
+            let auth_header = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok());
+            let presented_id = extract_client_credentials(auth_header, &form)
+                .map(|(id, _)| id)
+                .or_else(|| form.get("client_id").cloned());
+            if let (Some(id), Some((_, _, _, policy))) = (presented_id, &state.token_exchange) {
+                if policy.is_public_client(&id) {
+                    return oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "unauthorized_client",
+                        "a public client may not use client_credentials".into(),
+                    );
+                }
+            }
             let Some((db, ttl)) = &state.client_credentials else {
                 return oauth_error(
                     StatusCode::BAD_REQUEST,
@@ -517,6 +544,15 @@ mod tests {
                 ..Default::default()
             },
         );
+        policy.clients.insert(
+            "knowduet-desktop".into(),
+            crate::config::types::ExchangeClientPolicy {
+                public: true,
+                session_token_audiences: vec!["knowduet-gateway".into()],
+                ..Default::default()
+            },
+        );
+        policy.session_verifier = Some(Arc::new(OneSession));
         let state = OAuthState {
             minter: Arc::new(tokio::sync::RwLock::new(Some(minter))),
             token_exchange: Some((Arc::new(OneSubject), None, None, policy)),
@@ -598,5 +634,90 @@ mod tests {
     async fn token_endpoint_refuses_a_wrong_client_secret() {
         let (status, _) = post_token(TICKET_FORM, Some(&basic("knowduet-gateway", "no"))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// A Kratos stub that accepts the session token `sess`.
+    struct OneSession;
+
+    #[async_trait::async_trait]
+    impl crate::auth::token_exchange::SessionTokenVerifier for OneSession {
+        async fn verify_session_token(
+            &self,
+            session_token: &str,
+        ) -> Result<crate::auth::identity::Identity, crate::auth::AuthError> {
+            if session_token == "sess" {
+                Ok(crate::auth::identity::Identity {
+                    id: "identity-7".into(),
+                    session_id: Some("s-1".into()),
+                    ..Default::default()
+                })
+            } else {
+                Err(crate::auth::AuthError::Unauthorized("no session".into()))
+            }
+        }
+    }
+
+    const SESSION_FORM: &str =
+        "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange\
+        &subject_token=sess&subject_token_type=urn%3Aory%3Akratos%3Asession-token\
+        &audience=knowduet-gateway&client_id=knowduet-desktop";
+
+    #[tokio::test]
+    async fn token_endpoint_exchanges_a_session_token_for_a_public_client() {
+        let (status, body) = post_token(SESSION_FORM, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let payload = body["access_token"]
+            .as_str()
+            .unwrap()
+            .split('.')
+            .nth(1)
+            .unwrap();
+        let claims: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims["sub"], "identity-7");
+        assert_eq!(claims["act"]["sub"], "knowduet-desktop");
+        assert_eq!(claims["aud"], "knowduet-gateway");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_refuses_a_bad_session_with_invalid_grant() {
+        let body = SESSION_FORM.replace("subject_token=sess", "subject_token=nope");
+        let (status, body) = post_token(&body, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_refuses_an_unknown_public_client_id() {
+        let body = SESSION_FORM.replace("client_id=knowduet-desktop", "client_id=stranger");
+        let (status, body) = post_token(&body, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_client");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_refuses_client_credentials_for_a_public_client() {
+        for (form, auth) in [
+            (
+                "grant_type=client_credentials&client_id=knowduet-desktop&client_secret=x",
+                None,
+            ),
+            (
+                "grant_type=client_credentials&client_id=knowduet-desktop",
+                None,
+            ),
+            (
+                "grant_type=client_credentials",
+                Some(basic("knowduet-desktop", "x")),
+            ),
+        ] {
+            let (status, body) = post_token(form, auth.as_deref()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{form}");
+            assert_eq!(body["error"], "unauthorized_client", "{form}");
+        }
     }
 }

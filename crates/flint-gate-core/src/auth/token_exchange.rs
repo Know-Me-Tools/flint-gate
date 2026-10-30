@@ -25,6 +25,13 @@
 //!   claims, configured per issued `aud` in `token_exchange.audiences`.
 //! - **Requested lifetime** (`expires_in`): shortens, never lengthens, the
 //!   issued token's lifetime. The response always carries `expires_in`.
+//! - **Kratos session-token exchange** (public clients): a client marked
+//!   `public` (no secret, identified by the `client_id` form field alone)
+//!   presents a Kratos session token as `subject_token` with
+//!   `subject_token_type` = [`TOKEN_TYPE_KRATOS_SESSION_TOKEN`]. The gate
+//!   verifies it with Kratos `/sessions/whoami` and mints a token for one of
+//!   the client's `session_token_audiences`, `sub` = the Kratos identity,
+//!   `act.sub` = the client. A public client can do nothing else.
 
 use crate::auth::identity::Identity;
 use crate::auth::jwt_mint::SharedJwtMinter;
@@ -39,6 +46,10 @@ use std::sync::Arc;
 pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 /// RFC 8693 token-type URN for an access token (the type we issue).
 pub const TOKEN_TYPE_ACCESS_TOKEN: &str = "urn:ietf:params:oauth:token-type:access_token";
+/// `subject_token_type` for an Ory Kratos session token (the `session_token`
+/// a native login flow returns). Not an IANA-registered URN: RFC 8693 §3
+/// allows deployment-defined token-type URIs.
+pub const TOKEN_TYPE_KRATOS_SESSION_TOKEN: &str = "urn:ory:kratos:session-token";
 
 /// Form parameters the token-exchange grant itself interprets. None of them can
 /// be configured as a requested claim.
@@ -128,6 +139,10 @@ pub struct TokenExchangeRequest {
     /// Client credentials (HTTP Basic or form), filled in by the token endpoint.
     #[serde(skip)]
     pub client_credentials: Option<ClientCredentials>,
+    /// A `client_id` form field sent without a secret (and without HTTP Basic):
+    /// a public client's identifier. Filled in by the token endpoint.
+    #[serde(skip)]
+    pub public_client_id: Option<String>,
     /// Form fields that are not [`GRANT_PARAMETERS`]: requested-claim candidates.
     #[serde(skip)]
     pub extra_fields: BTreeMap<String, String>,
@@ -157,6 +172,9 @@ pub enum ExchangeError {
     UnauthorizedClient(String),
     /// The requested audience is not permitted for this client.
     InvalidTarget(String),
+    /// The presented grant (a Kratos session token) is invalid or expired, or
+    /// could not be verified.
+    InvalidGrant(String),
 }
 
 impl ExchangeError {
@@ -173,6 +191,7 @@ impl ExchangeError {
             ExchangeError::InvalidClient => "invalid_client",
             ExchangeError::UnauthorizedClient(_) => "unauthorized_client",
             ExchangeError::InvalidTarget(_) => "invalid_target",
+            ExchangeError::InvalidGrant(_) => "invalid_grant",
         }
     }
 
@@ -184,7 +203,8 @@ impl ExchangeError {
             | ExchangeError::MintFailed(m)
             | ExchangeError::InvalidRequest(m)
             | ExchangeError::UnauthorizedClient(m)
-            | ExchangeError::InvalidTarget(m) => m.clone(),
+            | ExchangeError::InvalidTarget(m)
+            | ExchangeError::InvalidGrant(m) => m.clone(),
             ExchangeError::InvalidClient => "invalid client credentials".to_string(),
             ExchangeError::NotEnabled => "token exchange is not enabled".to_string(),
             ExchangeError::UnsupportedActorToken => {
@@ -193,12 +213,14 @@ impl ExchangeError {
         }
     }
 
-    /// The HTTP status for this failure: `401` for client authentication,
-    /// `500` for a mint failure, otherwise `400`.
+    /// The HTTP status for this failure: `401` for client authentication and
+    /// an unverifiable session token, `500` for a mint failure, otherwise `400`.
     pub fn http_status(&self) -> http::StatusCode {
         match self {
             ExchangeError::MintFailed(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
-            ExchangeError::InvalidClient => http::StatusCode::UNAUTHORIZED,
+            ExchangeError::InvalidClient | ExchangeError::InvalidGrant(_) => {
+                http::StatusCode::UNAUTHORIZED
+            }
             _ => http::StatusCode::BAD_REQUEST,
         }
     }
@@ -600,6 +622,25 @@ impl ClientVerifier for crate::db::Database {
     }
 }
 
+/// Verifies a Kratos session token and returns the session's identity.
+/// Implemented by [`KratosAuthenticator`]; a trait so the exchange is testable
+/// without Kratos.
+///
+/// [`KratosAuthenticator`]: crate::auth::kratos::KratosAuthenticator
+#[async_trait::async_trait]
+pub trait SessionTokenVerifier: Send + Sync {
+    async fn verify_session_token(&self, session_token: &str) -> Result<Identity, AuthError>;
+}
+
+#[async_trait::async_trait]
+impl SessionTokenVerifier for crate::auth::kratos::KratosAuthenticator {
+    async fn verify_session_token(&self, session_token: &str) -> Result<Identity, AuthError> {
+        self.authenticate_session_token(session_token)
+            .await
+            .map(|result| result.identity)
+    }
+}
+
 /// Client and audience policy for gateway-local exchange. The default (empty)
 /// policy reproduces the plain RFC 8693 exchange: no on-behalf-of, no requested
 /// claims, no per-audience claims.
@@ -610,6 +651,9 @@ pub struct ExchangePolicy {
     /// Verifies presented client credentials. `None`: any presented client
     /// credentials are refused (`invalid_client`), never ignored.
     pub client_verifier: Option<Arc<dyn ClientVerifier>>,
+    /// Verifies Kratos session tokens for public clients. `None`: the
+    /// session-token exchange is refused.
+    pub session_verifier: Option<Arc<dyn SessionTokenVerifier>>,
 }
 
 impl ExchangePolicy {
@@ -619,7 +663,13 @@ impl ExchangePolicy {
             clients: cfg.clients.clone(),
             audiences: cfg.audiences.clone(),
             client_verifier: None,
+            session_verifier: None,
         }
+    }
+
+    /// Whether `client_id` is configured as a public client.
+    pub fn is_public_client(&self, client_id: &str) -> bool {
+        self.clients.get(client_id).is_some_and(|p| p.public)
     }
 
     /// Whether `name` is a requested claim for any configured client.
@@ -664,6 +714,7 @@ pub fn validate_exchange_policy(cfg: &TokenExchangeConfig) -> Result<(), String>
                 ));
             }
         }
+        validate_public_client(client_id, policy, cfg.session_token_provider.is_some())?;
     }
     for (aud, policy) in &cfg.audiences {
         let names = policy
@@ -678,6 +729,52 @@ pub fn validate_exchange_policy(cfg: &TokenExchangeConfig) -> Result<(), String>
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// A public client may use only the session-token exchange: no on-behalf-of,
+/// no requested claims, at least one session-token audience, and a configured
+/// `session_token_provider`. A confidential client may not list
+/// session-token audiences.
+fn validate_public_client(
+    client_id: &str,
+    policy: &ExchangeClientPolicy,
+    has_session_provider: bool,
+) -> Result<(), String> {
+    let prefix = format!("token_exchange.clients.{client_id}");
+    if !policy.public {
+        if !policy.session_token_audiences.is_empty() {
+            return Err(format!(
+                "{prefix}.session_token_audiences requires `public: true`"
+            ));
+        }
+        return Ok(());
+    }
+    if !policy.on_behalf_of_audiences.is_empty() || !policy.requested_claims.is_empty() {
+        return Err(format!(
+            "{prefix} is public: it may use only the session-token exchange, not \
+             on_behalf_of_audiences or requested_claims"
+        ));
+    }
+    if policy.session_token_audiences.is_empty() {
+        return Err(format!(
+            "{prefix} is public but lists no session_token_audiences"
+        ));
+    }
+    if policy
+        .session_token_audiences
+        .iter()
+        .any(|a| a.trim().is_empty())
+    {
+        return Err(format!(
+            "{prefix}.session_token_audiences has an empty audience"
+        ));
+    }
+    if !has_session_provider {
+        return Err(format!(
+            "{prefix} is public but token_exchange.session_token_provider is not set"
+        ));
     }
     Ok(())
 }
@@ -758,6 +855,11 @@ async fn authenticate_client(
     let Some(verifier) = &policy.client_verifier else {
         return Err(ExchangeError::InvalidClient);
     };
+    // A public client has no secret; a secret presented for one is refused even
+    // if an `oauth_clients` row with that id exists.
+    if policy.is_public_client(&creds.client_id) {
+        return Err(ExchangeError::InvalidClient);
+    }
     match verifier
         .verify(&creds.client_id, &creds.client_secret)
         .await
@@ -925,6 +1027,17 @@ pub async fn exchange_with_policy(
     delegate: Option<&HydraDelegate>,
     policy: &ExchangePolicy,
 ) -> Result<Value, ExchangeError> {
+    // A Kratos session-token type, or a public client, selects the
+    // session-token exchange. Checked first: a session token is never relayed
+    // to a Hydra delegate, and a public client can do nothing else.
+    if req.subject_token_type.as_deref() == Some(TOKEN_TYPE_KRATOS_SESSION_TOKEN)
+        || req
+            .public_client_id
+            .as_deref()
+            .is_some_and(|id| policy.is_public_client(id))
+    {
+        return exchange_session_token(req, minter, delegated_ttl_seconds, policy).await;
+    }
     // A `requested_subject` (even an empty one) selects the on-behalf-of path,
     // whose envelope has no subject token.
     let on_behalf_of = req.requested_subject.is_some();
@@ -1029,6 +1142,177 @@ pub async fn exchange_with_policy(
             "issued an on-behalf-of token"
         );
     }
+    crate::metrics::record_local_exchange("success");
+    Ok(token_exchange_response(token, &granted, ttl))
+}
+
+/// Validate a session-token exchange and resolve its public client and
+/// audience. The caller must be a configured public client, send the Kratos
+/// session-token type, and ask for one of its `session_token_audiences`. Pure.
+pub fn validate_session_token_request<'r>(
+    req: &'r TokenExchangeRequest,
+    policy: &ExchangePolicy,
+) -> Result<(&'r str, &'r str), ExchangeError> {
+    if req.grant_type != GRANT_TYPE_TOKEN_EXCHANGE {
+        return Err(ExchangeError::UnsupportedGrantType(format!(
+            "unsupported grant_type: {}",
+            req.grant_type
+        )));
+    }
+    // Only a registered public client, identified by `client_id` alone, may
+    // exchange a session token. Client credentials, an unknown client_id or a
+    // confidential client's id are refused.
+    let client_id = req
+        .public_client_id
+        .as_deref()
+        .filter(|id| policy.is_public_client(id))
+        .ok_or(ExchangeError::InvalidClient)?;
+    if req.subject_token_type.as_deref() != Some(TOKEN_TYPE_KRATOS_SESSION_TOKEN) {
+        return Err(ExchangeError::UnauthorizedClient(format!(
+            "a public client may only exchange a Kratos session token \
+             (subject_token_type={TOKEN_TYPE_KRATOS_SESSION_TOKEN})"
+        )));
+    }
+    if req.requested_subject.is_some() {
+        return Err(ExchangeError::UnauthorizedClient(
+            "a public client may not request tokens on behalf of a person".to_string(),
+        ));
+    }
+    if let Some(name) = req
+        .extra_fields
+        .keys()
+        .find(|name| policy.is_requestable_claim(name))
+    {
+        return Err(ExchangeError::UnauthorizedClient(format!(
+            "a public client may not request the {name:?} claim"
+        )));
+    }
+    if req
+        .actor_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Err(ExchangeError::UnsupportedActorToken);
+    }
+    if let Some(t) = req.requested_token_type.as_deref() {
+        if t != TOKEN_TYPE_ACCESS_TOKEN {
+            return Err(ExchangeError::InvalidRequest(format!(
+                "unsupported requested_token_type: {t}"
+            )));
+        }
+    }
+    if req.subject_token.trim().is_empty() {
+        return Err(ExchangeError::InvalidRequest(
+            "subject_token is required".to_string(),
+        ));
+    }
+    let audience = req
+        .resource
+        .as_deref()
+        .or(req.audience.as_deref())
+        .filter(|a| !a.trim().is_empty())
+        .ok_or_else(|| {
+            ExchangeError::InvalidRequest(
+                "a session-token exchange requires `audience` or `resource`".to_string(),
+            )
+        })?;
+    let permitted = &policy.clients[client_id].session_token_audiences;
+    if !permitted.iter().any(|a| a == audience) {
+        return Err(ExchangeError::InvalidTarget(format!(
+            "this client may not request tokens for audience {audience:?}"
+        )));
+    }
+    Ok((client_id, audience))
+}
+
+/// The Kratos session-token exchange for a public client: validate → verify
+/// the session with Kratos → mint a token for the allowed audience with
+/// `sub` = the Kratos identity (traits merged as for a browser session) and
+/// `act.sub` = the public client. The lifetime is the exchange TTL, shortened
+/// by `expires_in` and never past the Kratos session's own expiry. A Kratos
+/// rejection or outage is `401 invalid_grant`; no token is issued.
+async fn exchange_session_token(
+    req: &TokenExchangeRequest,
+    minter: &SharedJwtMinter,
+    delegated_ttl_seconds: Option<u64>,
+    policy: &ExchangePolicy,
+) -> Result<Value, ExchangeError> {
+    let deny = |reason: &'static str, e: ExchangeError| {
+        crate::metrics::record_local_exchange(reason);
+        e
+    };
+    let (client_id, audience) = validate_session_token_request(req, policy).map_err(|e| {
+        let reason = match e {
+            ExchangeError::InvalidRequest(_) | ExchangeError::UnsupportedActorToken => {
+                "deny_request"
+            }
+            _ => "deny_client",
+        };
+        deny(reason, e)
+    })?;
+    let requested_ttl =
+        parse_requested_ttl(req.expires_in.as_deref()).map_err(|e| deny("deny_request", e))?;
+    // A Kratos session carries no OAuth scopes: any requested scope is refused.
+    let granted = downscope(req.scope.as_deref(), &[]).map_err(|e| deny("deny_downscope", e))?;
+    let Some(verifier) = &policy.session_verifier else {
+        return Err(deny(
+            "mint_failed",
+            ExchangeError::MintFailed("no Kratos session-token verifier is configured".into()),
+        ));
+    };
+    let identity = verifier
+        .verify_session_token(&req.subject_token)
+        .await
+        .map_err(|e| {
+            tracing::warn!(client_id, error = %e, "session-token exchange: Kratos refused or unreachable");
+            deny(
+                "deny_verify",
+                ExchangeError::InvalidGrant("invalid, expired or unverifiable session".into()),
+            )
+        })?;
+
+    let mut additional =
+        build_delegated_claims(&identity, &granted, Some(audience), Some(client_id));
+    apply_exchange_claims(
+        &mut additional,
+        &identity,
+        policy.audiences.get(audience),
+        &Map::new(),
+    );
+
+    let guard = minter.read().await;
+    let Some(m) = guard.as_ref() else {
+        return Err(deny(
+            "mint_failed",
+            ExchangeError::MintFailed("JWT minter is not configured".to_string()),
+        ));
+    };
+    let base_ttl = delegated_ttl_seconds.unwrap_or_else(|| m.default_ttl_seconds());
+    let mut ttl = requested_ttl.map_or(base_ttl, |r| r.min(base_ttl));
+    if let Some(expires_at) = identity.session_expires_at {
+        let remaining = (expires_at - chrono::Utc::now()).num_seconds();
+        ttl = ttl.min(u64::try_from(remaining).unwrap_or(0));
+    }
+    if ttl == 0 {
+        return Err(deny(
+            "deny_verify",
+            ExchangeError::InvalidGrant("the Kratos session is about to expire".into()),
+        ));
+    }
+    let token = m
+        .mint(&identity, Some(&additional), Some(ttl))
+        .map_err(|e| deny("mint_failed", ExchangeError::MintFailed(e.to_string())))?;
+
+    tracing::info!(
+        target: "flint_gate::audit",
+        event = "token_exchange.session_token",
+        client_id,
+        sub = %identity.id,
+        aud = audience,
+        ttl_seconds = ttl,
+        "issued a token for a Kratos session"
+    );
     crate::metrics::record_local_exchange("success");
     Ok(token_exchange_response(token, &granted, ttl))
 }
@@ -1728,6 +2012,7 @@ mod policy_tests {
             ExchangeClientPolicy {
                 on_behalf_of_audiences: vec!["knowduet-gateway".into()],
                 requested_claims: vec![],
+                ..Default::default()
             },
         );
         p.clients.insert(
@@ -1735,6 +2020,7 @@ mod policy_tests {
             ExchangeClientPolicy {
                 on_behalf_of_audiences: vec![],
                 requested_claims: vec!["topics".into()],
+                ..Default::default()
             },
         );
         p.audiences.insert(
@@ -2231,5 +2517,477 @@ mod policy_tests {
         let shown = format!("{c:?}");
         assert!(shown.contains("svc"));
         assert!(!shown.contains("s3cret"));
+    }
+}
+
+#[cfg(test)]
+mod session_token_tests {
+    //! Kratos session-token exchange for public clients, against a stub Kratos.
+    use super::*;
+    use crate::auth::jwt_mint::JwtMinter;
+    use crate::auth::kratos::KratosAuthenticator;
+    use crate::config::types::{JwtConfig, KratosAuthConfig};
+    use base64::Engine;
+    use tokio::sync::RwLock;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const DESKTOP: &str = "knowduet-desktop";
+
+    fn kratos(base_url: &str) -> Arc<dyn SessionTokenVerifier> {
+        Arc::new(KratosAuthenticator::new(
+            KratosAuthConfig {
+                base_url: base_url.to_string(),
+                issuer: None,
+                forward_cookies: true,
+                session_cookie: "ory_kratos_session".to_string(),
+            },
+            reqwest::Client::new(),
+        ))
+    }
+
+    /// Kratos answering `whoami` for `X-Session-Token: good-token`.
+    async fn kratos_with_session(expires_at: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/sessions/whoami"))
+            .and(header("x-session-token", "good-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "session-1",
+                "active": true,
+                "expires_at": expires_at,
+                "identity": {
+                    "id": "identity-7",
+                    "traits": { "email": "person@example.test" },
+                    "metadata_public": { "tenant_id": "tenant-a", "flint_kind": "service" }
+                }
+            })))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/sessions/whoami"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn policy(session_verifier: Arc<dyn SessionTokenVerifier>) -> ExchangePolicy {
+        let mut p = ExchangePolicy {
+            session_verifier: Some(session_verifier),
+            ..Default::default()
+        };
+        p.clients.insert(
+            DESKTOP.into(),
+            ExchangeClientPolicy {
+                public: true,
+                session_token_audiences: vec!["knowduet-gateway".into(), "openbot-server".into()],
+                ..Default::default()
+            },
+        );
+        p.clients.insert(
+            "openbot-server".into(),
+            ExchangeClientPolicy {
+                on_behalf_of_audiences: vec!["knowduet-gateway".into()],
+                requested_claims: vec!["topics".into()],
+                ..Default::default()
+            },
+        );
+        p.audiences.insert(
+            "openbot-server".into(),
+            ExchangeAudiencePolicy {
+                copy_claims: vec!["tenant_id".into()],
+                ..Default::default()
+            },
+        );
+        p
+    }
+
+    async fn minter() -> SharedJwtMinter {
+        let cfg = JwtConfig {
+            signing_algorithm: "HS256".into(),
+            signing_key_secret: Some("test-secret-key-minimum-length".into()),
+            issuer: "flint-gate".into(),
+            default_ttl_seconds: 300,
+            ..Default::default()
+        };
+        Arc::new(RwLock::new(Some(
+            JwtMinter::from_config(&cfg).await.unwrap(),
+        )))
+    }
+
+    /// A subject-token verifier that must never be reached on this path.
+    struct NeverVerifier;
+
+    #[async_trait::async_trait]
+    impl Authenticator for NeverVerifier {
+        async fn authenticate(
+            &self,
+            _parts: &http::request::Parts,
+        ) -> Result<crate::auth::AuthResult, AuthError> {
+            panic!("the JWT subject-token verifier must not run for a public client")
+        }
+    }
+
+    fn session_req(token: &str, audience: &str) -> TokenExchangeRequest {
+        TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: token.into(),
+            subject_token_type: Some(TOKEN_TYPE_KRATOS_SESSION_TOKEN.into()),
+            audience: Some(audience.into()),
+            public_client_id: Some(DESKTOP.into()),
+            ..Default::default()
+        }
+    }
+
+    async fn run(req: &TokenExchangeRequest, p: &ExchangePolicy) -> Result<Value, ExchangeError> {
+        let verifier: Arc<dyn Authenticator> = Arc::new(NeverVerifier);
+        exchange_with_policy(req, &verifier, &minter().await, None, None, p).await
+    }
+
+    fn claims(resp: &Value) -> Value {
+        let token = resp["access_token"].as_str().unwrap();
+        let payload = token.split('.').nth(1).unwrap();
+        serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn valid_session_yields_a_token_for_the_person() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let p = policy(kratos(&server.uri()));
+
+        let first = run(&session_req("good-token", "knowduet-gateway"), &p)
+            .await
+            .expect("valid session");
+        let second = run(&session_req("good-token", "knowduet-gateway"), &p)
+            .await
+            .expect("valid session");
+
+        let c = claims(&first);
+        assert_eq!(c["sub"], "identity-7");
+        assert_eq!(c["aud"], "knowduet-gateway");
+        assert_eq!(c["act"]["sub"], DESKTOP);
+        assert_eq!(c["email"], "person@example.test");
+        assert_eq!(c["iss"], "flint-gate");
+        assert_eq!(c["exp"].as_i64().unwrap() - c["iat"].as_i64().unwrap(), 300);
+        assert_eq!(first["expires_in"], 300);
+        assert_eq!(first["issued_token_type"], TOKEN_TYPE_ACCESS_TOKEN);
+        assert!(c["jti"].as_str().is_some_and(|j| !j.is_empty()));
+        assert_ne!(
+            c["jti"],
+            claims(&second)["jti"],
+            "every token has a fresh jti"
+        );
+        // Untrusted Kratos metadata cannot set the gateway's kind marker.
+        assert_eq!(c["flint_kind"], "agent");
+    }
+
+    #[tokio::test]
+    async fn audience_policy_applies_to_session_tokens() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let resp = run(
+            &session_req("good-token", "openbot-server"),
+            &policy(kratos(&server.uri())),
+        )
+        .await
+        .unwrap();
+        let c = claims(&resp);
+        assert_eq!(c["aud"], "openbot-server");
+        assert_eq!(c["tenant_id"], "tenant-a");
+    }
+
+    #[tokio::test]
+    async fn fixed_audience_tenant_and_identity_email_are_on_the_token() {
+        // OpenDuet: Hono needs `email`; tenant_id is a fixed per-audience claim.
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let mut p = policy(kratos(&server.uri()));
+        p.audiences.get_mut("openbot-server").unwrap().claims =
+            json!({ "tenant_id": "deployment-tenant" })
+                .as_object()
+                .unwrap()
+                .clone();
+        let resp = run(&session_req("good-token", "openbot-server"), &p)
+            .await
+            .unwrap();
+        let c = claims(&resp);
+        assert_eq!(c["sub"], "identity-7");
+        assert_eq!(c["email"], "person@example.test");
+        // Fixed claim wins over the copied subject claim (same precedence as f9fa42f).
+        assert_eq!(c["tenant_id"], "deployment-tenant");
+    }
+
+    #[tokio::test]
+    async fn expires_in_shortens_and_the_session_expiry_caps_the_lifetime() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let mut r = session_req("good-token", "knowduet-gateway");
+        r.expires_in = Some("60".into());
+        let resp = run(&r, &policy(kratos(&server.uri()))).await.unwrap();
+        assert_eq!(resp["expires_in"], 60);
+
+        let soon = (chrono::Utc::now() + chrono::Duration::seconds(90)).to_rfc3339();
+        let server = kratos_with_session(&soon).await;
+        let resp = run(
+            &session_req("good-token", "knowduet-gateway"),
+            &policy(kratos(&server.uri())),
+        )
+        .await
+        .unwrap();
+        let ttl = resp["expires_in"].as_u64().unwrap();
+        assert!(
+            (80..=90).contains(&ttl),
+            "ttl {ttl} must not outlive the session"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_session_is_401_invalid_grant() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let err = run(
+            &session_req("wrong-token", "knowduet-gateway"),
+            &policy(kratos(&server.uri())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.oauth_code(), "invalid_grant");
+        assert_eq!(err.http_status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn expired_session_is_401_invalid_grant() {
+        let server = kratos_with_session("2000-01-01T00:00:00Z").await;
+        let err = run(
+            &session_req("good-token", "knowduet-gateway"),
+            &policy(kratos(&server.uri())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.oauth_code(), "invalid_grant");
+        assert_eq!(err.http_status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn unreachable_kratos_is_401_invalid_grant() {
+        // Nothing listens on port 1 (wiremock pools dropped servers, so a
+        // dropped MockServer's address may still answer).
+        let uri = "http://127.0.0.1:1";
+        let err = run(
+            &session_req("good-token", "knowduet-gateway"),
+            &policy(kratos(uri)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.oauth_code(), "invalid_grant");
+        assert_eq!(err.http_status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn audience_outside_the_allow_list_is_invalid_target_without_calling_kratos() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let err = run(
+            &session_req("good-token", "flint-forge"),
+            &policy(kratos(&server.uri())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.oauth_code(), "invalid_target");
+    }
+
+    #[tokio::test]
+    async fn missing_audience_is_invalid_request() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let mut r = session_req("good-token", "knowduet-gateway");
+        r.audience = None;
+        let err = run(&r, &policy(kratos(&server.uri()))).await.unwrap_err();
+        assert_eq!(err.oauth_code(), "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn unknown_or_confidential_or_missing_client_id_is_invalid_client() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let p = policy(kratos(&server.uri()));
+        for client in [Some("evil-desktop"), Some("openbot-server"), None] {
+            let mut r = session_req("good-token", "knowduet-gateway");
+            r.public_client_id = client.map(str::to_string);
+            let err = run(&r, &p).await.unwrap_err();
+            assert_eq!(err, ExchangeError::InvalidClient, "{client:?}");
+            assert_eq!(err.http_status(), http::StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    #[tokio::test]
+    async fn public_client_may_not_present_a_secret() {
+        let mut p = policy(kratos("http://127.0.0.1:9"));
+        p.client_verifier = Some(Arc::new(AnySecret));
+        let mut r = session_req("good-token", "knowduet-gateway");
+        r.public_client_id = None;
+        r.client_credentials = Some(ClientCredentials {
+            client_id: DESKTOP.into(),
+            client_secret: "leaked".into(),
+        });
+        assert_eq!(run(&r, &p).await.unwrap_err(), ExchangeError::InvalidClient);
+
+        // Nor on the plain JWT exchange.
+        let mut r = r;
+        r.subject_token_type = Some(TOKEN_TYPE_ACCESS_TOKEN.into());
+        assert_eq!(run(&r, &p).await.unwrap_err(), ExchangeError::InvalidClient);
+    }
+
+    /// A client store that accepts any secret, to prove the public-client
+    /// refusal does not depend on the store.
+    struct AnySecret;
+
+    #[async_trait::async_trait]
+    impl ClientVerifier for AnySecret {
+        async fn verify(
+            &self,
+            client_id: &str,
+            _client_secret: &str,
+        ) -> anyhow::Result<Option<VerifiedClient>> {
+            Ok(Some(VerifiedClient {
+                client_id: client_id.into(),
+                scopes: vec![],
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn public_client_may_not_use_any_other_exchange() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let p = policy(kratos(&server.uri()));
+
+        // On-behalf-of.
+        let r = TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            requested_subject: Some("someone-else".into()),
+            audience: Some("knowduet-gateway".into()),
+            public_client_id: Some(DESKTOP.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            run(&r, &p).await.unwrap_err().oauth_code(),
+            "unauthorized_client"
+        );
+
+        // On-behalf-of alongside a session token.
+        let mut r = session_req("good-token", "knowduet-gateway");
+        r.requested_subject = Some("someone-else".into());
+        assert_eq!(
+            run(&r, &p).await.unwrap_err().oauth_code(),
+            "unauthorized_client"
+        );
+
+        // A JWT subject token.
+        let mut r = session_req("a.b.c", "knowduet-gateway");
+        r.subject_token_type = Some(TOKEN_TYPE_ACCESS_TOKEN.into());
+        assert_eq!(
+            run(&r, &p).await.unwrap_err().oauth_code(),
+            "unauthorized_client"
+        );
+
+        // Requested claims.
+        let mut r = session_req("good-token", "knowduet-gateway");
+        r.extra_fields.insert("topics".into(), "[\"x\"]".into());
+        assert_eq!(
+            run(&r, &p).await.unwrap_err().oauth_code(),
+            "unauthorized_client"
+        );
+
+        // Scope (a Kratos session carries none).
+        let mut r = session_req("good-token", "knowduet-gateway");
+        r.scope = Some("admin".into());
+        assert_eq!(run(&r, &p).await.unwrap_err().oauth_code(), "invalid_scope");
+    }
+
+    #[tokio::test]
+    async fn session_token_is_never_relayed_to_a_hydra_delegate() {
+        let hydra = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(0)
+            .mount(&hydra)
+            .await;
+        let delegate = HydraDelegate {
+            http_client: reqwest::Client::new(),
+            token_url: format!("{}/oauth2/token", hydra.uri()),
+        };
+        let verifier: Arc<dyn Authenticator> = Arc::new(NeverVerifier);
+        let err = exchange_with_policy(
+            &session_req("good-token", "knowduet-gateway"),
+            &verifier,
+            &minter().await,
+            None,
+            Some(&delegate),
+            &ExchangePolicy::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, ExchangeError::InvalidClient);
+    }
+
+    // ── Startup policy validation ──────────────────────────────────────────
+
+    fn cfg(client: ExchangeClientPolicy, provider: Option<&str>) -> TokenExchangeConfig {
+        TokenExchangeConfig {
+            clients: [(DESKTOP.to_string(), client)].into_iter().collect(),
+            session_token_provider: provider.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn desktop() -> ExchangeClientPolicy {
+        ExchangeClientPolicy {
+            public: true,
+            session_token_audiences: vec!["knowduet-gateway".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn policy_validation_accepts_a_public_session_client() {
+        assert!(validate_exchange_policy(&cfg(desktop(), Some("kratos"))).is_ok());
+    }
+
+    #[test]
+    fn policy_validation_refuses_mixed_public_policy() {
+        let mut obo = desktop();
+        obo.on_behalf_of_audiences = vec!["knowduet-gateway".into()];
+        let mut claims = desktop();
+        claims.requested_claims = vec!["topics".into()];
+        let mut none = desktop();
+        none.session_token_audiences.clear();
+        let mut blank = desktop();
+        blank.session_token_audiences = vec![" ".into()];
+        let confidential = ExchangeClientPolicy {
+            session_token_audiences: vec!["knowduet-gateway".into()],
+            ..Default::default()
+        };
+        for (label, client) in [
+            ("on_behalf_of", obo),
+            ("requested_claims", claims),
+            ("no audiences", none),
+            ("blank audience", blank),
+            ("confidential with session audiences", confidential),
+        ] {
+            assert!(
+                validate_exchange_policy(&cfg(client, Some("kratos"))).is_err(),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_validation_requires_a_session_token_provider() {
+        assert!(validate_exchange_policy(&cfg(desktop(), None)).is_err());
     }
 }

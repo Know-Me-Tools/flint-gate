@@ -180,6 +180,22 @@ token_exchange:
   #   # claim (JSON when it parses, else a string). Other callers are refused.
   #   knowduet-gateway:
   #     requested_claims: ["topics"]
+  #   # Public client (native desktop app): no secret, no oauth_clients row.
+  #   # POST grant_type=<token-exchange>, client_id=knowduet-desktop (no secret,
+  #   # no HTTP Basic), subject_token=<Kratos session token>,
+  #   # subject_token_type=urn:ory:kratos:session-token, audience=<one of these>.
+  #   # The gate calls Kratos /sessions/whoami with X-Session-Token and issues
+  #   # sub=<Kratos identity id> (traits merged, as for a browser session),
+  #   # aud=<audience>, act.sub=knowduet-desktop, a fresh jti, and a lifetime
+  #   # never past the Kratos session's expiry. Invalid/expired session or Kratos
+  #   # unreachable: 401 invalid_grant. A public client may do nothing else
+  #   # (on-behalf-of, requested claims, JWT exchange, client_credentials are
+  #   # refused); mixing them into its entry is refused at startup.
+  #   knowduet-desktop:
+  #     public: true
+  #     session_token_audiences: ["knowduet-gateway", "openbot-server"]
+  # # Required when any client is public: a `kratos` auth_providers entry.
+  # session_token_provider: kratos
   # audiences:
   #   # Claims for every exchanged token issued with aud=flint-forge.
   #   flint-forge:

@@ -441,6 +441,11 @@ pub struct TokenExchangeConfig {
     /// the issued token's `aud`. Local minting only.
     #[serde(default)]
     pub audiences: HashMap<String, ExchangeAudiencePolicy>,
+    /// Name of the `auth_providers` entry (type `kratos`) that verifies Kratos
+    /// session tokens for public clients (`subject_token_type` =
+    /// `urn:ory:kratos:session-token`). Required when any client is `public`.
+    #[serde(default)]
+    pub session_token_provider: Option<String>,
 }
 
 /// What one authenticated client may do on the token-exchange grant.
@@ -461,6 +466,18 @@ pub struct ExchangeClientPolicy {
     /// refused.
     #[serde(default)]
     pub requested_claims: Vec<String>,
+    /// A public client (for example a native desktop app) holds no secret and
+    /// has no `oauth_clients` row. It identifies itself with the `client_id`
+    /// form field alone and may use only the Kratos session-token exchange,
+    /// for the audiences in `session_token_audiences`. A public client with
+    /// `on_behalf_of_audiences` or `requested_claims` is refused at startup.
+    #[serde(default)]
+    pub public: bool,
+    /// Audiences a public client may obtain a token for by presenting a Kratos
+    /// session token. The issued token has `sub` = the Kratos identity and
+    /// `act.sub` = this client. Only valid with `public: true`.
+    #[serde(default)]
+    pub session_token_audiences: Vec<String>,
 }
 
 /// Claims set on every locally minted exchanged token for one audience.

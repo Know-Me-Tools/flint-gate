@@ -774,7 +774,9 @@ async fn main() -> Result<()> {
         use flint_gate_core::auth::oauth::{IntrospectionState, OAuthState};
         use flint_gate_core::auth::token_exchange::{
             validate_exchange_policy, validate_subject_provider, ClientVerifier, ExchangePolicy,
+            SessionTokenVerifier,
         };
+        use flint_gate_core::config::types::AuthProviderConfig;
         use flint_gate_core::config::types::OAuthExposurePosture;
 
         // Exposure gate: refuse to start with an under-guarded /oauth/* surface
@@ -864,17 +866,40 @@ async fn main() -> Result<()> {
                 anyhow::bail!("refusing to enable token exchange: {reason}");
             }
             // Client authentication on the exchange verifies against the
-            // oauth_clients store. Per-client policy is unusable without it.
-            if !tx_cfg.clients.is_empty() && db.is_none() {
+            // oauth_clients store. Confidential-client policy is unusable
+            // without it; public clients have no secret and no row.
+            if tx_cfg.clients.values().any(|c| !c.public) && db.is_none() {
                 anyhow::bail!(
-                    "token_exchange.clients is set but no database is configured \
-                     (the client store lives in Postgres)"
+                    "token_exchange.clients has a confidential client but no database is \
+                     configured (the client store lives in Postgres)"
                 );
             }
             let mut policy = ExchangePolicy::from_config(tx_cfg);
             policy.client_verifier = db
                 .clone()
                 .map(|database| database as Arc<dyn ClientVerifier>);
+            // Kratos session-token exchange for public clients: the named
+            // provider must be a `kratos` auth provider.
+            if let Some(name) = tx_cfg.session_token_provider.as_deref() {
+                let Some(AuthProviderConfig::Kratos(kratos_cfg)) =
+                    initial_config.auth_providers.get(name)
+                else {
+                    anyhow::bail!(
+                        "refusing to enable token exchange: session_token_provider {name:?} \
+                         is not a configured `kratos` auth provider"
+                    );
+                };
+                policy.session_verifier = Some(Arc::new(
+                    flint_gate_core::auth::kratos::KratosAuthenticator::new(
+                        kratos_cfg.clone(),
+                        http_client.clone(),
+                    ),
+                ) as Arc<dyn SessionTokenVerifier>);
+                info!(
+                    provider = name,
+                    "token exchange accepts Kratos session tokens from public clients"
+                );
+            }
             if !tx_cfg.clients.is_empty() {
                 info!(
                     clients = tx_cfg.clients.len(),

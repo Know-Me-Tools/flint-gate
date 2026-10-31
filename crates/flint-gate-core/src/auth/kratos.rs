@@ -197,10 +197,7 @@ impl Authenticator for KratosAuthenticator {
             self.config.forward_cookies,
             self.config.session_cookie.as_str(),
         )?;
-        let mut req = self.client.get(format!(
-            "{}/sessions/whoami",
-            self.config.base_url.trim_end_matches('/')
-        ));
+        let mut req = self.whoami_request();
 
         match credential.kind {
             KratosCredentialKind::Authorization => {
@@ -211,6 +208,46 @@ impl Authenticator for KratosAuthenticator {
             }
         }
 
+        self.whoami(req).await
+    }
+
+    fn kratos_cache_context(&self) -> Option<&KratosCacheContext> {
+        self.cache_context.as_ref()
+    }
+}
+
+/// Header carrying a native-app Kratos session token on `/sessions/whoami`.
+pub const SESSION_TOKEN_HEADER: &str = "x-session-token";
+
+impl KratosAuthenticator {
+    /// Verify a Kratos session token (the native login flow's
+    /// `session_token`) by calling `/sessions/whoami` with `X-Session-Token`.
+    /// The result is the same [`Identity`] a browser session yields.
+    pub async fn authenticate_session_token(
+        &self,
+        session_token: &str,
+    ) -> Result<AuthResult, AuthError> {
+        if session_token.trim().is_empty() {
+            return Err(AuthError::Unauthorized(
+                "Kratos session token is blank".to_string(),
+            ));
+        }
+        let value = HeaderValue::from_str(session_token).map_err(|_| {
+            AuthError::Unauthorized("Kratos session token is malformed".to_string())
+        })?;
+        self.whoami(self.whoami_request().header(SESSION_TOKEN_HEADER, value))
+            .await
+    }
+
+    fn whoami_request(&self) -> reqwest::RequestBuilder {
+        self.client.get(format!(
+            "{}/sessions/whoami",
+            self.config.base_url.trim_end_matches('/')
+        ))
+    }
+
+    /// Send a prepared `/sessions/whoami` request and map the session.
+    async fn whoami(&self, req: reqwest::RequestBuilder) -> Result<AuthResult, AuthError> {
         let response = req.send().await.map_err(|e| {
             tracing::warn!(error = %e, "Kratos request failed");
             AuthError::ProviderError(format!("Kratos unreachable: {e}"))
@@ -276,10 +313,6 @@ impl Authenticator for KratosAuthenticator {
             identity,
             method: crate::auth::AuthMethod::KratosSession,
         })
-    }
-
-    fn kratos_cache_context(&self) -> Option<&KratosCacheContext> {
-        self.cache_context.as_ref()
     }
 }
 
@@ -454,5 +487,52 @@ mod tests {
         let result = auth.authenticate(&empty_parts()).await;
 
         assert!(matches!(result, Err(AuthError::ProviderError(_))));
+    }
+
+    #[tokio::test]
+    async fn session_token_is_sent_as_x_session_token() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/sessions/whoami"))
+            .and(wiremock::matchers::header(
+                "x-session-token",
+                "native-token",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "session-1",
+                    "active": true,
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "identity": { "id": "identity-1", "traits": { "email": "a@b.test" } }
+                })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let auth = KratosAuthenticator::new(default_config(&server.uri()), reqwest::Client::new());
+
+        let result = auth
+            .authenticate_session_token("native-token")
+            .await
+            .expect("valid session token");
+
+        assert_eq!(result.identity.id, "identity-1");
+        assert_eq!(result.identity.session_id.as_deref(), Some("session-1"));
+        assert_eq!(result.identity.email(), Some("a@b.test"));
+    }
+
+    #[tokio::test]
+    async fn blank_session_token_never_reaches_kratos() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let auth = KratosAuthenticator::new(default_config(&server.uri()), reqwest::Client::new());
+
+        let result = auth.authenticate_session_token("  ").await;
+
+        assert!(matches!(result, Err(AuthError::Unauthorized(_))));
     }
 }

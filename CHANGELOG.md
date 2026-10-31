@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     session, or Kratos unreachable, is `401 invalid_grant`. A public client is
     refused every other grant and capability; a public entry that also lists
     `on_behalf_of_audiences` or `requested_claims` is refused at startup.
+    A token issued to a public client (its `act.sub` names a `public: true`
+    client) cannot be presented as `subject_token` to any further exchange:
+    it is refused with `400 invalid_request` before minting, and the refusal
+    is logged on `flint_gate::audit` without the token.
 
 ## [0.1.0-beta] - 2026-07-09
 

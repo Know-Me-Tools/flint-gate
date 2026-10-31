@@ -1100,6 +1100,22 @@ pub async fn exchange_with_policy(
         let subject = verify_subject_token(verifier, &req.subject_token)
             .await
             .map_err(|e| deny("deny_verify", e))?;
+        if let Some(public_actor) = public_client_actor(&subject.identity, policy) {
+            tracing::warn!(
+                target: "flint_gate::audit",
+                event = "token_exchange.public_subject_refused",
+                act_sub = public_actor,
+                sub = %subject.identity.id,
+                client_id = client.as_ref().map(|c| c.client_id.as_str()).unwrap_or_default(),
+                "refused a subject token minted for a public client"
+            );
+            return Err(deny(
+                "deny_verify",
+                ExchangeError::InvalidSubjectToken(
+                    "a token issued to a public client cannot be exchanged".to_string(),
+                ),
+            ));
+        }
         let granted = downscope(req.scope.as_deref(), &subject.scopes)
             .map_err(|e| deny("deny_downscope", e))?;
         // RFC 8707: prefer `resource`, then `audience`, as the issued token's `aud`.
@@ -1144,6 +1160,17 @@ pub async fn exchange_with_policy(
     }
     crate::metrics::record_local_exchange("success");
     Ok(token_exchange_response(token, &granted, ttl))
+}
+
+/// The `act.sub` of a verified subject token when it names a configured public
+/// client: the token came from the session-token exchange and is terminal. It
+/// may not be exchanged again, which would re-issue it with a confidential
+/// client or the subject itself as the actor and erase the public origin. Pure.
+fn public_client_actor<'a>(subject: &'a Identity, policy: &ExchangePolicy) -> Option<&'a str> {
+    subject_claim(subject, "act")
+        .and_then(|act| act.get("sub"))
+        .and_then(Value::as_str)
+        .filter(|sub| policy.is_public_client(sub))
 }
 
 /// Validate a session-token exchange and resolve its public client and
@@ -2907,6 +2934,125 @@ mod session_token_tests {
         let mut r = session_req("good-token", "knowduet-gateway");
         r.scope = Some("admin".into());
         assert_eq!(run(&r, &p).await.unwrap_err().oauth_code(), "invalid_scope");
+    }
+
+    /// Verifies tokens this test minter issued, as the gateway's own `jwt`
+    /// subject-token provider would: `sub` is the identity, profile claims are
+    /// traits and the rest (including `act`) is metadata.
+    struct MintedTokenVerifier;
+
+    #[async_trait::async_trait]
+    impl Authenticator for MintedTokenVerifier {
+        async fn authenticate(
+            &self,
+            parts: &http::request::Parts,
+        ) -> Result<crate::auth::AuthResult, AuthError> {
+            let bearer = parts.headers[http::header::AUTHORIZATION]
+                .to_str()
+                .unwrap()
+                .trim_start_matches("Bearer ");
+            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+            validation.validate_aud = false;
+            let mut claims = jsonwebtoken::decode::<Map<String, Value>>(
+                bearer,
+                &jsonwebtoken::DecodingKey::from_secret(b"test-secret-key-minimum-length"),
+                &validation,
+            )
+            .map_err(|e| AuthError::Unauthorized(e.to_string()))?
+            .claims;
+            let id = claims.remove("sub").unwrap().as_str().unwrap().to_string();
+            let mut traits = Map::new();
+            if let Some(email) = claims.remove("email") {
+                traits.insert("email".into(), email);
+            }
+            Ok(crate::auth::AuthResult {
+                identity: Identity {
+                    id,
+                    traits: Value::Object(traits),
+                    metadata_public: Value::Object(claims),
+                    ..Default::default()
+                },
+                method: crate::auth::AuthMethod::BearerJwt,
+            })
+        }
+    }
+
+    async fn run_verified(
+        req: &TokenExchangeRequest,
+        p: &ExchangePolicy,
+    ) -> Result<Value, ExchangeError> {
+        let verifier: Arc<dyn Authenticator> = Arc::new(MintedTokenVerifier);
+        exchange_with_policy(req, &verifier, &minter().await, None, None, p).await
+    }
+
+    /// The plain RFC 8693 exchange of `subject_token` for `audience`.
+    fn plain_req(subject_token: &str, audience: &str) -> TokenExchangeRequest {
+        TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: subject_token.into(),
+            subject_token_type: Some(TOKEN_TYPE_ACCESS_TOKEN.into()),
+            audience: Some(audience.into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_public_session_token_cannot_be_exchanged_again() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let mut p = policy(kratos(&server.uri()));
+        p.client_verifier = Some(Arc::new(AnySecret));
+
+        // The direct session-token exchange still issues the token.
+        let minted = run_verified(&session_req("good-token", "knowduet-gateway"), &p)
+            .await
+            .expect("the public client's own session exchange works");
+        let minted = minted["access_token"].as_str().unwrap();
+
+        // Re-presented as a subject token, without and with a confidential
+        // client: refused before minting.
+        let anonymous = plain_req(minted, "flint-forge");
+        let mut confidential = plain_req(minted, "flint-forge");
+        confidential.client_credentials = Some(ClientCredentials {
+            client_id: "openbot-server".into(),
+            client_secret: "pw".into(),
+        });
+        for r in [anonymous, confidential] {
+            let err = run_verified(&r, &p).await.unwrap_err();
+            assert!(
+                matches!(err, ExchangeError::InvalidSubjectToken(_)),
+                "{err:?}"
+            );
+            assert_eq!(err.oauth_code(), "invalid_request");
+            assert_eq!(err.http_status(), http::StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_confidential_on_behalf_of_token_is_still_exchangeable() {
+        let mut p = policy(kratos("http://127.0.0.1:9"));
+        p.client_verifier = Some(Arc::new(AnySecret));
+        let obo = TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            requested_subject: Some("user-9".into()),
+            audience: Some("knowduet-gateway".into()),
+            client_credentials: Some(ClientCredentials {
+                client_id: "openbot-server".into(),
+                client_secret: "pw".into(),
+            }),
+            ..Default::default()
+        };
+        let minted = run_verified(&obo, &p).await.expect("on-behalf-of");
+        assert_eq!(claims(&minted)["act"]["sub"], "openbot-server");
+
+        let resp = run_verified(
+            &plain_req(minted["access_token"].as_str().unwrap(), "flint-forge"),
+            &p,
+        )
+        .await
+        .expect("a confidential client's token keeps its current behaviour");
+        let c = claims(&resp);
+        assert_eq!(c["sub"], "user-9");
+        assert_eq!(c["aud"], "flint-forge");
     }
 
     #[tokio::test]

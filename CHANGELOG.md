@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-27
+
+### Added
+
+- `token_exchange.require_configured_audience` (opt-in, default `false`).
+  When `true`, gateway-local token exchange mints only for audiences that are
+  keys of `token_exchange.audiences`, on every local path (subject token via
+  `audience` or `resource`, on-behalf-of, Kratos session token). A request
+  that names no audience, or an audience without an entry, is refused with
+  `400 invalid_target` and no token is minted. The check runs before an
+  audience's `allowed_clients` and `required_claims`, which are unchanged.
+  Refused at startup with an empty `audiences` map or together with
+  `delegate_to_hydra`.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

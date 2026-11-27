@@ -215,6 +215,15 @@ token_exchange:
   #     # (not in copy_claims or claims, and not in the requested_claims of a
   #     # client that may reach this audience).
   #     required_claims: ["tenant_id"]
+  # Mint only for the audiences listed above. Default false: an audience with
+  # no entry, and a request with no audience, are minted as before. When true,
+  # every locally minted exchange (subject token via `audience` or `resource`,
+  # on-behalf-of, Kratos session token) must name a key of `audiences`;
+  # otherwise 400 invalid_target and no token. An audience that needs no claim
+  # policy still needs an entry (`my-audience: {}`), including every
+  # on_behalf_of_audiences and session_token_audiences value. Refused at
+  # startup with an empty `audiences` map or with delegate_to_hydra.
+  # require_configured_audience: false
   # A request may also send `expires_in=<seconds>` to SHORTEN the issued
   # lifetime (never lengthen it). The response always carries `expires_in`.
   # NOTE: an `actor_token` (multi-hop delegation) is rejected (400 invalid_request)

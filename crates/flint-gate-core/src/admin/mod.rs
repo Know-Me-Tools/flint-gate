@@ -127,7 +127,7 @@ pub fn admin_router_with_auth(
     #[openapi(
         info(
             title = "Flint Gate Admin API",
-            version = "0.1.0",
+            version = "0.2.0",
             description = "Admin API for Flint Gate — AI-native auth proxy and API gateway",
             license(name = "MIT"),
         ),

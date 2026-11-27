@@ -184,6 +184,20 @@ mod tests {
     }
 
     #[test]
+    fn falls_back_to_the_peer_address_when_the_server_supplies_it() {
+        // No credential and no forwarding header: the connection's peer address
+        // (attached by `into_make_service_with_connect_info`) is the key.
+        let peer: std::net::SocketAddr = "198.51.100.7:40000".parse().unwrap();
+        let mut req = http::Request::builder().body(()).unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        assert_eq!(
+            CredentialKeyExtractor.extract(&req).unwrap(),
+            RateLimitKey::Ip(peer.ip())
+        );
+    }
+
+    #[test]
     fn build_config_rejects_never_degenerate() {
         // per_second/burst are floored to 1, so a config is always produced.
         assert!(build_governor_config(0, 0).is_some());

@@ -72,13 +72,22 @@ impl Authenticator for JwtVerifyAuthenticator {
         let mut validation = Validation::new(header.alg);
         validation.leeway = self.config.leeway_seconds;
 
+        // jsonwebtoken compares `iss`/`aud` only when the token carries them,
+        // so a pinned claim is also made required: a token that omits it is
+        // refused instead of passing the pin unchecked.
+        let mut required = vec!["exp"];
         if let Some(iss) = &self.config.issuer {
             validation.set_issuer(&[iss.as_str()]);
+            required.push("iss");
         }
         match &self.config.audience {
-            Some(aud) => validation.set_audience(&[aud.as_str()]),
+            Some(aud) => {
+                validation.set_audience(&[aud.as_str()]);
+                required.push("aud");
+            }
             None => validation.validate_aud = false,
         }
+        validation.set_required_spec_claims(&required);
 
         // ── Verify signature + claims ──────────────────────────────────────
         let token_data = decode::<RawClaims>(token, &decoding_key, &validation)
@@ -251,5 +260,135 @@ mod tests {
             .await;
         // Either ProviderError (JWKS fetch failed) or Unauthorized (decode error)
         assert!(result.is_err());
+    }
+
+    // ── Pinned issuer / audience must be present on the token ─────────────
+
+    const ISSUER: &str = "https://issuer.example";
+    const AUDIENCE: &str = "console";
+
+    /// An issuer: a fresh ES256 key, and a mock server publishing its JWKS.
+    struct TestIssuer {
+        key: jsonwebtoken::EncodingKey,
+        server: wiremock::MockServer,
+    }
+
+    impl TestIssuer {
+        async fn start() -> Self {
+            use p256::pkcs8::{EncodePrivateKey, EncodePublicKey};
+            let private = p256::SecretKey::random(&mut rand::thread_rng());
+            let private_pem = private.to_pkcs8_pem(Default::default()).unwrap();
+            let public = crate::db::JwtSigningKeyPublic {
+                id: "k1".to_string(),
+                algorithm: "ES256".to_string(),
+                public_key: private
+                    .public_key()
+                    .to_public_key_pem(Default::default())
+                    .unwrap(),
+                active: true,
+                created_at: chrono::Utc::now(),
+            };
+            let jwks = crate::auth::jwks_publish::build_jwks(&[public]).unwrap();
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::path("/jwks"))
+                .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(jwks))
+                .mount(&server)
+                .await;
+            Self {
+                key: jsonwebtoken::EncodingKey::from_ec_pem(private_pem.as_bytes()).unwrap(),
+                server,
+            }
+        }
+
+        /// A validly signed, unexpired token with exactly these extra claims.
+        fn token(&self, extra: Value) -> String {
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+            header.kid = Some("k1".to_string());
+            let mut claims = serde_json::json!({ "sub": "user-1", "exp": 4_102_444_800_u64 });
+            for (k, v) in extra.as_object().unwrap() {
+                claims[k] = v.clone();
+            }
+            jsonwebtoken::encode(&header, &claims, &self.key).unwrap()
+        }
+
+        async fn verify(
+            &self,
+            issuer: Option<&str>,
+            audience: Option<&str>,
+            token: &str,
+        ) -> Result<AuthResult, AuthError> {
+            let config = JwtAuthConfig {
+                jwks_url: format!("{}/jwks", self.server.uri()),
+                issuer: issuer.map(str::to_string),
+                audience: audience.map(str::to_string),
+                leeway_seconds: 5,
+            };
+            JwtVerifyAuthenticator::new(config, reqwest::Client::new())
+                .authenticate(&parts_with_bearer(token))
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_audience_refuses_a_token_without_aud() {
+        let idp = TestIssuer::start().await;
+        let pinned = (Some(ISSUER), Some(AUDIENCE));
+        let no_aud = idp.token(serde_json::json!({ "iss": ISSUER }));
+        let result = idp.verify(pinned.0, pinned.1, &no_aud).await;
+        assert!(
+            matches!(result, Err(AuthError::Unauthorized(_))),
+            "{result:?}"
+        );
+        // An empty audience list is not the pinned audience either.
+        let empty_aud = idp.token(serde_json::json!({ "iss": ISSUER, "aud": [] }));
+        assert!(idp.verify(pinned.0, pinned.1, &empty_aud).await.is_err());
+        let wrong_aud = idp.token(serde_json::json!({ "iss": ISSUER, "aud": "other" }));
+        assert!(idp.verify(pinned.0, pinned.1, &wrong_aud).await.is_err());
+        // The same token with the pinned audience is accepted.
+        let good = idp.token(serde_json::json!({ "iss": ISSUER, "aud": AUDIENCE }));
+        let ok = idp.verify(pinned.0, pinned.1, &good).await.unwrap();
+        assert_eq!(ok.identity.id, "user-1");
+    }
+
+    #[tokio::test]
+    async fn pinned_issuer_refuses_a_token_without_iss() {
+        let idp = TestIssuer::start().await;
+        let no_iss = idp.token(serde_json::json!({ "aud": AUDIENCE }));
+        for audience in [None, Some(AUDIENCE)] {
+            let result = idp.verify(Some(ISSUER), audience, &no_iss).await;
+            assert!(
+                matches!(result, Err(AuthError::Unauthorized(_))),
+                "{result:?}"
+            );
+        }
+        let wrong_iss = idp.token(serde_json::json!({ "iss": "https://other.example" }));
+        assert!(idp.verify(Some(ISSUER), None, &wrong_iss).await.is_err());
+        let good = idp.token(serde_json::json!({ "iss": ISSUER }));
+        assert!(idp.verify(Some(ISSUER), None, &good).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn unpinned_provider_still_accepts_tokens_with_or_without_iss_and_aud() {
+        let idp = TestIssuer::start().await;
+        for extra in [
+            serde_json::json!({}),
+            serde_json::json!({ "iss": "https://anyone.example" }),
+            serde_json::json!({ "aud": "anything" }),
+            serde_json::json!({ "iss": ISSUER, "aud": AUDIENCE }),
+        ] {
+            let token = idp.token(extra.clone());
+            assert!(idp.verify(None, None, &token).await.is_ok(), "{extra}");
+        }
+        // Pinning only the audience does not start requiring an issuer.
+        let aud_only = idp.token(serde_json::json!({ "aud": AUDIENCE }));
+        assert!(idp.verify(None, Some(AUDIENCE), &aud_only).await.is_ok());
+        // `exp` stays required whatever is pinned.
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some("k1".to_string());
+        let no_exp =
+            jsonwebtoken::encode(&header, &serde_json::json!({ "sub": "user-1" }), &idp.key)
+                .unwrap();
+        assert!(idp.verify(None, None, &no_exp).await.is_err());
     }
 }

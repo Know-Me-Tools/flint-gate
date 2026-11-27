@@ -245,6 +245,9 @@ impl Authenticator for McpAuthenticator {
         validation.validate_aud = false;
         if let Some(iss) = &self.config.issuer {
             validation.set_issuer(&[iss.as_str()]);
+            // jsonwebtoken compares `iss` only when the token carries it: make
+            // a pinned issuer required so a token without `iss` is refused.
+            validation.set_required_spec_claims(&["exp", "iss"]);
         }
 
         // ── Verify signature + standard claims ─────────────────────────────

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
 ### Added
 
 - Envoy external-authorization check endpoint at `/ext-authz/<original path>`
@@ -48,6 +50,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     client) cannot be presented as `subject_token` to any further exchange:
     it is refused with `400 invalid_request` before minting, and the refusal
     is logged on `flint_gate::audit` without the token.
+  - Audience restrictions: `token_exchange.audiences.<aud>.allowed_clients`
+    limits an audience to the listed authenticated confidential clients on
+    every exchange path (`401 invalid_client` without client authentication,
+    `400 unauthorized_client` for another client), and `.required_claims`
+    refuses to mint (`400 invalid_request`) unless each listed claim is on the
+    issued token as a non-empty string. Both default to empty; unknown
+    clients, reserved names and claims nothing can supply are refused at
+    startup.
+
+### Fixed
+
+- A `jwt` provider that pins `audience` now refuses a token with no `aud`
+  claim, and a `jwt` or `mcp` provider that pins `issuer` refuses a token with
+  no `iss` claim. Previously the pinned value was compared only when the token
+  carried the claim. Providers that pin neither are unchanged.
+- A request to a rate-limited route with no credential header and no
+  forwarding header (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`) is now keyed
+  by its peer address. Previously the proxy listener did not record the peer
+  address, so such a request was answered `500 Unable To Extract Key!` before
+  reaching its handler.
 
 ## [0.1.0-beta] - 2026-07-09
 

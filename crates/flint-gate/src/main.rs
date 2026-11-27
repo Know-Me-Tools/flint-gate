@@ -208,6 +208,17 @@ fn rate_limit_needs_redis_warning(rate_limit_enabled: bool, redis_url_configured
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Serve `app` with each connection's peer address attached, so the rate
+/// limiter's client-IP fallback has a key for a request that carries neither a
+/// credential nor a forwarding header. Without it such a request is answered
+/// `500 Unable To Extract Key!` before it reaches its handler.
+fn with_peer_addr(
+    app: axum::Router,
+) -> axum::extract::connect_info::IntoMakeServiceWithConnectInfo<axum::Router, std::net::SocketAddr>
+{
+    app.into_make_service_with_connect_info::<std::net::SocketAddr>()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Parse CLI (env vars auto-applied by clap)
@@ -1099,7 +1110,10 @@ async fn main() -> Result<()> {
                         tokio::spawn(async move {
                             if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
                                 .handle(axum_handle)
-                                .serve(proxy_app.into_make_service())
+                                .serve(
+                                    proxy_app
+                                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                                )
                                 .await
                             {
                                 error!(error = %e, "proxy TLS server error");
@@ -1121,7 +1135,7 @@ async fn main() -> Result<()> {
                             .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
                         info!(addr = %proxy_listen, "proxy server listening");
                         tokio::spawn(async move {
-                            if let Err(e) = axum::serve(listener, proxy_app)
+                            if let Err(e) = axum::serve(listener, with_peer_addr(proxy_app))
                                 .with_graceful_shutdown(
                                     async move { proxy_token.cancelled().await },
                                 )
@@ -1146,7 +1160,7 @@ async fn main() -> Result<()> {
                     .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
                 info!(addr = %proxy_listen, "proxy server listening");
                 tokio::spawn(async move {
-                    if let Err(e) = axum::serve(listener, proxy_app)
+                    if let Err(e) = axum::serve(listener, with_peer_addr(proxy_app))
                         .with_graceful_shutdown(async move { proxy_token.cancelled().await })
                         .await
                     {
@@ -1161,7 +1175,7 @@ async fn main() -> Result<()> {
             .with_context(|| format!("binding proxy server to {proxy_listen}"))?;
         info!(addr = %proxy_listen, "proxy server listening");
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, proxy_app)
+            if let Err(e) = axum::serve(listener, with_peer_addr(proxy_app))
                 .with_graceful_shutdown(async move { proxy_token.cancelled().await })
                 .await
             {
@@ -1711,5 +1725,49 @@ mod tests {
         let result = rate_limit_needs_redis_warning(false, false);
         std::env::remove_var("KUBERNETES_SERVICE_HOST");
         assert!(!result, "should not warn when rate limiting is disabled");
+    }
+
+    /// POST a form with no credential and no forwarding header to a
+    /// rate-limited route served by `serve`, returning status and body.
+    async fn post_without_credentials<F, Fut>(serve: F) -> (u16, String)
+    where
+        F: FnOnce(tokio::net::TcpListener, axum::Router) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let layer = flint_gate_core::ratelimit::build_governor_layer(50, 100).unwrap();
+        let app = axum::Router::new()
+            .route("/oauth/token", axum::routing::post(|| async { "handled" }))
+            .layer(layer);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, app));
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/oauth/token"))
+            .form(&[("grant_type", "client_credentials")])
+            .send()
+            .await
+            .unwrap();
+        let out = (resp.status().as_u16(), resp.text().await.unwrap());
+        server.abort();
+        out
+    }
+
+    #[tokio::test]
+    async fn rate_limited_route_handles_a_request_with_no_credential_or_forwarding_header() {
+        let (status, body) = post_without_credentials(|listener, app| async move {
+            axum::serve(listener, with_peer_addr(app)).await.unwrap();
+        })
+        .await;
+        assert_eq!((status, body.as_str()), (200, "handled"));
+    }
+
+    #[tokio::test]
+    async fn without_the_peer_address_the_limiter_cannot_key_such_a_request() {
+        // The failure `with_peer_addr` exists to prevent.
+        let (status, _) = post_without_credentials(|listener, app| async move {
+            axum::serve(listener, app).await.unwrap();
+        })
+        .await;
+        assert_eq!(status, 500);
     }
 }

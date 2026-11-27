@@ -217,3 +217,38 @@ async fn tampered_signature_is_rejected() {
     let result = auth.authenticate(&parts_with_bearer(&token)).await;
     assert!(matches!(result, Err(AuthError::Unauthorized(_))));
 }
+
+// A pinned issuer must be present: a validly signed token with the right
+// audience but no `iss` is rejected, as is one with no `aud`.
+#[tokio::test]
+async fn token_without_pinned_issuer_or_audience_is_rejected() {
+    let server = start_mock_as().await;
+    let cfg = mcp_config(format!("{}/jwks", server.uri()), vec![]);
+    let auth = McpAuthenticator::new(cfg, reqwest::Client::new());
+    let sign = |claims: serde_json::Value| {
+        let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some(KID.to_string());
+        let key = EncodingKey::from_rsa_pem(RSA_PRIVATE_PEM.as_bytes()).expect("valid RSA PEM");
+        encode(&header, &claims, &key).expect("token encodes")
+    };
+
+    let no_iss = sign(json!({ "sub": "agent-007", "aud": RESOURCE, "exp": 4_102_444_800_u64 }));
+    let result = auth.authenticate(&parts_with_bearer(&no_iss)).await;
+    assert!(
+        matches!(result, Err(AuthError::Unauthorized(_))),
+        "{result:?}"
+    );
+
+    let no_aud = sign(json!({ "sub": "agent-007", "iss": ISSUER, "exp": 4_102_444_800_u64 }));
+    let result = auth.authenticate(&parts_with_bearer(&no_aud)).await;
+    assert!(
+        matches!(result, Err(AuthError::Unauthorized(_))),
+        "{result:?}"
+    );
+
+    // Control: the same claims with both present are accepted.
+    let both = sign(json!({
+        "sub": "agent-007", "iss": ISSUER, "aud": RESOURCE, "exp": 4_102_444_800_u64
+    }));
+    assert!(auth.authenticate(&parts_with_bearer(&both)).await.is_ok());
+}

@@ -668,6 +668,11 @@ Enabled per capability under `oauth:` / `token_exchange:` (see `config.example.y
   for a short-lived token for an allow-listed audience, so a desktop app needs
   neither `/ext-authz` nor a client secret. That token is terminal: presented
   as `subject_token` to another exchange it is refused (`400 invalid_request`).
+  An audience can be restricted with `token_exchange.audiences.<aud>.allowed_clients`
+  (only those authenticated confidential clients may obtain it: otherwise
+  `401 invalid_client` without client authentication, `400 unauthorized_client`
+  for another client) and `required_claims` (each must be on the issued token
+  as a non-empty string, else `400 invalid_request` and no token).
 - `POST /oauth/introspect` — RFC 7662 introspection for gateway-minted tokens.
   **Authenticated by default** (`oauth.introspect_auth: true`): the caller must
   present OAuth client credentials (`client_id`/`client_secret` via HTTP Basic or

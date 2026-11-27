@@ -491,6 +491,22 @@ pub struct ExchangeAudiencePolicy {
     /// over copied and requested claims. Reserved names are refused at startup.
     #[serde(default)]
     pub claims: serde_json::Map<String, serde_json::Value>,
+    /// Confidential clients that may obtain a token for this audience. When
+    /// non-empty, every exchange for the audience must be authenticated as one
+    /// of these `token_exchange.clients` keys: a caller without client
+    /// authentication (a public client included) gets `401 invalid_client`,
+    /// any other authenticated client `400 unauthorized_client`. Empty (the
+    /// default): the audience is not restricted by client.
+    #[serde(default)]
+    pub allowed_clients: Vec<String>,
+    /// Claim names the issued token must carry as a non-empty JSON string,
+    /// supplied by `copy_claims`, a requested claim or `claims`. If one is
+    /// absent or is anything else (null, number, boolean, object, array or
+    /// `""`) the exchange is refused with `400 invalid_request` and no token
+    /// is minted. Reserved names, and names nothing could supply, are refused
+    /// at startup. Empty (the default): no claim is required.
+    #[serde(default)]
+    pub required_claims: Vec<String>,
 }
 
 /// HTTP server bind configuration.

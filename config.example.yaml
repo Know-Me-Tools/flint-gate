@@ -201,6 +201,20 @@ token_exchange:
   #   flint-forge:
   #     copy_claims: ["tenant_id"]        # from the verified subject token
   #     claims: { role: "authenticated" } # fixed; wins over copied/requested
+  #   # Restricted audience. Both keys are optional and empty by default.
+  #   flint-core:
+  #     # Only these confidential clients (keys of `clients`) may obtain this
+  #     # audience, on every exchange path. No client authentication (a public
+  #     # client included): 401 invalid_client. Any other authenticated client:
+  #     # 400 unauthorized_client.
+  #     allowed_clients: ["identity-console"]
+  #     # Each name must be on the issued token as a non-empty JSON string,
+  #     # supplied by copy_claims, a requested claim or claims. Absent, null, a
+  #     # number, boolean, object, array or "": 400 invalid_request, no token.
+  #     # Refused at startup: a reserved name, or a name nothing can supply
+  #     # (not in copy_claims or claims, and not in the requested_claims of a
+  #     # client that may reach this audience).
+  #     required_claims: ["tenant_id"]
   # A request may also send `expires_in=<seconds>` to SHORTEN the issued
   # lifetime (never lengthen it). The response always carries `expires_in`.
   # NOTE: an `actor_token` (multi-hop delegation) is rejected (400 invalid_request)

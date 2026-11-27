@@ -48,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     client) cannot be presented as `subject_token` to any further exchange:
     it is refused with `400 invalid_request` before minting, and the refusal
     is logged on `flint_gate::audit` without the token.
+  - Audience restrictions: `token_exchange.audiences.<aud>.allowed_clients`
+    limits an audience to the listed authenticated confidential clients on
+    every exchange path (`401 invalid_client` without client authentication,
+    `400 unauthorized_client` for another client), and `.required_claims`
+    refuses to mint (`400 invalid_request`) unless each listed claim is on the
+    issued token as a non-empty string. Both default to empty; unknown
+    clients, reserved names and claims nothing can supply are refused at
+    startup.
 
 ## [0.1.0-beta] - 2026-07-09
 

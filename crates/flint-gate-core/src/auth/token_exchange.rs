@@ -729,6 +729,47 @@ pub fn validate_exchange_policy(cfg: &TokenExchangeConfig) -> Result<(), String>
                 ));
             }
         }
+        validate_audience_restrictions(aud, policy, &cfg.clients)?;
+    }
+    Ok(())
+}
+
+/// `allowed_clients` must name configured clients, and every `required_claims`
+/// name must be a non-reserved claim that something can supply: the audience's
+/// `copy_claims` or `claims`, or the `requested_claims` of a client that may
+/// reach the audience (its `allowed_clients`, or any client when unrestricted).
+fn validate_audience_restrictions(
+    aud: &str,
+    policy: &ExchangeAudiencePolicy,
+    clients: &HashMap<String, ExchangeClientPolicy>,
+) -> Result<(), String> {
+    let prefix = format!("token_exchange.audiences.{aud}");
+    for client_id in &policy.allowed_clients {
+        if client_id.trim().is_empty() {
+            return Err(format!("{prefix}.allowed_clients has an empty client_id"));
+        }
+        if !clients.contains_key(client_id) {
+            return Err(format!(
+                "{prefix}.allowed_clients: {client_id:?} is not a token_exchange.clients entry"
+            ));
+        }
+    }
+    for name in &policy.required_claims {
+        if name.trim().is_empty() || is_exchange_reserved_claim(name) {
+            return Err(format!(
+                "{prefix}.required_claims: {name:?} is a reserved claim and cannot be required"
+            ));
+        }
+        let requestable = clients.iter().any(|(client_id, client)| {
+            (policy.allowed_clients.is_empty() || policy.allowed_clients.contains(client_id))
+                && client.requested_claims.contains(name)
+        });
+        if !policy.copy_claims.contains(name) && !policy.claims.contains_key(name) && !requestable {
+            return Err(format!(
+                "{prefix}.required_claims: nothing can supply {name:?} (not in copy_claims or \
+                 claims, and no client that may reach this audience lists it in requested_claims)"
+            ));
+        }
     }
     Ok(())
 }
@@ -944,6 +985,52 @@ pub fn apply_exchange_claims(
     }
 }
 
+/// Enforce an audience's `allowed_clients`. A restricted audience needs an
+/// authenticated confidential client on its list: no client authentication is
+/// `InvalidClient`, any other client `UnauthorizedClient` (the same mapping as
+/// requested claims). An audience without the restriction always passes. Pure.
+fn check_audience_client(
+    audience: &str,
+    audience_policy: Option<&ExchangeAudiencePolicy>,
+    client: Option<&VerifiedClient>,
+) -> Result<(), ExchangeError> {
+    let Some(policy) = audience_policy.filter(|p| !p.allowed_clients.is_empty()) else {
+        return Ok(());
+    };
+    let client = client.ok_or(ExchangeError::InvalidClient)?;
+    if !policy.allowed_clients.contains(&client.client_id) {
+        return Err(ExchangeError::UnauthorizedClient(format!(
+            "this client may not request tokens for audience {audience:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// Enforce an audience's `required_claims` on the claims about to be minted
+/// (after copied, requested and fixed claims are applied): each must be a
+/// non-empty JSON string. Anything else refuses the exchange. Pure.
+fn check_required_claims(
+    audience: &str,
+    audience_policy: Option<&ExchangeAudiencePolicy>,
+    additional: &Value,
+) -> Result<(), ExchangeError> {
+    let Some(policy) = audience_policy else {
+        return Ok(());
+    };
+    for name in &policy.required_claims {
+        let present = additional
+            .get(name)
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty());
+        if !present {
+            return Err(ExchangeError::InvalidRequest(format!(
+                "audience {audience:?} requires the {name:?} claim as a non-empty string"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The subject, granted scopes and audience of an on-behalf-of exchange. The
 /// client must be authenticated and allow-listed for the requested audience;
 /// scopes are capped by the client's own grant.
@@ -1123,6 +1210,16 @@ pub async fn exchange_with_policy(
         (subject.identity, granted, audience, client.as_ref())
     };
 
+    // Both local paths (subject token and on-behalf-of) mint for `audience`:
+    // its `allowed_clients` and `required_claims` are enforced here for both.
+    let audience_policy = audience.and_then(|a| policy.audiences.get(a));
+    check_audience_client(
+        audience.unwrap_or_default(),
+        audience_policy,
+        client.as_ref(),
+    )
+    .map_err(|e| deny("deny_client", e))?;
+
     // `act.sub` is the authenticated client when there is one; otherwise the
     // subject itself, so the token is still explicitly a delegated token.
     let actor_sub = actor.map(|c| c.client_id.as_str());
@@ -1130,9 +1227,11 @@ pub async fn exchange_with_policy(
     apply_exchange_claims(
         &mut additional,
         &identity,
-        audience.and_then(|a| policy.audiences.get(a)),
+        audience_policy,
         &requested_claims,
     );
+    check_required_claims(audience.unwrap_or_default(), audience_policy, &additional)
+        .map_err(|e| deny("deny_request", e))?;
 
     let guard = minter.read().await;
     let Some(m) = guard.as_ref() else {
@@ -1278,6 +1377,10 @@ async fn exchange_session_token(
         };
         deny(reason, e)
     })?;
+    // A public client is never an authenticated confidential client, so an
+    // audience restricted by `allowed_clients` is refused before Kratos is asked.
+    let audience_policy = policy.audiences.get(audience);
+    check_audience_client(audience, audience_policy, None).map_err(|e| deny("deny_client", e))?;
     let requested_ttl =
         parse_requested_ttl(req.expires_in.as_deref()).map_err(|e| deny("deny_request", e))?;
     // A Kratos session carries no OAuth scopes: any requested scope is refused.
@@ -1301,12 +1404,9 @@ async fn exchange_session_token(
 
     let mut additional =
         build_delegated_claims(&identity, &granted, Some(audience), Some(client_id));
-    apply_exchange_claims(
-        &mut additional,
-        &identity,
-        policy.audiences.get(audience),
-        &Map::new(),
-    );
+    apply_exchange_claims(&mut additional, &identity, audience_policy, &Map::new());
+    check_required_claims(audience, audience_policy, &additional)
+        .map_err(|e| deny("deny_request", e))?;
 
     let guard = minter.read().await;
     let Some(m) = guard.as_ref() else {
@@ -2058,6 +2158,7 @@ mod policy_tests {
                     .as_object()
                     .unwrap()
                     .clone(),
+                ..Default::default()
             },
         );
         p
@@ -2535,6 +2636,325 @@ mod policy_tests {
         assert!(validate_exchange_policy(&cfg).is_err());
     }
 
+    // ── Audience restrictions: allowed_clients and required_claims ────────
+
+    const CONSOLE: &str = "other-service";
+
+    /// `policy()` plus the console shape: only `CONSOLE` may obtain
+    /// `flint-core`, and only with a `tenant_id`, which it sends as a
+    /// requested claim.
+    fn restricted_policy() -> ExchangePolicy {
+        let mut p = policy();
+        p.clients.insert(
+            CONSOLE.into(),
+            ExchangeClientPolicy {
+                requested_claims: vec!["tenant_id".into()],
+                ..Default::default()
+            },
+        );
+        p.audiences.insert(
+            "flint-core".into(),
+            ExchangeAudiencePolicy {
+                allowed_clients: vec![CONSOLE.into()],
+                required_claims: vec!["tenant_id".into()],
+                ..Default::default()
+            },
+        );
+        p
+    }
+
+    /// A subject-token exchange for `flint-core`, optionally authenticated and
+    /// optionally sending a raw `tenant_id` form field.
+    fn core_req(client_id: Option<&str>, tenant_id: Option<&str>) -> TokenExchangeRequest {
+        let mut extra = BTreeMap::new();
+        if let Some(raw) = tenant_id {
+            extra.insert("tenant_id".to_string(), raw.to_string());
+        }
+        TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: "gateway.subject.jwt".into(),
+            audience: Some("flint-core".into()),
+            client_credentials: client_id.and_then(|id| creds(id, "pw")),
+            extra_fields: extra,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn restricted_audience_is_issued_to_its_allowed_client() {
+        let resp = run(
+            &core_req(Some(CONSOLE), Some("tenant-b")),
+            &restricted_policy(),
+        )
+        .await
+        .expect("allowed client with a tenant");
+        let c = claims(&resp);
+        assert_eq!(c["aud"], "flint-core");
+        assert_eq!(c["sub"], "person-1");
+        assert_eq!(c["act"]["sub"], CONSOLE);
+        assert_eq!(c["tenant_id"], "tenant-b");
+    }
+
+    #[tokio::test]
+    async fn restricted_audience_refuses_an_unauthenticated_caller() {
+        let p = restricted_policy();
+        for tenant in [None, Some("tenant-b")] {
+            assert_eq!(
+                run(&core_req(None, tenant), &p).await.unwrap_err(),
+                ExchangeError::InvalidClient
+            );
+        }
+        // `resource` selects the audience too, and is restricted the same way.
+        let mut r = core_req(None, None);
+        r.resource = r.audience.take();
+        assert_eq!(run(&r, &p).await.unwrap_err(), ExchangeError::InvalidClient);
+        // A wrong secret is still a failed authentication.
+        let mut r = core_req(None, Some("tenant-b"));
+        r.client_credentials = creds(CONSOLE, "wrong");
+        assert_eq!(run(&r, &p).await.unwrap_err(), ExchangeError::InvalidClient);
+    }
+
+    #[tokio::test]
+    async fn restricted_audience_refuses_a_different_authenticated_client() {
+        let mut p = restricted_policy();
+        // Even a client that may request the same claim is not on the list.
+        p.clients
+            .get_mut("knowduet-gateway")
+            .unwrap()
+            .requested_claims
+            .push("tenant_id".into());
+        let err = run(&core_req(Some("knowduet-gateway"), Some("tenant-b")), &p)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::UnauthorizedClient(_)));
+        assert_eq!(err.oauth_code(), "unauthorized_client");
+        assert_eq!(err.http_status(), http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn restricted_audience_applies_to_on_behalf_of() {
+        let mut p = restricted_policy();
+        // `openbot-server` may act on behalf of people for flint-core, but is
+        // not one of the audience's allowed clients.
+        p.clients
+            .get_mut("openbot-server")
+            .unwrap()
+            .on_behalf_of_audiences
+            .push("flint-core".into());
+        assert!(matches!(
+            run(&obo_req("user-9", "flint-core"), &p).await.unwrap_err(),
+            ExchangeError::UnauthorizedClient(_)
+        ));
+        // Once allowed, the required claim still gates it: an on-behalf-of
+        // subject has nothing to copy and this client may not request it.
+        p.audiences
+            .get_mut("flint-core")
+            .unwrap()
+            .allowed_clients
+            .push("openbot-server".into());
+        assert!(matches!(
+            run(&obo_req("user-9", "flint-core"), &p).await.unwrap_err(),
+            ExchangeError::InvalidRequest(_)
+        ));
+        // The allowed console client on the same path, with a tenant, succeeds.
+        p.clients.get_mut(CONSOLE).unwrap().on_behalf_of_audiences = vec!["flint-core".into()];
+        let mut r = obo_req("user-9", "flint-core");
+        r.client_credentials = creds(CONSOLE, "pw");
+        r.extra_fields.insert("tenant_id".into(), "tenant-b".into());
+        let c = claims(&run(&r, &p).await.unwrap());
+        assert_eq!(c["sub"], "user-9");
+        assert_eq!(c["tenant_id"], "tenant-b");
+    }
+
+    #[tokio::test]
+    async fn missing_required_claim_is_refused() {
+        // The subject token carries a tenant_id, but this audience does not
+        // copy it: only a supplied claim satisfies the requirement.
+        let err = run(&core_req(Some(CONSOLE), None), &restricted_policy())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::InvalidRequest(_)));
+        assert_eq!(err.oauth_code(), "invalid_request");
+        assert_eq!(err.http_status(), http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn required_claim_must_be_a_non_empty_string() {
+        let p = restricted_policy();
+        for raw in [
+            "null",
+            "123",
+            r#""""#,
+            "",
+            "true",
+            "{}",
+            "[]",
+            r#"["tenant-b"]"#,
+        ] {
+            let err = run(&core_req(Some(CONSOLE), Some(raw)), &p)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ExchangeError::InvalidRequest(_)), "{raw:?}");
+        }
+        // A JSON string and a bare form value are both the string claim.
+        for raw in [r#""tenant-b""#, "tenant-b"] {
+            let c = claims(&run(&core_req(Some(CONSOLE), Some(raw)), &p).await.unwrap());
+            assert_eq!(c["tenant_id"], "tenant-b", "{raw:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn required_claim_is_checked_after_copied_and_fixed_claims() {
+        let mut p = policy();
+        // Copied from the subject token: satisfied without client authentication.
+        p.audiences.get_mut("flint-forge").unwrap().required_claims =
+            vec!["tenant_id".into(), "role".into()];
+        let r = TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: "gateway.subject.jwt".into(),
+            audience: Some("flint-forge".into()),
+            ..Default::default()
+        };
+        let c = claims(&run(&r, &p).await.unwrap());
+        assert_eq!(c["tenant_id"], "tenant-a");
+        assert_eq!(c["role"], "authenticated");
+        // A fixed claim wins over the copied one, and it is the issued value
+        // that is checked.
+        p.audiences
+            .get_mut("flint-forge")
+            .unwrap()
+            .claims
+            .insert("tenant_id".into(), json!(7));
+        assert!(matches!(
+            run(&r, &p).await.unwrap_err(),
+            ExchangeError::InvalidRequest(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn audiences_without_restrictions_behave_as_before() {
+        let p = restricted_policy();
+        // A policy audience with neither key set, and an audience with no
+        // policy at all: unauthenticated exchange still succeeds.
+        for (aud, tenant) in [("flint-forge", json!("tenant-a")), ("uar", Value::Null)] {
+            let r = TokenExchangeRequest {
+                grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+                subject_token: "gateway.subject.jwt".into(),
+                audience: Some(aud.into()),
+                ..Default::default()
+            };
+            let c = claims(&run(&r, &p).await.unwrap());
+            assert_eq!(c["aud"], aud);
+            assert_eq!(c.get("tenant_id").cloned().unwrap_or(Value::Null), tenant);
+        }
+        // No audience at all is unaffected too.
+        let r = TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: "gateway.subject.jwt".into(),
+            ..Default::default()
+        };
+        assert!(claims(&run(&r, &p).await.unwrap()).get("aud").is_none());
+        // Both keys default to empty when a config omits them.
+        let parsed: ExchangeAudiencePolicy =
+            serde_json::from_value(json!({ "copy_claims": ["tenant_id"] })).unwrap();
+        assert!(parsed.allowed_clients.is_empty());
+        assert!(parsed.required_claims.is_empty());
+    }
+
+    fn restricted_config(audience: ExchangeAudiencePolicy) -> TokenExchangeConfig {
+        let p = restricted_policy();
+        config_with(
+            &[
+                (CONSOLE, p.clients[CONSOLE].clone()),
+                ("openbot-server", p.clients["openbot-server"].clone()),
+            ],
+            &[("flint-core", audience)],
+        )
+    }
+
+    #[test]
+    fn policy_validation_accepts_the_console_shape() {
+        let audience = restricted_policy().audiences["flint-core"].clone();
+        assert!(validate_exchange_policy(&restricted_config(audience)).is_ok());
+    }
+
+    #[test]
+    fn policy_validation_refuses_bad_allowed_clients() {
+        for client_id in ["", " ", "not-configured"] {
+            let audience = ExchangeAudiencePolicy {
+                allowed_clients: vec![CONSOLE.into(), client_id.into()],
+                ..Default::default()
+            };
+            assert!(
+                validate_exchange_policy(&restricted_config(audience)).is_err(),
+                "{client_id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_validation_refuses_reserved_and_empty_required_claims() {
+        for name in [
+            "",
+            " ",
+            "iss",
+            "sub",
+            "aud",
+            "exp",
+            "act",
+            "scope",
+            "flint_kind",
+        ] {
+            let audience = ExchangeAudiencePolicy {
+                // Listed in copy_claims too, so only the name itself is at fault.
+                copy_claims: vec!["tenant_id".into()],
+                required_claims: vec!["tenant_id".into(), name.into()],
+                ..Default::default()
+            };
+            assert!(
+                validate_exchange_policy(&restricted_config(audience)).is_err(),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_validation_refuses_a_required_claim_nothing_can_supply() {
+        // Not copied, not fixed, and no client requests it.
+        let audience = ExchangeAudiencePolicy {
+            required_claims: vec!["org_id".into()],
+            ..Default::default()
+        };
+        assert!(validate_exchange_policy(&restricted_config(audience)).is_err());
+        // Requestable only by a client that may not reach the audience.
+        let audience = ExchangeAudiencePolicy {
+            allowed_clients: vec!["openbot-server".into()],
+            required_claims: vec!["tenant_id".into()],
+            ..Default::default()
+        };
+        assert!(validate_exchange_policy(&restricted_config(audience)).is_err());
+        // Each supplying path is accepted: copied, fixed, or requested by a
+        // client of an unrestricted audience.
+        for audience in [
+            ExchangeAudiencePolicy {
+                copy_claims: vec!["org_id".into()],
+                required_claims: vec!["org_id".into()],
+                ..Default::default()
+            },
+            ExchangeAudiencePolicy {
+                claims: json!({ "org_id": "org-1" }).as_object().unwrap().clone(),
+                required_claims: vec!["org_id".into()],
+                ..Default::default()
+            },
+            ExchangeAudiencePolicy {
+                required_claims: vec!["tenant_id".into()],
+                ..Default::default()
+            },
+        ] {
+            assert!(validate_exchange_policy(&restricted_config(audience)).is_ok());
+        }
+    }
+
     #[test]
     fn client_credentials_debug_hides_the_secret() {
         let c = ClientCredentials {
@@ -2727,6 +3147,51 @@ mod session_token_tests {
         let c = claims(&resp);
         assert_eq!(c["aud"], "openbot-server");
         assert_eq!(c["tenant_id"], "tenant-a");
+    }
+
+    #[tokio::test]
+    async fn audience_restricted_to_clients_is_refused_without_calling_kratos() {
+        // A public client is never an authenticated confidential client. An
+        // unreachable Kratos would answer invalid_grant if it were asked.
+        let mut p = policy(kratos("http://127.0.0.1:1"));
+        p.audiences
+            .get_mut("openbot-server")
+            .unwrap()
+            .allowed_clients = vec!["openbot-server".into()];
+        let err = run(&session_req("good-token", "openbot-server"), &p)
+            .await
+            .unwrap_err();
+        assert_eq!(err, ExchangeError::InvalidClient);
+        assert_eq!(err.http_status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn required_claims_apply_to_session_tokens() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let mut p = policy(kratos(&server.uri()));
+        // Copied from the Kratos identity: satisfied.
+        p.audiences
+            .get_mut("openbot-server")
+            .unwrap()
+            .required_claims = vec!["tenant_id".into()];
+        let resp = run(&session_req("good-token", "openbot-server"), &p)
+            .await
+            .unwrap();
+        assert_eq!(claims(&resp)["tenant_id"], "tenant-a");
+        // Required but supplied by nothing for this audience: no token.
+        p.audiences.insert(
+            "knowduet-gateway".into(),
+            ExchangeAudiencePolicy {
+                required_claims: vec!["tenant_id".into()],
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            run(&session_req("good-token", "knowduet-gateway"), &p)
+                .await
+                .unwrap_err(),
+            ExchangeError::InvalidRequest(_)
+        ));
     }
 
     #[tokio::test]

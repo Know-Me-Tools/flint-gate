@@ -1,6 +1,6 @@
 [package]
 name = "flint-gate-client"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Travis James <travis@know-me.tools>"]
 description = "Rust client SDK for Flint Gate"

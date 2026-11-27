@@ -441,6 +441,16 @@ pub struct TokenExchangeConfig {
     /// the issued token's `aud`. Local minting only.
     #[serde(default)]
     pub audiences: HashMap<String, ExchangeAudiencePolicy>,
+    /// Mint only for configured audiences. When `true`, every locally minted
+    /// exchange (subject token, on-behalf-of and Kratos session token) must
+    /// resolve, from `resource` or `audience`, to a key of `audiences`: a
+    /// request that names no audience, or one that is not a key, is refused
+    /// with `400 invalid_target` and no token is minted. Refused at startup
+    /// with an empty `audiences` map or with `delegate_to_hydra`. `false` (the
+    /// default): an audience without an entry, and a request without an
+    /// audience, are minted as before. Local minting only.
+    #[serde(default)]
+    pub require_configured_audience: bool,
     /// Name of the `auth_providers` entry (type `kratos`) that verifies Kratos
     /// session tokens for public clients (`subject_token_type` =
     /// `urn:ory:kratos:session-token`). Required when any client is `public`.

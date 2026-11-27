@@ -673,6 +673,9 @@ Enabled per capability under `oauth:` / `token_exchange:` (see `config.example.y
   `401 invalid_client` without client authentication, `400 unauthorized_client`
   for another client) and `required_claims` (each must be on the issued token
   as a non-empty string, else `400 invalid_request` and no token).
+  `token_exchange.require_configured_audience: true` (default `false`) limits
+  local minting to the keys of `token_exchange.audiences`: an exchange for any
+  other audience, or for none, is refused with `400 invalid_target`.
 - `POST /oauth/introspect` — RFC 7662 introspection for gateway-minted tokens.
   **Authenticated by default** (`oauth.introspect_auth: true`): the caller must
   present OAuth client credentials (`client_id`/`client_secret` via HTTP Basic or

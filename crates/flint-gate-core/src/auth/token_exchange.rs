@@ -648,6 +648,9 @@ impl SessionTokenVerifier for crate::auth::kratos::KratosAuthenticator {
 pub struct ExchangePolicy {
     pub clients: HashMap<String, ExchangeClientPolicy>,
     pub audiences: HashMap<String, ExchangeAudiencePolicy>,
+    /// Refuse to mint for an audience that is absent or not a key of
+    /// `audiences` (`token_exchange.require_configured_audience`).
+    pub require_configured_audience: bool,
     /// Verifies presented client credentials. `None`: any presented client
     /// credentials are refused (`invalid_client`), never ignored.
     pub client_verifier: Option<Arc<dyn ClientVerifier>>,
@@ -662,6 +665,7 @@ impl ExchangePolicy {
         Self {
             clients: cfg.clients.clone(),
             audiences: cfg.audiences.clone(),
+            require_configured_audience: cfg.require_configured_audience,
             client_verifier: None,
             session_verifier: None,
         }
@@ -683,7 +687,10 @@ impl ExchangePolicy {
 /// Startup guard for `token_exchange.clients` / `token_exchange.audiences`.
 /// Refuses reserved claim names, claim names that collide with grant
 /// parameters, empty names, and (with `delegate_to_hydra`) any policy at all,
-/// since the delegate path mints nothing locally. Pure and unit-testable.
+/// since the delegate path mints nothing locally. Also refuses
+/// `require_configured_audience` with `delegate_to_hydra` or with no
+/// configured audience, which would refuse every exchange. Pure and
+/// unit-testable.
 pub fn validate_exchange_policy(cfg: &TokenExchangeConfig) -> Result<(), String> {
     if cfg.delegate_to_hydra && (!cfg.clients.is_empty() || !cfg.audiences.is_empty()) {
         return Err(
@@ -691,6 +698,20 @@ pub fn validate_exchange_policy(cfg: &TokenExchangeConfig) -> Result<(), String>
              they cannot be combined with delegate_to_hydra"
                 .to_string(),
         );
+    }
+    if cfg.require_configured_audience {
+        if cfg.delegate_to_hydra {
+            return Err(
+                "token_exchange.require_configured_audience applies to local minting only; \
+                 it cannot be combined with delegate_to_hydra"
+                    .to_string(),
+            );
+        }
+        if cfg.audiences.is_empty() {
+            return Err("token_exchange.require_configured_audience is true but \
+                 token_exchange.audiences is empty: every exchange would be refused"
+                .to_string());
+        }
     }
     for (client_id, policy) in &cfg.clients {
         if client_id.trim().is_empty() {
@@ -985,6 +1006,29 @@ pub fn apply_exchange_claims(
     }
 }
 
+/// Enforce `require_configured_audience`: when set, the resolved audience must
+/// be a key of `token_exchange.audiences`. A request that names no audience,
+/// or an audience without an entry, is `InvalidTarget`. Unset: always passes.
+/// Pure.
+fn check_configured_audience(
+    audience: Option<&str>,
+    policy: &ExchangePolicy,
+) -> Result<(), ExchangeError> {
+    if !policy.require_configured_audience {
+        return Ok(());
+    }
+    match audience {
+        Some(a) if policy.audiences.contains_key(a) => Ok(()),
+        Some(a) => Err(ExchangeError::InvalidTarget(format!(
+            "audience {a:?} is not a configured token-exchange audience"
+        ))),
+        None => Err(ExchangeError::InvalidTarget(
+            "this exchange requires `audience` or `resource` naming a configured audience"
+                .to_string(),
+        )),
+    }
+}
+
 /// Enforce an audience's `allowed_clients`. A restricted audience needs an
 /// authenticated confidential client on its list: no client authentication is
 /// `InvalidClient`, any other client `UnauthorizedClient` (the same mapping as
@@ -1211,7 +1255,9 @@ pub async fn exchange_with_policy(
     };
 
     // Both local paths (subject token and on-behalf-of) mint for `audience`:
-    // its `allowed_clients` and `required_claims` are enforced here for both.
+    // `require_configured_audience`, then the audience's `allowed_clients`
+    // and `required_claims`, are enforced here for both.
+    check_configured_audience(audience, policy).map_err(|e| deny("deny_request", e))?;
     let audience_policy = audience.and_then(|a| policy.audiences.get(a));
     check_audience_client(
         audience.unwrap_or_default(),
@@ -1377,6 +1423,7 @@ async fn exchange_session_token(
         };
         deny(reason, e)
     })?;
+    check_configured_audience(Some(audience), policy).map_err(|e| deny("deny_request", e))?;
     // A public client is never an authenticated confidential client, so an
     // audience restricted by `allowed_clients` is refused before Kratos is asked.
     let audience_policy = policy.audiences.get(audience);
@@ -2861,6 +2908,180 @@ mod policy_tests {
         assert!(parsed.required_claims.is_empty());
     }
 
+    // ── require_configured_audience ───────────────────────────────────────
+
+    /// A subject-token exchange naming `audience` (or none), unauthenticated.
+    fn plain_req(audience: Option<&str>) -> TokenExchangeRequest {
+        TokenExchangeRequest {
+            grant_type: GRANT_TYPE_TOKEN_EXCHANGE.into(),
+            subject_token: "gateway.subject.jwt".into(),
+            audience: audience.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    /// `restricted_policy()` with `require_configured_audience` set.
+    fn configured_only_policy() -> ExchangePolicy {
+        ExchangePolicy {
+            require_configured_audience: true,
+            ..restricted_policy()
+        }
+    }
+
+    #[tokio::test]
+    async fn unconfigured_and_missing_audiences_mint_when_the_flag_is_off() {
+        let p = restricted_policy();
+        assert!(!p.require_configured_audience);
+        let c = claims(&run(&plain_req(Some("uar")), &p).await.unwrap());
+        assert_eq!(c["aud"], "uar");
+        let c = claims(&run(&plain_req(None), &p).await.unwrap());
+        assert!(c.get("aud").is_none());
+        // The key defaults to false when a config omits it.
+        let parsed: TokenExchangeConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(!parsed.require_configured_audience);
+        assert!(!ExchangePolicy::from_config(&parsed).require_configured_audience);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_audience_is_refused_when_the_flag_is_on() {
+        let p = configured_only_policy();
+        let err = run(&plain_req(Some("uar")), &p).await.unwrap_err();
+        assert!(matches!(err, ExchangeError::InvalidTarget(_)));
+        assert_eq!(err.oauth_code(), "invalid_target");
+        assert_eq!(err.http_status(), http::StatusCode::BAD_REQUEST);
+        // `resource` selects the audience too, and is refused the same way,
+        // also when a configured `audience` is sent beside it.
+        let mut r = plain_req(Some("flint-forge"));
+        r.resource = Some("uar".into());
+        assert!(matches!(
+            run(&r, &p).await.unwrap_err(),
+            ExchangeError::InvalidTarget(_)
+        ));
+        // An authenticated client does not lift the requirement.
+        let mut r = plain_req(Some("uar"));
+        r.client_credentials = creds(CONSOLE, "pw");
+        assert!(matches!(
+            run(&r, &p).await.unwrap_err(),
+            ExchangeError::InvalidTarget(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn missing_audience_is_refused_when_the_flag_is_on() {
+        let p = configured_only_policy();
+        let err = run(&plain_req(None), &p).await.unwrap_err();
+        assert!(matches!(err, ExchangeError::InvalidTarget(_)));
+        assert_eq!(err.oauth_code(), "invalid_target");
+        assert_eq!(err.http_status(), http::StatusCode::BAD_REQUEST);
+        // An empty audience is not a configured one either.
+        assert!(matches!(
+            run(&plain_req(Some("")), &p).await.unwrap_err(),
+            ExchangeError::InvalidTarget(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn configured_unrestricted_audience_still_mints_when_the_flag_is_on() {
+        let p = configured_only_policy();
+        let c = claims(&run(&plain_req(Some("flint-forge")), &p).await.unwrap());
+        assert_eq!(c["aud"], "flint-forge");
+        assert_eq!(c["tenant_id"], "tenant-a");
+        assert_eq!(c["role"], "authenticated");
+        let mut r = plain_req(None);
+        r.resource = Some("flint-forge".into());
+        assert_eq!(claims(&run(&r, &p).await.unwrap())["aud"], "flint-forge");
+    }
+
+    #[tokio::test]
+    async fn configured_restricted_audience_keeps_its_restrictions_when_the_flag_is_on() {
+        let p = configured_only_policy();
+        assert_eq!(
+            run(&core_req(None, Some("tenant-b")), &p)
+                .await
+                .unwrap_err(),
+            ExchangeError::InvalidClient
+        );
+        let mut other = configured_only_policy();
+        other
+            .clients
+            .get_mut("knowduet-gateway")
+            .unwrap()
+            .requested_claims
+            .push("tenant_id".into());
+        assert!(matches!(
+            run(
+                &core_req(Some("knowduet-gateway"), Some("tenant-b")),
+                &other
+            )
+            .await
+            .unwrap_err(),
+            ExchangeError::UnauthorizedClient(_)
+        ));
+        assert!(matches!(
+            run(&core_req(Some(CONSOLE), None), &p).await.unwrap_err(),
+            ExchangeError::InvalidRequest(_)
+        ));
+        let c = claims(
+            &run(&core_req(Some(CONSOLE), Some("tenant-b")), &p)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(c["aud"], "flint-core");
+        assert_eq!(c["tenant_id"], "tenant-b");
+    }
+
+    #[tokio::test]
+    async fn on_behalf_of_needs_a_configured_audience_when_the_flag_is_on() {
+        // `knowduet-gateway` is on the client's on-behalf-of list but has no
+        // `audiences` entry.
+        let mut p = configured_only_policy();
+        assert!(
+            run(&obo_req("user-9", "knowduet-gateway"), &restricted_policy())
+                .await
+                .is_ok()
+        );
+        let err = run(&obo_req("user-9", "knowduet-gateway"), &p)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::InvalidTarget(_)));
+        // With an entry (even an empty one) it is issued again.
+        p.audiences
+            .insert("knowduet-gateway".into(), ExchangeAudiencePolicy::default());
+        let c = claims(
+            &run(&obo_req("user-9", "knowduet-gateway"), &p)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(c["sub"], "user-9");
+        assert_eq!(c["aud"], "knowduet-gateway");
+    }
+
+    #[test]
+    fn policy_validation_refuses_require_configured_audience_without_audiences() {
+        let mut cfg = config_with(&[], &[]);
+        cfg.require_configured_audience = true;
+        assert!(validate_exchange_policy(&cfg).is_err());
+        // Clients alone do not make an audience configured.
+        let mut cfg = config_with(&[("c", ExchangeClientPolicy::default())], &[]);
+        cfg.require_configured_audience = true;
+        assert!(validate_exchange_policy(&cfg).is_err());
+        // One configured audience is enough, and the flag off is unaffected.
+        let mut cfg = config_with(&[], &[("forge", ExchangeAudiencePolicy::default())]);
+        cfg.require_configured_audience = true;
+        assert!(validate_exchange_policy(&cfg).is_ok());
+        assert!(validate_exchange_policy(&config_with(&[], &[])).is_ok());
+    }
+
+    #[test]
+    fn policy_validation_refuses_require_configured_audience_with_hydra_delegate() {
+        let mut cfg = config_with(&[], &[]);
+        cfg.delegate_to_hydra = true;
+        assert!(validate_exchange_policy(&cfg).is_ok());
+        cfg.require_configured_audience = true;
+        let err = validate_exchange_policy(&cfg).unwrap_err();
+        assert!(err.contains("delegate_to_hydra"), "{err}");
+    }
+
     fn restricted_config(audience: ExchangeAudiencePolicy) -> TokenExchangeConfig {
         let p = restricted_policy();
         config_with(
@@ -3293,6 +3514,43 @@ mod session_token_tests {
         .await
         .unwrap_err();
         assert_eq!(err.oauth_code(), "invalid_target");
+    }
+
+    #[tokio::test]
+    async fn unconfigured_audience_is_refused_without_calling_kratos_when_the_flag_is_on() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        // `knowduet-gateway` is one of the client's session-token audiences
+        // but has no `audiences` entry.
+        let mut p = policy(kratos(&server.uri()));
+        p.require_configured_audience = true;
+        let err = run(&session_req("good-token", "knowduet-gateway"), &p)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::InvalidTarget(_)));
+        assert_eq!(err.oauth_code(), "invalid_target");
+        assert_eq!(err.http_status(), http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn configured_audience_still_mints_for_a_session_when_the_flag_is_on() {
+        let server = kratos_with_session("2099-01-01T00:00:00Z").await;
+        let mut p = policy(kratos(&server.uri()));
+        p.require_configured_audience = true;
+        let resp = run(&session_req("good-token", "openbot-server"), &p)
+            .await
+            .expect("configured audience");
+        assert_eq!(claims(&resp)["aud"], "openbot-server");
+        // With the flag off the unconfigured audience is issued as before.
+        p.require_configured_audience = false;
+        let resp = run(&session_req("good-token", "knowduet-gateway"), &p)
+            .await
+            .expect("flag off");
+        assert_eq!(claims(&resp)["aud"], "knowduet-gateway");
     }
 
     #[tokio::test]
